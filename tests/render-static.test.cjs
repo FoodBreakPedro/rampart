@@ -130,8 +130,9 @@ test('renderStatic(outPath) writes there, creating missing folders, and returns 
 
 test('an empty store renders the empty state, with an empty project list in the slot', () => {
   const html = fs.readFileSync(renderStatic(), 'utf8');
-  assert.ok(html.includes('No data yet'));
-  assert.ok(html.includes('/rampart dashboard'));
+  const heading = /<h1 id="empty-heading"[^>]*>([\s\S]*?)<\/h1>/.exec(html);
+  assert.ok(heading, 'the empty-state heading is on the page');
+  assert.equal(heading[1].replace(/<[^>]+>/g, ''), 'No data yet — run /rampart inventory, then /rampart audit L1');
   const data = JSON.parse(slot(html));
   assert.deepEqual(data.projects, []);
   assert.equal(data.machineId, machineId());

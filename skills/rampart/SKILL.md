@@ -3,6 +3,7 @@ name: rampart
 description: "Rampart: layered security and vulnerability reviews of all your systems. Available now: inventory (map a folder's systems into a project and record your owner attestation), audit L1 (secrets history, dependency and live security-header checks, then the score), doctor (which tools this machine has and what degrades without them) and dashboard --static (every project's score sheet as a local HTML page). L2, L3 and INFRA audits arrive with the hunt engine (Plan 2). Use when the user asks Rampart to inventory, audit, score or review the security of their projects and systems, or types /rampart."
 allowed-tools:
   - Read
+  - Write
   - Glob
   - Grep
   - AskUserQuestion
