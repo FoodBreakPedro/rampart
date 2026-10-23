@@ -2,9 +2,12 @@
 // Inventory scanner: what kind of systems live in one folder, found from manifests and file names alone, and a project.json
 // draft built from them. The `inventory-mapper` agent starts from this and the user confirms it before it is saved.
 //   node scripts/inventory-scan.cjs <folder> [--json] [--slug <slug>] [--name <name>]
+//   node scripts/inventory-scan.cjs <folder> --remote [--json]
 // Prints a table of the systems found; --json prints {systems, draft} instead (--slug and --name shape that draft; the default
-// slug is the folder name, and only --json needs one). Exit 0 when the folder was scanned (even if it
-// held nothing recognizable), 2 for a folder that does not exist or bad arguments, 1 for anything unexpected.
+// slug is the folder name, and only --json needs one). --remote detects nothing: it prints the origin URL of the repo the folder
+// is in, credentials removed, or nothing when there is none (with --json, {"remote": <url or null>}); jobs use it to check that
+// a --repo override is a checkout of the system's repository without running git themselves. Exit 0 when the folder was scanned
+// (even if it held nothing recognizable), 2 for a folder that does not exist or bad arguments, 1 for anything unexpected.
 //
 // Only these are opened: package.json, app.json and the compose files in the folder itself (for `image:` lines). Everything else
 // is looked at by name, and a .env file is never read. Nothing found is a guess the user has not confirmed, so every system is
@@ -13,6 +16,11 @@
 //
 // For a repo-backed system the draft also records the origin URL (credentials removed) and default branch, asked of git with
 // no shell; without git, or outside a repo, those are simply left out. RAMPART_GIT overrides the git binary (tests use it).
+//
+// Ruling (final review I3): one folder is one checkout, so the repo-type systems found in it (a Next.js app with a
+// wrangler.toml, say) are folded into one system: its type is the primary one (PRIMARY_ORDER), its packs are every detected
+// type's packs, primary first, and its evidence is all of theirs. Each checkout is then scanned and triaged once. Host-type
+// systems (compose, Supabase, n8n) are services, not checkouts, and stay separate.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -55,6 +63,8 @@ const TYPES = {
   'static-site': { id: 'site', name: 'Static site', packs: ['static-site'], kind: 'repo' },
   other: { id: 'system', name: 'Other system', packs: [], kind: 'repo' },
 };
+// Which repo type names a folded system, first match wins: Expo over everything, Next.js over the web types it is deployed with.
+const PRIMARY_ORDER = ['mobile-expo', 'web-nextjs', 'wordpress-hostinger', 'cloudflare-workers', 'node-api', 'static-site', 'other'];
 const LAYERS = {
   repo: { L1: { cadenceDays: 7 }, L2: { cadenceDays: 30 }, L3: { cadenceDays: 90 } },
   host: { INFRA: { cadenceDays: 30 }, L3: { cadenceDays: 90 } },
@@ -91,7 +101,7 @@ function readJson(dir, name) {
   const text = readText(path.join(dir, name));
   if (text === null) return null;
   try {
-    const parsed = JSON.parse(text.replace(/^﻿/, ''));
+    const parsed = JSON.parse(text.replace(/^\uFEFF/, ''));
     return isObject(parsed) ? parsed : null;
   } catch {
     return null;
@@ -156,8 +166,28 @@ function assignIds(items) {
   });
 }
 
-// The systems this folder holds, in a fixed order, as [{id, type, name, packs, evidence, source: 'inferred'}].
-// Throws RangeError when the folder does not exist or is not a folder. A manifest that cannot be read is ignored.
+const unique = (values) => [...new Set(values)];
+const kindOf = (type) => (TYPES[type] || TYPES.other).kind;
+const primaryRank = (type) => (PRIMARY_ORDER.includes(type) ? PRIMARY_ORDER.indexOf(type) : PRIMARY_ORDER.length);
+
+// The detections ([{type, evidence}], in table order) with every repo-type one folded into the first of them: the primary type,
+// the packs of all of them (primary first) and all their evidence. With fewer than two repo types the list is returned as it is.
+function foldRepoSystems(found) {
+  const repo = found.filter((d) => kindOf(d.type) === 'repo');
+  if (repo.length < 2) return found;
+  const primary = repo.reduce((best, d) => (primaryRank(d.type) < primaryRank(best.type) ? d : best));
+  const members = [primary, ...repo.filter((d) => d !== primary)];
+  const folded = {
+    type: primary.type,
+    packs: unique(members.flatMap((d) => TYPES[d.type].packs)),
+    evidence: unique(members.flatMap((d) => d.evidence)),
+  };
+  return found.filter((d) => kindOf(d.type) !== 'repo' || d === repo[0]).map((d) => (d === repo[0] ? folded : d));
+}
+
+// The systems this folder holds, in a fixed order, as [{id, type, name, packs, evidence, source: 'inferred'}]. The repo-type
+// detections are folded into one system (see the header). Throws RangeError when the folder does not exist or is not a
+// folder. A manifest that cannot be read is ignored.
 function detectSystems(folder) {
   const dir = resolveFolder(folder);
   const found = [];
@@ -181,8 +211,8 @@ function detectSystems(folder) {
   add('wordpress-hostinger', [...(isDir(path.join(dir, 'wp-content')) ? ['wp-content/'] : []), ...filesMatching(dir, WP_CONFIG_FILE)]);
   if (nextEvidence.length === 0) add('node-api', dependencyEvidence(manifest, NODE_API_DEPS));
 
-  return assignIds(found.map(({ type, evidence }) => ({
-    type, name: TYPES[type].name, packs: [...TYPES[type].packs], evidence, source: 'inferred',
+  return assignIds(foldRepoSystems(found).map(({ type, packs, evidence }) => ({
+    type, name: TYPES[type].name, packs: [...(packs || TYPES[type].packs)], evidence, source: 'inferred',
   })));
 }
 
@@ -275,14 +305,17 @@ function draftProject({ slug, name, folder, systems } = {}) {
 
 class UsageError extends Error {}
 
-const USAGE = 'usage: node scripts/inventory-scan.cjs <folder> [--json] [--slug <slug>] [--name <name>]';
+const USAGE = [
+  'usage: node scripts/inventory-scan.cjs <folder> [--json] [--slug <slug>] [--name <name>]',
+  '       node scripts/inventory-scan.cjs <folder> --remote [--json]',
+].join('\n');
 
 function parseCli(argv) {
   let parsed;
   try {
     parsed = util.parseArgs({
       args: argv,
-      options: { json: { type: 'boolean' }, slug: { type: 'string' }, name: { type: 'string' } },
+      options: { json: { type: 'boolean' }, remote: { type: 'boolean' }, slug: { type: 'string' }, name: { type: 'string' } },
       allowPositionals: true,
       strict: true,
     });
@@ -292,6 +325,7 @@ function parseCli(argv) {
   const { values, positionals } = parsed;
   if (positionals.length === 0) throw new UsageError('<folder> is required');
   if (positionals.length > 1) throw new UsageError('only one <folder> can be scanned at a time');
+  if (values.remote && (values.slug !== undefined || values.name !== undefined)) throw new UsageError('--remote takes no --slug or --name');
   return { folder: positionals[0], ...values };
 }
 
@@ -322,6 +356,12 @@ function main(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
   try {
     const opts = parseCli(argv);
     const dir = resolveFolder(opts.folder);
+    if (opts.remote) {
+      const { remote } = gitInfo(dir);
+      const out = opts.json ? JSON.stringify({ remote: remote || null }) : remote || '';
+      if (out) stdout.write(`${out}\n`);
+      return 0;
+    }
     if (opts.slug !== undefined) requireSlug(opts.slug); // a slug that cannot be saved is wrong in either mode
     const systems = detectSystems(dir);
     let output;

@@ -215,7 +215,7 @@ test('supabase/postgres in a compose file is not, by itself, a supabase system',
   assert.deepEqual(typesIn(tmp({ 'docker-compose.yml': compose('supabase/postgres:15') })), ['docker-host']);
 });
 
-test('one folder can yield several systems, in table order, with distinct ids', () => {
+test('one folder can yield several systems, in table order, with distinct ids; its repo types fold into one', () => {
   const dir = tmp({
     'package.json': pkg({ next: '*', expo: '*' }),
     'app.json': '{"expo": {}}',
@@ -225,10 +225,38 @@ test('one folder can yield several systems, in table order, with distinct ids', 
     'wp-content/.keep': '',
   });
   const systems = detectSystems(dir);
-  assert.deepEqual(systems.map((s) => s.type), [
-    'web-nextjs', 'mobile-expo', 'supabase', 'n8n', 'docker-host', 'cloudflare-workers', 'wordpress-hostinger',
+  assert.deepEqual(systems.map((s) => s.type), ['mobile-expo', 'supabase', 'n8n', 'docker-host']);
+  assert.deepEqual(systems.map((s) => s.id), ['mobile', 'db', 'n8n', 'host']);
+  assert.deepEqual(systems[0].packs, ['mobile-expo', 'web-nextjs', 'cloudflare-workers', 'wordpress-hostinger'], 'Expo is primary');
+  assert.deepEqual(systems[0].evidence, [
+    'package.json#dependencies.expo', 'app.json#expo', 'package.json#dependencies.next', 'wrangler.toml', 'wp-content/',
   ]);
-  assert.deepEqual(systems.map((s) => s.id), ['web', 'mobile', 'db', 'n8n', 'host', 'workers', 'wp']);
+});
+
+// Ruling (final review I3): one checkout is one system, so L1 scans and triages it once.
+test('I3: a Next.js app with a wrangler.toml is one web-nextjs system carrying both packs and all the evidence', () => {
+  const dir = tmp({ 'package.json': pkg({ next: '*' }), 'wrangler.toml': '' });
+  const systems = detectSystems(dir);
+  assert.equal(systems.length, 1);
+  assert.deepEqual(systems[0], {
+    id: 'web', type: 'web-nextjs', name: 'Next.js app', packs: ['web-nextjs', 'cloudflare-workers'],
+    evidence: ['package.json#dependencies.next', 'wrangler.toml'], source: 'inferred',
+  });
+  const draft = draftProject({ slug: 'next-on-workers', name: 'N', folder: dir });
+  assert.equal(draft.systems.length, 1);
+  assert.deepEqual(draft.systems[0].packs, ['web-nextjs', 'cloudflare-workers']);
+  assert.deepEqual(draft.systems[0].repo.paths, { [machineId()]: dir }, 'one repo entry for the one checkout');
+  assert.deepEqual(validate(schema, { ...draft, ownerAttestation: ATTESTATION }), { ok: true, errors: [] });
+});
+
+test('I3: the primary type: Next.js over Workers, WordPress and Node API; Workers over Node API; host systems never fold', () => {
+  const only = (files) => detectSystems(tmp(files)).map((s) => [s.type, s.packs]);
+  assert.deepEqual(only({ 'package.json': pkg({ hono: '*' }), 'wrangler.toml': '' }), [['cloudflare-workers', ['cloudflare-workers', 'node-api']]]);
+  assert.deepEqual(only({ 'package.json': pkg({ next: '*' }), 'wp-content/.keep': '' }), [['web-nextjs', ['web-nextjs', 'wordpress-hostinger']]]);
+  assert.deepEqual(only({ 'package.json': pkg({ next: '*' }), 'docker-compose.yml': compose('nginx') }), [
+    ['web-nextjs', ['web-nextjs']], ['docker-host', ['docker-host']],
+  ]);
+  assert.deepEqual(only({ 'package.json': pkg({ express: '*' }) }), [['node-api', ['node-api']]], 'one repo type is left as it is');
 });
 
 test('detectSystems throws RangeError for a folder that is missing or is a file', () => {
@@ -336,7 +364,8 @@ test('draft systems: executor, layers and repo by kind of system', () => {
   });
   const draft = draftProject({ slug: 'all-of-it', name: 'All of it', folder: dir });
   const bySystem = Object.fromEntries(draft.systems.map((s) => [s.type, s]));
-  for (const type of ['web-nextjs', 'mobile-expo', 'cloudflare-workers', 'wordpress-hostinger']) {
+  assert.deepEqual(draft.systems.filter((s) => 'repo' in s).map((s) => s.type), ['mobile-expo'], 'the repo types are one system');
+  for (const type of ['mobile-expo']) {
     const s = bySystem[type];
     assert.equal(s.executor, 'either', type);
     assert.deepEqual(s.layers, REPO_LAYERS, type);
@@ -355,8 +384,7 @@ test('draft systems: executor, layers and repo by kind of system', () => {
     assert.ok(s.evidence.length > 0);
   }
   assert.equal(new Set(draft.systems.map((s) => s.id)).size, draft.systems.length);
-  assert.notEqual(bySystem['web-nextjs'].layers, bySystem['mobile-expo'].layers); // no shared objects to edit by accident
-  assert.notEqual(bySystem['web-nextjs'].repo, bySystem['mobile-expo'].repo);
+  assert.notEqual(bySystem.supabase.layers, bySystem.n8n.layers); // no shared objects to edit by accident
   assert.deepEqual(validate(schema, { ...draft, ownerAttestation: ATTESTATION }), { ok: true, errors: [] });
 });
 
@@ -596,6 +624,23 @@ test('CLI cannot derive a slug from a folder name with no letters or digits, but
   const human = cli(dir);
   assert.equal(human.status, 0, human.stderr);
   assert.match(human.stdout, /no systems/i);
+});
+
+test('I5: CLI --remote prints the origin URL without credentials, or nothing, and detects nothing', () => {
+  const { dir, calls } = shimGit({ remote: 'https://user:s3cret-pass@github.com/o/r.git' });
+  const env = { ...process.env };
+  const remote = (...args) => spawnSync(process.execPath, [CLI, dir, '--remote', ...args], { encoding: 'utf8', env });
+  const text = remote();
+  assert.equal(text.status, 0, text.stderr);
+  assert.equal(text.stdout.trim(), 'https://github.com/o/r.git');
+  assert.ok(!text.stdout.includes('s3cret'));
+  assert.deepEqual(JSON.parse(remote('--json').stdout), { remote: 'https://github.com/o/r.git' });
+  assert.ok(calls().every((c) => c[0] === 'remote' || c[0] === 'symbolic-ref'), 'only the remote and its branch are asked');
+  env.SHIM_EXIT = '2';
+  assert.equal(remote().stdout, '', 'no origin: nothing');
+  assert.deepEqual(JSON.parse(remote('--json').stdout), { remote: null });
+  assert.equal(spawnSync(process.execPath, [CLI, dir, '--remote', '--slug', 'abc'], { encoding: 'utf8', env }).status, 2);
+  assert.equal(spawnSync(process.execPath, [CLI, path.join(dir, 'missing'), '--remote'], { encoding: 'utf8', env }).status, 2);
 });
 
 test('CLI human mode does not build the draft (git is never asked), and still rejects a slug that cannot be saved', () => {
