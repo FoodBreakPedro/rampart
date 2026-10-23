@@ -232,8 +232,7 @@ function main(argv, { stdout = process.stdout, stderr = process.stderr, run = ex
       } catch {
         failed = true;
       }
-      if (failed) stderr.write(`render-report: warning: could not open ${file}
-`);
+      if (failed) stderr.write(`render-report: warning: could not open ${file}\n`);
     }
     return 0;
   } catch (err) {
