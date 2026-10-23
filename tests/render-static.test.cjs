@@ -243,6 +243,80 @@ test('dashboard/index.html: both dark blocks set the same values, and every toke
   assert.match(html, /body \{[^}]*background: var\(--bg\)/, 'the body paints its own background');
 });
 
+// ---- T13: accessibility of the template ------------------------------------------------------
+
+// WCAG relative luminance and contrast ratio of two #rrggbb colours.
+const luminance = (hex) => {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+    .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+const contrast = (a, b) => {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+};
+function themes() {
+  const html = fs.readFileSync(TEMPLATE, 'utf8');
+  const block = (re) => Object.fromEntries([...html.match(re)[1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)].map(([, k, v]) => [k, v.trim()]));
+  const light = block(/\n:root \{([^}]*)\}/);
+  return { light, dark: { ...light, ...block(/\n:root\[data-theme="dark"\] \{([^}]*)\}/) } };
+}
+
+test('T13: --faint text reaches 4.5:1 on every background it can sit on, in both themes', () => {
+  for (const [name, t] of Object.entries(themes())) {
+    for (const bg of ['--bg', '--surface', '--sunk']) {
+      const ratio = contrast(t['--faint'], t[bg]);
+      assert.ok(ratio >= 4.5, `${name}: --faint on ${bg} is ${ratio.toFixed(2)}:1`);
+    }
+  }
+});
+
+test('T13: every grade badge, the small one included, has 4.5:1 text in both themes (light D was 4.37:1)', () => {
+  for (const [name, t] of Object.entries(themes())) {
+    for (const g of ['a', 'b', 'c', 'd', 'f']) {
+      const ratio = contrast(t[`--grade-${g}-ink`], t[`--grade-${g}`]);
+      assert.ok(ratio >= 4.5, `${name}: grade ${g.toUpperCase()} is ${ratio.toFixed(2)}:1`);
+    }
+  }
+});
+
+test('T13: the copy buttons are not marked disabled and say they copy; the copy fallback input is not hidden from assistive tech', () => {
+  const html = fs.readFileSync(TEMPLATE, 'utf8');
+  assert.ok(!html.includes('aria-disabled'), 'a working button is never aria-disabled');
+  assert.match(html, /'aria-label': `\$\{ACTION_LABELS\[layer\]\}, copies the command`/);
+  const input = /<input id="copy-fallback"[^>]*>/.exec(html);
+  assert.ok(input, 'the fallback input is on the page');
+  assert.ok(!/aria-hidden/.test(input[0]), 'it takes focus when the clipboard API fails, so it cannot be aria-hidden');
+  assert.match(input[0], /aria-label="[^"]+"/);
+});
+
+test('T13: long project names wrap in the tile and the detail title', () => {
+  const html = fs.readFileSync(TEMPLATE, 'utf8');
+  for (const selector of ['.card-name', '.detail-title h1']) {
+    const rule = new RegExp(`\\n${selector.replace('.', '\\.')} \\{([^}]*)\\}`).exec(html);
+    assert.ok(rule, selector);
+    assert.match(rule[1], /overflow-wrap: anywhere/, selector);
+  }
+});
+
+test('T13: only layers with an engine get a Run button; the page sets data-engines to ["L1"] for now', () => {
+  const html = fs.readFileSync(TEMPLATE, 'utf8');
+  const main = /<main\b[^>]*>/.exec(html)[0];
+  assert.match(main, /id="main"/);
+  assert.match(main, /data-engines='\["L1"\]'/);
+  const { parseEngines, runnableLayers, DEFAULT_ENGINES } = page();
+  assert.deepEqual([...DEFAULT_ENGINES], ['L1']);
+  assert.deepEqual(parseEngines('["L1"]'), ['L1']);
+  assert.deepEqual(parseEngines('["L2", "bogus", "L1"]'), ['L1', 'L2'], 'known layers, in layer order');
+  for (const junk of ['', 'L1', '{"L1": true}', 'null', '[']) assert.deepEqual(parseEngines(junk), ['L1'], junk);
+  const repo = { id: 'web', layers: { L1: { cadenceDays: 7 }, L2: { cadenceDays: 30 }, L3: { cadenceDays: 90 } } };
+  const host = { id: 'db', layers: { INFRA: { cadenceDays: 30 }, L3: { cadenceDays: 90 } } };
+  assert.deepEqual(runnableLayers(repo, ['L1']), ['L1'], 'no Run L2 or Run L3');
+  assert.deepEqual(runnableLayers(host, ['L1']), [], 'no Probe infra');
+  assert.deepEqual(runnableLayers(repo, ['L1', 'L2', 'L3', 'INFRA']), ['L1', 'L2', 'L3'], 'Plan 2 turns them on');
+  assert.deepEqual(runnableLayers({ id: 'x' }, ['L1']), []);
+});
+
 // ---- the page's own logic (the inline script, run without a DOM) ------------------------------
 
 // The page script, evaluated in this realm. It only boots when there is a document, so here it just returns its helpers.

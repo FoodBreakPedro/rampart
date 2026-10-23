@@ -10,7 +10,7 @@
   --sunk: #F3F5F7;
   --ink: #15212B;
   --muted: #56636F;
-  --faint: #7E8B97;
+  --faint: #606D78;
   --line: #D5DCE2;
   --line-strong: #B4BFC8;
   --accent: #2B5E90;
@@ -21,7 +21,7 @@
   --grade-a: #1D7A4C; --grade-a-ink: #FFFFFF;
   --grade-b: #12737A; --grade-b-ink: #FFFFFF;
   --grade-c: #E9B44C; --grade-c-ink: #3A2600;
-  --grade-d: #C8561A; --grade-d-ink: #FFFFFF;
+  --grade-d: #B34A12; --grade-d-ink: #FFFFFF;
   --grade-f: #B3243A; --grade-f-ink: #FFFFFF;
   --grade-none: #DCE2E7; --grade-none-ink: #56636F;
 
@@ -57,7 +57,7 @@
     --sunk: #111920;
     --ink: #E4EBF1;
     --muted: #9CA9B5;
-    --faint: #73818E;
+    --faint: #7E8C99;
     --line: #27333E;
     --line-strong: #3B4956;
     --accent: #8DB9E6;
@@ -92,7 +92,7 @@
   --sunk: #111920;
   --ink: #E4EBF1;
   --muted: #9CA9B5;
-  --faint: #73818E;
+  --faint: #7E8C99;
   --line: #27333E;
   --line-strong: #3B4956;
   --accent: #8DB9E6;
@@ -243,7 +243,8 @@ main { padding-block: 28px 56px; }
 .seg-absent .seg-bar { border: 1px dashed var(--absent); }
 .seg-absent .seg-label { color: var(--faint); }
 
-/* Copy-command buttons: drawn as unavailable (static mode cannot queue a job), still clickable to copy. */
+/* Copy-command buttons: dashed, because in static mode they copy a /rampart command rather than queue a job; they work, and
+   their accessible name says what they do. Only layers that have an engine in this version get one (data-engines on main). */
 .actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .action {
   font-size: 12px; line-height: 1.3; padding: 3px 9px; border-radius: 6px;
@@ -281,7 +282,7 @@ main { padding-block: 28px 56px; }
 .card:focus-within { border-color: var(--accent); }
 .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .card-title { min-width: 0; }
-.card-name { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.25; }
+.card-name { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.25; overflow-wrap: anywhere; }
 .card-link { color: inherit; text-decoration: none; border-radius: 3px; }
 .card-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 .card-slug { margin-top: 3px; font-family: var(--font-mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
@@ -318,7 +319,7 @@ main { padding-block: 28px 56px; }
   padding-bottom: 20px; border-bottom: 1px solid var(--line);
 }
 .detail-title { min-width: 0; }
-.detail-title h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
+.detail-title h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; overflow-wrap: anywhere; }
 .detail-title h1:focus { outline: none; }
 .detail-meta { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--muted); }
 .detail-summary { margin-top: 20px; max-width: 520px; }
@@ -460,7 +461,7 @@ tr.is-closed td { color: var(--muted); }
   </div>
 </header>
 
-<main class="wrap">
+<main class="wrap" id="main" data-engines='["L1"]'>
   <section id="empty-view" class="empty" aria-labelledby="empty-heading">
     <h1 id="empty-heading" class="empty-title">No data yet — run <code>/rampart inventory</code>, then <code>/rampart audit L1</code></h1>
     <p class="empty-hint">This page shows the projects, grades and findings in your Rampart store once the dashboard job fills it in.</p>
@@ -492,7 +493,7 @@ tr.is-closed td { color: var(--muted); }
 </main>
 
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
-<input id="copy-fallback" class="copy-fallback" type="text" readonly tabindex="-1" aria-hidden="true">
+<input id="copy-fallback" class="copy-fallback" type="text" readonly tabindex="-1" aria-label="Command to copy">
 
 <script id="rampart-data" type="application/json"></script>
 <script>
@@ -510,6 +511,9 @@ const RampartDashboard = (function () {
   const ACTIVE = ['open', 'regressed'];
   const GRADES = ['A', 'B', 'C', 'D', 'F'];
   const ACTION_LABELS = Object.freeze({ L1: 'Run L1', L2: 'Run L2', L3: 'Run L3', INFRA: 'Probe infra' });
+  // The layers that have an engine in this version, as <main data-engines> says; only they get a Run button. Without a page
+  // (the tests) or with an attribute that does not read as a list of layers, it is L1 alone.
+  const DEFAULT_ENGINES = Object.freeze(['L1']);
   const DEFAULT_FILTERS = Object.freeze({ system: 'all', severity: 'all', status: 'active', class: 'all' });
   const SEVERITY_LABELS = { CRITICAL: 'Critical', HIGH: 'High', MEDIUM: 'Medium', LOW: 'Low' };
   const CLASS_LABELS = { verified: 'Verified', tool: 'Tool', hardening: 'Hardening' };
@@ -721,7 +725,10 @@ const RampartDashboard = (function () {
 
   // ---- view state --------------------------------------------------------------------------
 
-  const state = { data: null, entries: [], view: null, slug: null, filters: Object.assign({}, DEFAULT_FILTERS), returnTo: null };
+  const state = {
+    data: null, entries: [], view: null, slug: null, filters: Object.assign({}, DEFAULT_FILTERS), returnTo: null,
+    engines: DEFAULT_ENGINES.slice(),
+  };
 
   function show(view) {
     state.view = view;
@@ -805,13 +812,26 @@ const RampartDashboard = (function () {
 
   const declaredLayers = (system) => LAYERS.filter((L) => isObject(system) && own(system.layers, L));
 
+  // The engines a data-engines attribute names (JSON, a list of layers), or the default when it says nothing usable.
+  function parseEngines(text) {
+    let value;
+    try {
+      value = JSON.parse(String(text));
+    } catch (err) {
+      return DEFAULT_ENGINES.slice();
+    }
+    return Array.isArray(value) ? LAYERS.filter((L) => value.indexOf(L) !== -1) : DEFAULT_ENGINES.slice();
+  }
+
+  // The declared layers of a system that can run in this version: a layer with no engine gets no Run button.
+  const runnableLayers = (system, engines) => declaredLayers(system).filter((L) => list(engines).indexOf(L) !== -1);
+
   function actionButton(layer, slug, systemId) {
     const command = auditCommand(layer, slug, systemId);
     return h('button', {
       type: 'button',
       class: 'action',
-      'aria-disabled': 'true',
-      'aria-label': `${ACTION_LABELS[layer]}: copy the command`,
+      'aria-label': `${ACTION_LABELS[layer]}, copies the command`,
       title: 'Copy command',
       'data-command': command,
       on: {
@@ -824,8 +844,9 @@ const RampartDashboard = (function () {
   }
 
   function actionGroup(slug, system) {
-    const layers = declaredLayers(system);
-    if (!layers.length) return h('span', { class: 'muted' }, 'No layers declared');
+    if (!declaredLayers(system).length) return h('span', { class: 'muted' }, 'No layers declared');
+    const layers = runnableLayers(system, state.engines);
+    if (!layers.length) return h('span', { class: 'muted' }, 'No audit for these layers in this version');
     return h('div', { class: 'actions' }, layers.map((L) => actionButton(L, slug, system.id)));
   }
 
@@ -966,7 +987,9 @@ const RampartDashboard = (function () {
         h('span', { class: 'layer-state' }, FRESHNESS_LABELS[st], cadence ? h('span', { class: 'of' }, ` · ${cadence} d`) : null)),
       h('span', { class: 'layer-dates' }, info.lastRun ? `Last ${day(info.lastRun)}` : 'No successful run'),
       h('span', { class: `layer-dates${late ? ' overdue' : ''}` }, dueText),
-      h('span', { class: 'layer-action' }, actionButton(layer, slug, system.id)));
+      runnableLayers(system, state.engines).indexOf(layer) !== -1
+        ? h('span', { class: 'layer-action' }, actionButton(layer, slug, system.id))
+        : null);
   }
 
   function sheetSection(entry) {
@@ -999,7 +1022,7 @@ const RampartDashboard = (function () {
       ? rows
       : h('tr', { class: 'empty-row' }, h('td', { colspan: String(6 + layers.length) }, 'No systems in the inventory yet.'));
     return section('sheet', 'Score sheet',
-      'Coverage (40 points) credits each layer audited within its cadence. Findings (60 points) loses points for every open finding; hardening notes are counted but cost nothing. Each layer\'s button copies the command that runs it.',
+      'Coverage (40 points) credits each layer audited within its cadence. Findings (60 points) loses points for every open finding; hardening notes are counted but cost nothing. A layer that can run in this version has a button that copies the command that runs it.',
       h('div', { class: 'table-wrap' }, h('table', { class: 'sheet' }, h('thead', null, head), h('tbody', null, body))));
   }
 
@@ -1328,6 +1351,8 @@ const RampartDashboard = (function () {
   }
 
   function boot() {
+    const main = $('main');
+    if (main && main.hasAttribute('data-engines')) state.engines = parseEngines(main.getAttribute('data-engines'));
     $('carousel-prev').addEventListener('click', () => scrollCards(-1));
     $('carousel-next').addEventListener('click', () => scrollCards(1));
     let pending = false;
@@ -1354,7 +1379,7 @@ const RampartDashboard = (function () {
   if (typeof document !== 'undefined') boot();
 
   return {
-    LAYERS, ACTION_LABELS, DEFAULT_FILTERS,
+    LAYERS, ACTION_LABELS, DEFAULT_FILTERS, DEFAULT_ENGINES, parseEngines, runnableLayers,
     isData, hasProjects, openCounts, freshness, lastReviewed, auditCommand, formatLocation,
     parseHash, buildHash, filterFindings, sortFindings, loadData, render,
   };
