@@ -116,6 +116,14 @@ function publicProject(project) {
   return { ...rest, systems: (Array.isArray(project.systems) ? project.systems : []).map(publicSystem) };
 }
 
+// A finding with its location.url reduced like a live url: a scan that fetched https://app.example/?token=... must not put the
+// query on the page. The stored finding keeps the full url. A url that is not http(s) loses only its query, fragment and userinfo.
+function publicFinding(finding) {
+  const loc = finding.location;
+  if (!loc || typeof loc !== 'object' || typeof loc.url !== 'string') return finding;
+  return { ...finding, location: { ...loc, url: publicUrl(loc.url) || publicRemote(loc.url.split(/[?#]/)[0]) } };
+}
+
 // A run without any raw-output field. run.json holds none today; this keeps it that way if one is ever added.
 const publicRun = ({ raw, ...run }) => run;
 
@@ -129,7 +137,7 @@ function buildPage(now = new Date()) {
     const runs = store.readRuns(slug);
     const dispositions = store.readDispositions(slug);
     const score = projectScore(slug, project, findings, runs, now);
-    return redactDeep({ project: publicProject(project), score, findings, runs: runs.map(publicRun), dispositions });
+    return redactDeep({ project: publicProject(project), score, findings: findings.map(publicFinding), runs: runs.map(publicRun), dispositions });
   });
   return { generatedAt: now.toISOString(), machineId: machineId(), projects };
 }
@@ -217,4 +225,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { buildPage, buildData: buildPage, publicProject, projectScore, redactDeep, renderStatic };
+module.exports = { buildPage, buildData: buildPage, publicProject, publicFinding, projectScore, redactDeep, renderStatic };

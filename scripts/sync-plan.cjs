@@ -3,7 +3,7 @@
 // take from the DB, without ever touching the network. The recipe (skills/rampart/jobs/dashboard.md) moves the files
 // to and from the ArtifactData tool; this script only plans and merges.
 //   planPush(slug, {since, versions, now}) -> {docs, batches, cursor}
-//     docs: [{collection, id, data}] for every project, finding and run summary changed after `since` (all, when absent).
+//     docs: [{collection, id, data}] for every project, finding and run summary changed at or after `since` (all, when absent).
 //     batches: the same docs as ArtifactData batch entries {op, collection, doc_id, data, if_version?}, at most 50 each.
 //       op is 'update' with if_version when versions has "<collection>/<id>", else 'set'.
 //     cursor: the time the plan started; pass it as `since` next time.
@@ -25,7 +25,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const util = require('node:util');
 const store = require('./store.cjs');
-const { publicProject, projectScore, redactDeep } = require('./render-static.cjs');
+const { publicProject, publicFinding, projectScore, redactDeep } = require('./render-static.cjs');
 const { runDir } = require('./lib/paths.cjs');
 const { redact } = require('./lib/redact.cjs');
 const { writeAtomic } = require('./lib/atomic.cjs');
@@ -52,8 +52,9 @@ function sinceMs(since) {
   return value;
 }
 
-// True when any stamp is after the cut-off; with no cut-off every stamped doc counts.
-const changedAfter = (cut, ...stamps) => stamps.some((s) => typeof s === 'string' && (cut === -Infinity || ms(s) > cut));
+// True when any stamp is at or after the cut-off (inclusive, so a doc stamped in the cursor's own millisecond is never missed;
+// pushing it twice is harmless). With no cut-off every stamped doc counts.
+const changedAfter = (cut, ...stamps) => stamps.some((s) => typeof s === 'string' && (cut === -Infinity || ms(s) >= cut));
 
 // A stored decision as the finding doc carries it. dispositions.json also holds 'regressed' (an automated status the
 // finding itself already shows), which the doc's disposition field does not allow, so it becomes null.
@@ -81,7 +82,7 @@ function projectDoc(slug, project, findings, runs, now) {
 }
 
 function findingDoc(f, dispositions) {
-  const data = { ...f, disposition: pageDisposition(dispositions[f.id]), updatedAt: f.updatedAt || f.lastSeen };
+  const data = { ...publicFinding(f), disposition: pageDisposition(dispositions[f.id]), updatedAt: f.updatedAt || f.lastSeen };
   return { collection: 'findings', id: f.id, data: redactDeep(data) };
 }
 
@@ -106,8 +107,8 @@ function toBatches(docs, versions) {
   return batches;
 }
 
-// The docs changed since the cut-off, for one project. The cursor is read before the store, so a write that lands during the
-// plan is pushed again next time (it is never lost). A project doc is also planned when its latest score snapshot is new,
+// The docs changed since the cut-off, for one project. The cursor is read before the store and `since` is inclusive, so a write
+// that lands during the plan is pushed again next time (it is never lost). A project doc is also planned when its latest score snapshot is new,
 // because the score travels in it.
 function planPush(slug, { since, versions = {}, now = new Date() } = {}) {
   const cut = sinceMs(since);

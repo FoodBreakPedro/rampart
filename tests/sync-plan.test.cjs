@@ -23,6 +23,8 @@ const PAST = '2020-01-01T00:00:00.000Z';
 
 // Wait until the clock moves to a new millisecond, so two stamps taken around it differ.
 const tick = () => { const t = Date.now(); while (Date.now() === t); };
+// A plan taken in a later millisecond than every write before it, so its cursor is not shared with a stamp (since is inclusive).
+const planSettled = (...args) => { tick(); return planPush(...args); };
 
 const savedHome = process.env.RAMPART_HOME;
 let home;
@@ -167,50 +169,50 @@ test('planPush docs are valid against the finding and run schemas, and a finding
 
 test('planPush after one upsert lists exactly the changed finding', () => {
   seed();
-  const { cursor } = planPush(SLUG, { now: NOW });
-  assert.deepEqual(planPush(SLUG, { since: cursor, now: NOW }).docs, [], 'nothing changed since the cursor');
+  const { cursor } = planSettled(SLUG, { now: NOW });
+  assert.deepEqual(planSettled(SLUG, { since: cursor, now: NOW }).docs, [], 'nothing changed since the cursor');
   tick();
   store.upsertFindings(SLUG, [finding(ID_A, { severity: 'CRITICAL' })], '2026-10-23T18-02-11Z');
-  const plan = planPush(SLUG, { since: cursor, now: NOW });
+  const plan = planSettled(SLUG, { since: cursor, now: NOW });
   assert.deepEqual(plan.docs.map((d) => `${d.collection}/${d.id}`), [`findings/${ID_A}`]);
   assert.equal(plan.docs[0].data.severity, 'CRITICAL');
 });
 
 test('a disposition, a closed finding and a finished run each move updatedAt, so planPush sees them', () => {
   seed();
-  let { cursor } = planPush(SLUG, { now: NOW });
+  let { cursor } = planSettled(SLUG, { now: NOW });
   tick();
   store.setDisposition(SLUG, ID_B, { status: 'false_positive', reason: 'dev only', by: 'owner' });
-  let plan = planPush(SLUG, { since: cursor, now: NOW });
+  let plan = planSettled(SLUG, { since: cursor, now: NOW });
   assert.deepEqual(plan.docs.map((d) => d.id), [ID_B]);
   assert.equal(plan.docs[0].data.disposition.status, 'false_positive');
 
   ({ cursor } = plan);
   tick();
   const run = store.createRun(SLUG, { job: 'audit', layers: ['L1'], systems: ['web'], executor: 'local' });
-  assert.deepEqual(planPush(SLUG, { since: cursor, now: NOW }).docs, [], 'a run still running is not pushed');
+  assert.deepEqual(planSettled(SLUG, { since: cursor, now: NOW }).docs, [], 'a run still running is not pushed');
   store.finishRun(SLUG, run.runId, { status: 'done' });
-  plan = planPush(SLUG, { since: cursor, now: NOW });
+  plan = planSettled(SLUG, { since: cursor, now: NOW });
   assert.deepEqual(plan.docs.map((d) => `${d.collection}/${d.id}`), [`runs/${run.runId}`]);
   assert.equal(plan.docs[0].data.reportMd, undefined, 'no REPORT.md, no reportMd');
 
   ({ cursor } = plan);
   tick();
   store.closeMissing(SLUG, { system: 'web', source: 'npm-audit', runId: run.runId, seenIds: [ID_B] });
-  assert.deepEqual(planPush(SLUG, { since: cursor, now: NOW }).docs.map((d) => d.id), [ID_A]);
+  assert.deepEqual(planSettled(SLUG, { since: cursor, now: NOW }).docs.map((d) => d.id), [ID_A]);
 });
 
 test('a changed project and a new score snapshot each plan the project doc', () => {
   seed();
-  let { cursor } = planPush(SLUG, { now: NOW });
+  let { cursor } = planSettled(SLUG, { now: NOW });
   tick();
   store.appendScore(SLUG, { kind: 'project', score: 70, grade: 'C', trend: null });
-  let plan = planPush(SLUG, { since: cursor, now: NOW });
+  let plan = planSettled(SLUG, { since: cursor, now: NOW });
   assert.deepEqual(plan.docs.map((d) => `${d.collection}/${d.id}`), [`projects/${SLUG}`]);
   ({ cursor } = plan);
   tick();
   store.writeProject({ ...store.readProject(SLUG), cloudAllowed: true });
-  plan = planPush(SLUG, { since: cursor, now: NOW });
+  plan = planSettled(SLUG, { since: cursor, now: NOW });
   assert.equal(plan.docs[0].data.cloudAllowed, true);
 });
 
@@ -494,4 +496,40 @@ test('CLI exit codes: 2 for bad arguments, 1 for a missing project or invalid JS
   const r = cli('pull', '--project', SLUG, '--in', bad);
   assert.equal(r.status, 1);
   assert.ok(!r.stderr.includes('not json'), 'the content is never echoed');
+});
+
+// ---- R22 and R23: finding urls, inclusive cursor ----------------------------------------------
+
+test('R22: a finding location.url loses its query, fragment and userinfo in the page data and in the push docs', () => {
+  const runId = seed();
+  const url = 'https://app.example.invalid/login?token=plantedurltoken#frag';
+  store.upsertFindings(SLUG, [
+    finding('0000000000c3', {
+      source: 'headers', layer: 'L1', ruleId: 'headers/csp-missing', title: 'No Content-Security-Policy header', class: 'hardening',
+      location: { url, header: 'content-security-policy' }, evidence: 'content-security-policy is absent from the response',
+    }),
+  ], runId);
+  assert.equal(store.readFindings(SLUG).find((f) => f.id === '0000000000c3').location.url, url, 'the local store keeps the full url');
+
+  const page = buildPage(NOW);
+  const shown = page.projects[0].findings.find((f) => f.id === '0000000000c3');
+  assert.deepEqual(shown.location, { url: 'https://app.example.invalid/login', header: 'content-security-policy' });
+  const pushed = planPush(SLUG, { now: NOW }).docs.find((d) => d.id === '0000000000c3').data;
+  assert.deepEqual(pushed.location, shown.location);
+  for (const out of [JSON.stringify(page), JSON.stringify(planPush(SLUG, { now: NOW }))]) {
+    assert.ok(!out.includes('?'), 'no ? anywhere');
+    assert.ok(!out.includes('plantedurltoken') && !out.includes('#frag'));
+  }
+  // Other location shapes pass through untouched.
+  assert.deepEqual(page.projects[0].findings.find((f) => f.id === ID_A).location, finding(ID_A).location);
+});
+
+test('R23: a doc stamped exactly at since is planned again (the cursor is inclusive, so a re-push is idempotent)', () => {
+  seed();
+  const stamp = store.readFindings(SLUG).find((f) => f.id === ID_A).updatedAt;
+  const plan = planPush(SLUG, { since: stamp, now: NOW });
+  assert.ok(plan.docs.some((d) => d.collection === 'findings' && d.id === ID_A), 'updatedAt equal to since counts');
+  tick();
+  const later = planPush(SLUG, { since: new Date().toISOString(), now: NOW });
+  assert.deepEqual(later.docs, [], 'a since after every stamp plans nothing');
 });
