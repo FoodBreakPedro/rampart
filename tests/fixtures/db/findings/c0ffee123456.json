@@ -1,0 +1,20 @@
+{
+  "id": "c0ffee123456",
+  "project": "example-site",
+  "system": "web",
+  "layer": "L1",
+  "source": "headers",
+  "ruleId": "headers/csp-missing",
+  "title": "No Content-Security-Policy header",
+  "severity": "LOW",
+  "confidence": "HIGH",
+  "class": "hardening",
+  "location": { "url": "https://www.example.com/", "header": "content-security-policy" },
+  "evidence": "The response from https://www.example.com/ has no content-security-policy header.",
+  "recommendation": "Send a Content-Security-Policy header.",
+  "status": "accepted_risk",
+  "firstSeen": "2026-10-22T09:00:00Z",
+  "lastSeen": "2026-10-22T09:00:00Z",
+  "disposition": { "status": "accepted_risk", "reason": "Static brochure site, no scripts", "by": "<owner-user-id>", "at": "2026-10-22T10:00:00Z" },
+  "updatedAt": "2026-10-22T10:00:00Z"
+}

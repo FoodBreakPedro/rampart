@@ -1,0 +1,33 @@
+{
+  "slug": "example-site",
+  "name": "Example Site",
+  "criticality": "medium",
+  "defaultExecutor": "local",
+  "cloudAllowed": false,
+  "systems": [
+    {
+      "id": "web",
+      "type": "static-site",
+      "name": "Marketing site",
+      "executor": "either",
+      "layers": { "L1": { "cadenceDays": 7 } },
+      "repo": { "remote": "github.com/<owner>/example-site", "defaultBranch": "main" },
+      "live": { "url": "https://www.example.com/" }
+    }
+  ],
+  "created": "2026-10-20T00:00:00Z",
+  "updated": "2026-10-20T00:00:00Z",
+  "score": {
+    "score": 91.5,
+    "grade": "A",
+    "trend": null,
+    "systems": {
+      "web": {
+        "coverage": 40, "findingsScore": 51.5, "hardening": 1, "score": 91.5, "grade": "A",
+        "layers": { "L1": { "lastRun": "2026-10-22T09:00:00Z", "nextDue": "2026-10-29T09:00:00Z", "credit": 1 } }
+      }
+    }
+  },
+  "cadenceOverrides": null,
+  "updatedAt": "2026-10-20T00:00:00Z"
+}

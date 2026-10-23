@@ -167,6 +167,10 @@ code { font-size: 0.92em; }
   font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--accent); background: var(--accent-soft); padding: 3px 9px; border-radius: 999px;
 }
+.mode-badge time { color: var(--ink); font-variant-numeric: tabular-nums; }
+.exec { font-weight: 600; }
+.exec-online { color: var(--ok); }
+.exec-offline { color: var(--muted); }
 
 main { padding-block: 28px 56px; }
 
@@ -389,7 +393,7 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .status-fixed, .status-done { color: var(--ok); background: var(--ok-bg); }
 .status-accepted_risk { color: var(--warn); background: var(--warn-bg); }
 .status-false_positive, .status-skipped, .status-unknown { color: var(--neutral); background: var(--neutral-bg); }
-.status-running { color: var(--info); background: var(--info-bg); }
+.status-running, .status-queued, .status-claimed { color: var(--info); background: var(--info-bg); }
 tr.is-closed td { color: var(--muted); }
 
 .title-cell { min-width: 260px; max-width: 460px; }
@@ -461,7 +465,12 @@ tr.is-closed td { color: var(--muted); }
   </div>
 </header>
 
-<main class="wrap" id="main" data-engines='["L1"]'>
+<main class="wrap" id="main" data-engines='["L1"]' data-access="read">
+  <section id="loading-view" class="empty" aria-labelledby="loading-heading" hidden>
+    <h1 id="loading-heading" class="empty-title">Loading the live dashboard</h1>
+    <p class="empty-hint">Reading projects, findings and runs from this dashboard's data. When there is none, this page shows how to fill it.</p>
+  </section>
+
   <section id="empty-view" class="empty" aria-labelledby="empty-heading">
     <h1 id="empty-heading" class="empty-title">No data yet — run <code>/rampart inventory</code>, then <code>/rampart audit L1</code></h1>
     <p class="empty-hint">This page shows the projects, grades and findings in your Rampart store once the dashboard job fills it in.</p>
@@ -497,8 +506,11 @@ tr.is-closed td { color: var(--muted); }
 
 <script id="rampart-data" type="application/json"></script>
 <script>
-// Rampart dashboard. loadData() reads the inline #rampart-data slot (static mode, filled by scripts/render-static.cjs);
-// render(data) draws whatever it is given. Live mode (Plan 3) replaces loadData and calls render again on each update.
+// Rampart dashboard. loadData() reads the inline #rampart-data slot (static mode, filled by scripts/render-static.cjs); when
+// the slot is empty it asks the artifact host for the db capability and, when there is one, returns a live source that
+// subscribes once to each collection and assembles the same page data from its documents (live mode). Without either the
+// page shows the empty state. render(data) draws whatever it is given; called again with new data it patches the views in
+// place (morphChildren, keyed by data-key), so scroll position, focus and open <details> survive a live update.
 // Every element is built from nodes and text, never from markup strings, so nothing in the data is parsed as HTML.
 const RampartDashboard = (function () {
   'use strict';
@@ -521,6 +533,12 @@ const RampartDashboard = (function () {
     open: 'Open', regressed: 'Regressed', fixed: 'Fixed', false_positive: 'False positive', accepted_risk: 'Accepted risk',
   };
   const RUN_STATUS_LABELS = { running: 'Running', done: 'Done', skipped: 'Skipped', failed: 'Failed' };
+  const JOB_STATUSES = ['queued', 'claimed', 'running', 'done', 'failed'];
+  const JOB_STATUS_LABELS = { queued: 'Queued', claimed: 'Claimed', running: 'Running', done: 'Done', failed: 'Failed' };
+  // The dashboard DB's collections (skills/rampart/specs/db-layout.md); the page subscribes to each once.
+  const COLLECTIONS = Object.freeze(['projects', 'findings', 'runs', 'jobs', 'executors', 'meta']);
+  const EXECUTOR_ONLINE_MS = 5 * 60 * 1000;
+  const BADGE_REFRESH_MS = 60 * 1000;
   const FRESHNESS_LABELS = { fresh: 'Fresh', aging: 'Aging', stale: 'Stale', never: 'Never run', absent: 'Not declared' };
   const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -696,6 +714,78 @@ const RampartDashboard = (function () {
     return days === 1 ? 'yesterday' : `${days} days ago`;
   }
 
+  // ---- live data: DB documents as page data (pure, no DOM) ---------------------------------
+
+  // The latest push or pull in meta/sync ({[machineId]: {pushedAt, pulledAt, ...}}) and the machine that made it.
+  function latestSync(sync) {
+    let best = { at: null, machineId: null };
+    let bestAt = -Infinity;
+    for (const machine of Object.keys(isObject(sync) ? sync : {})) {
+      const entry = sync[machine];
+      if (!isObject(entry)) continue;
+      for (const stampAt of [entry.pushedAt, entry.pulledAt]) {
+        const t = timeOf(stampAt);
+        if (t !== null && t > bestAt) {
+          best = { at: stampAt, machineId: machine };
+          bestAt = t;
+        }
+      }
+    }
+    return best;
+  }
+
+  // True when any executor's heartbeat is under EXECUTOR_ONLINE_MS old at `now` (ms).
+  function executorOnline(executors, now) {
+    return list(executors).some((e) => {
+      const t = timeOf(isObject(e) ? e.heartbeatAt : null);
+      return t !== null && now - t <= EXECUTOR_ONLINE_MS;
+    });
+  }
+
+  // The page data static mode renders, from the DB's documents: {collection: [{id, data}]}. A project doc is the public
+  // project plus its score (sync-plan.cjs projectDoc); findings, runs and jobs join it by their `project` field, and a
+  // finding's `disposition` field is its decision. `live` carries what the mode badge needs.
+  function pageDataFromDocs(docs) {
+    const bodies = (name) => list(isObject(docs) ? docs[name] : null)
+      .filter((d) => isObject(d) && typeof d.id === 'string' && isObject(d.data))
+      .map((d) => Object.assign({ id: d.id }, d.data));
+    const byProject = (name) => {
+      const groups = new Map();
+      for (const body of bodies(name)) {
+        const key = String(body.project);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(body);
+      }
+      return (slug) => groups.get(slug) || [];
+    };
+    const findingsOf = byProject('findings');
+    const runsOf = byProject('runs');
+    const jobsOf = byProject('jobs');
+    const meta = new Map(bodies('meta').map((m) => [m.id, m]));
+    const sync = latestSync(meta.get('sync'));
+    const projects = bodies('projects').map((doc) => {
+      const { id, score, cadenceOverrides, updatedAt, ...rest } = doc;
+      const slug = typeof rest.slug === 'string' ? rest.slug : id;
+      const findings = findingsOf(slug);
+      const dispositions = {};
+      for (const f of findings) if (isObject(f.disposition)) dispositions[f.id] = f.disposition;
+      return {
+        project: Object.assign(rest, { slug }),
+        score: isObject(score) ? score : {},
+        findings,
+        runs: runsOf(slug).map(({ id: runId, ...run }) => Object.assign({ runId }, run)),
+        dispositions,
+        jobs: jobsOf(slug),
+      };
+    }).sort((a, b) => a.project.slug.localeCompare(b.project.slug));
+    return {
+      generatedAt: sync.at,
+      machineId: sync.machineId,
+      live: { syncedAt: sync.at, executors: bodies('executors') },
+      projects,
+    };
+  }
+
   // ---- DOM helpers -------------------------------------------------------------------------
 
   function append(el, child) {
@@ -723,15 +813,73 @@ const RampartDashboard = (function () {
 
   const $ = (id) => document.getElementById(id);
 
+  // Patching in place. A live update rebuilds the view with h() into detached nodes, then morphChildren makes the page's
+  // nodes match them: text and attributes change, the nodes stay. Children with a data-key (a tile's slug, a system, finding,
+  // run or job id) are matched by key and the rest by position; a child whose tag differs is replaced. A <details> keeps the
+  // open state the viewer gave it and a <select> takes the new value. Kept nodes keep their own event listeners, so a
+  // listener must read anything that can change from its element (actionButton reads data-command), not from a closure.
+  const keyOf = (node) => (node.nodeType === 1 && node.hasAttribute('data-key') ? node.getAttribute('data-key') : null);
+  const sameKind = (a, b) => a.nodeType === b.nodeType && (a.nodeType !== 1 || (a.tagName === b.tagName && keyOf(a) === keyOf(b)));
+
+  function morphAttributes(from, to) {
+    const keepOpen = from.tagName === 'DETAILS';
+    for (const { name } of Array.from(from.attributes)) {
+      if (!to.hasAttribute(name) && !(keepOpen && name === 'open')) from.removeAttribute(name);
+    }
+    for (const { name, value } of Array.from(to.attributes)) {
+      if (keepOpen && name === 'open') continue;
+      if (from.getAttribute(name) !== value) from.setAttribute(name, value);
+    }
+  }
+
+  function morph(from, to) {
+    if (from.nodeType === 3) {
+      if (from.nodeValue !== to.nodeValue) from.nodeValue = to.nodeValue;
+      return;
+    }
+    morphAttributes(from, to);
+    morphChildren(from, Array.from(to.childNodes));
+    if (from.tagName === 'SELECT' && from.value !== to.value) from.value = to.value;
+  }
+
+  // Make parent's children match next (detached nodes), reusing parent's own where they match. A kept node moves only when
+  // it is out of place, so an unchanged order moves nothing (moving a node would drop its focus).
+  function morphChildren(parent, next) {
+    const keyed = new Map();
+    const unkeyed = [];
+    for (const child of Array.from(parent.childNodes)) {
+      const key = keyOf(child);
+      if (key === null) unkeyed.push(child);
+      else if (!keyed.has(key)) keyed.set(key, child);
+    }
+    let u = 0;
+    next.forEach((want, i) => {
+      const key = keyOf(want);
+      const old = key === null ? unkeyed[u++] : keyed.get(key);
+      let node = want;
+      if (old && sameKind(old, want)) {
+        if (key !== null) keyed.delete(key);
+        morph(old, want);
+        node = old;
+      }
+      const at = parent.childNodes[i] || null;
+      if (at !== node) parent.insertBefore(node, at);
+    });
+    while (parent.childNodes.length > next.length) parent.removeChild(parent.lastChild);
+  }
+
   // ---- view state --------------------------------------------------------------------------
 
   const state = {
     data: null, entries: [], view: null, slug: null, filters: Object.assign({}, DEFAULT_FILTERS), returnTo: null,
     engines: DEFAULT_ENGINES.slice(),
+    live: null, // the live source, in live mode
+    access: 'read', // 'write' only for the owner with db write access (canWrite)
   };
 
   function show(view) {
     state.view = view;
+    $('loading-view').hidden = view !== 'loading';
     $('empty-view').hidden = view !== 'empty';
     $('tiles-view').hidden = view !== 'tiles';
     $('detail-view').hidden = view !== 'detail';
@@ -837,7 +985,7 @@ const RampartDashboard = (function () {
       on: {
         click: (event) => {
           event.stopPropagation();
-          copyCommand(command, event.currentTarget);
+          copyCommand(event.currentTarget.getAttribute('data-command'), event.currentTarget);
         },
       },
     }, ACTION_LABELS[layer]);
@@ -850,8 +998,14 @@ const RampartDashboard = (function () {
     return h('div', { class: 'actions' }, layers.map((L) => actionButton(L, slug, system.id)));
   }
 
+  // When and where the data came from: the render (static mode) or the latest sync (live mode).
   function generatedLine() {
     const data = state.data || {};
+    if (state.live) {
+      if (!data.generatedAt) return 'Not synced from a machine yet';
+      return ['Synced ', h('time', { datetime: data.generatedAt, title: data.generatedAt }, stamp(data.generatedAt)),
+        ' from ', h('span', { class: 'mono' }, String(data.machineId || 'an unknown machine'))];
+    }
     return ['Generated ', h('time', { datetime: data.generatedAt, title: data.generatedAt }, stamp(data.generatedAt)),
       ' on ', h('span', { class: 'mono' }, String(data.machineId || 'an unknown machine'))];
   }
@@ -860,7 +1014,7 @@ const RampartDashboard = (function () {
 
   function systemChip(slug, system, systemScore) {
     const name = system.name || system.id;
-    return h('li', { class: 'system' },
+    return h('li', { class: 'system', 'data-key': String(system.id) },
       h('div', { class: 'system-row' },
         h('span', { class: 'system-name', title: `${name} (${system.id}, ${system.type})` }, name, h('span', { class: 'system-id' }, system.id)),
         strip(systemScore)),
@@ -908,7 +1062,7 @@ const RampartDashboard = (function () {
   }
 
   function renderTiles() {
-    $('carousel').replaceChildren(...state.entries.map((entry) => h('li', null, card(entry))));
+    morphChildren($('carousel'), state.entries.map((entry) => h('li', { 'data-key': entry.project.slug }, card(entry))));
   }
 
   const motion = () =>
@@ -1007,7 +1161,7 @@ const RampartDashboard = (function () {
       layers.map((L) => h('th', { scope: 'col' }, L)));
     const rows = systems.map((sys) => {
       const sc = isObject(scores[sys.id]) ? scores[sys.id] : {};
-      return h('tr', null,
+      return h('tr', { 'data-key': String(sys.id) },
         h('th', { scope: 'row', class: 'sys-cell' },
           h('span', { class: 'sys-name' }, sys.name || sys.id),
           h('span', { class: 'sys-sub' }, h('span', { class: 'mono' }, sys.id), ` · ${sys.type}${sys.criticality ? ` · ${sys.criticality}` : ''}`)),
@@ -1085,7 +1239,7 @@ const RampartDashboard = (function () {
     const sev = known(SEVERITIES, f.severity, null);
     const cls = known(CLASSES, f.class, null);
     const status = known(STATUSES, f.status, null);
-    return h('tr', { class: isActive(f) ? 'is-active' : 'is-closed' },
+    return h('tr', { class: isActive(f) ? 'is-active' : 'is-closed', 'data-key': String(f.id) },
       h('td', { class: 'id' }, String(f.id)),
       h('td', null, h('span', { class: `sev sev-${sev ? sev.toLowerCase() : 'unknown'}` }, sev ? SEVERITY_LABELS[sev] : String(f.severity))),
       h('td', null, h('span', { class: `cls cls-${cls || 'unknown'}` }, cls ? CLASS_LABELS[cls] : String(f.class))),
@@ -1099,17 +1253,27 @@ const RampartDashboard = (function () {
       h('td', { class: 'nowrap num' }, f.lastSeen ? h('time', { datetime: f.lastSeen, title: f.lastSeen }, day(f.lastSeen)) : '—'));
   }
 
-  function renderFindingRows(entry) {
-    const body = $('findings-body');
-    if (!body || !entry) return;
+  // The rows the filters let through (keyed by finding id), the line that counts them, and whether any filter is on.
+  function findingRows(entry) {
     const all = list(entry.findings).filter(isObject);
     const shown = sortFindings(filterFindings(all, state.filters));
     const dispositions = isObject(entry.dispositions) ? entry.dispositions : {};
-    body.replaceChildren(...(shown.length
-      ? shown.map((f) => findingRow(f, own(dispositions, f.id) ? dispositions[f.id] : null))
-      : [h('tr', { class: 'empty-row' }, h('td', { colspan: '8' }, all.length ? 'No findings match these filters.' : 'No findings recorded for this project.'))]));
-    $('findings-count').textContent = `Showing ${shown.length} of ${plural(all.length, 'finding', 'findings')}`;
-    $('clear-filters').hidden = Object.keys(DEFAULT_FILTERS).every((k) => state.filters[k] === DEFAULT_FILTERS[k]);
+    return {
+      rows: shown.length
+        ? shown.map((f) => findingRow(f, own(dispositions, f.id) ? dispositions[f.id] : null))
+        : [h('tr', { class: 'empty-row' }, h('td', { colspan: '8' }, all.length ? 'No findings match these filters.' : 'No findings recorded for this project.'))],
+      count: `Showing ${shown.length} of ${plural(all.length, 'finding', 'findings')}`,
+      filtered: !Object.keys(DEFAULT_FILTERS).every((k) => state.filters[k] === DEFAULT_FILTERS[k]),
+    };
+  }
+
+  function renderFindingRows(entry) {
+    const body = $('findings-body');
+    if (!body || !entry) return;
+    const view = findingRows(entry);
+    morphChildren(body, view.rows);
+    $('findings-count').textContent = view.count;
+    $('clear-filters').hidden = !view.filtered;
   }
 
   function findingsSection(entry) {
@@ -1118,14 +1282,15 @@ const RampartDashboard = (function () {
       filterSelect('severity', 'Severity', [['all', 'All severities']].concat(SEVERITIES.map((s) => [s, SEVERITY_LABELS[s]]))),
       filterSelect('status', 'Status', [['active', 'Open and regressed'], ['all', 'All statuses']].concat(STATUSES.map((s) => [s, STATUS_LABELS[s]]))),
       filterSelect('class', 'Class', [['all', 'All classes']].concat(CLASSES.map((c) => [c, CLASS_LABELS[c]]))));
+    const view = findingRows(entry);
     const tools = h('div', { class: 'filter-tools' },
-      h('span', { id: 'findings-count', 'aria-live': 'polite' }),
-      h('button', { type: 'button', class: 'link-btn', id: 'clear-filters', on: { click: clearFilters } }, 'Clear filters'));
+      h('span', { id: 'findings-count', 'aria-live': 'polite' }, view.count),
+      h('button', { type: 'button', class: 'link-btn', id: 'clear-filters', hidden: !view.filtered, on: { click: clearFilters } }, 'Clear filters'));
     const head = h('tr', null, ['ID', 'Severity', 'Class', 'System', 'Title', 'Location', 'Status', 'Last seen']
       .map((t) => h('th', { scope: 'col', class: t === 'Last seen' ? 'num' : null }, t)));
     return section('findings', 'Findings', 'Open a title for its evidence and recommendation.',
       controls, tools,
-      h('div', { class: 'table-wrap' }, h('table', { class: 'findings' }, h('thead', null, head), h('tbody', { id: 'findings-body' }))));
+      h('div', { class: 'table-wrap' }, h('table', { class: 'findings' }, h('thead', null, head), h('tbody', { id: 'findings-body' }, view.rows))));
   }
 
   function countsText(counts) {
@@ -1143,7 +1308,7 @@ const RampartDashboard = (function () {
     const rows = runs.map((r) => {
       const status = known(RUN_STATUSES, r.status, null);
       const when = [r.startedAt ? `started ${stamp(r.startedAt)}` : null, r.finishedAt ? `finished ${stamp(r.finishedAt)}` : null].filter(Boolean).join(', ');
-      return h('tr', null,
+      return h('tr', { 'data-key': String(r.runId) },
         h('td', { class: 'id', title: when || null }, String(r.runId)),
         h('td', null, String(r.job || '—')),
         h('td', { class: 'mono nowrap' }, list(r.layers).join(' ') || '—'),
@@ -1157,11 +1322,34 @@ const RampartDashboard = (function () {
       h('div', { class: 'table-wrap' }, h('table', { class: 'runs' }, h('thead', null, head), h('tbody', null, rows))));
   }
 
-  function renderDetail(entry) {
+  // Live mode only (static page data has no jobs): the project's jobs from the DB, newest confirmation first, keyed by id.
+  function jobsSection(entry) {
+    if (!Array.isArray(entry.jobs)) return null;
+    const jobs = entry.jobs.filter(isObject).slice().sort((a, b) =>
+      (timeOf(b.confirmedAt) || 0) - (timeOf(a.confirmedAt) || 0) || String(a.id).localeCompare(String(b.id)));
+    if (!jobs.length) return section('jobs', 'Jobs', null, h('p', { class: 'muted' }, 'No jobs for this project yet.'));
+    const head = h('tr', null, ['Job', 'Type', 'Scope', 'Status', 'Updated'].map((t) => h('th', { scope: 'col' }, t)));
+    const rows = jobs.map((j) => {
+      const status = known(JOB_STATUSES, j.status, null);
+      const scope = [j.system, j.layer, j.findingId].filter(Boolean).map(String).join(' · ');
+      return h('tr', { 'data-key': String(j.id) },
+        h('td', { class: 'id' }, String(j.id)),
+        h('td', null, String(j.type || '—')),
+        h('td', { class: 'mono nowrap' }, scope || '—'),
+        h('td', null,
+          h('span', { class: `status status-${status || 'unknown'}` }, status ? JOB_STATUS_LABELS[status] : String(j.status)),
+          j.resultSummary ? h('span', { class: 'run-reason' }, String(j.resultSummary)) : null),
+        h('td', { class: 'nowrap' }, j.updatedAt ? h('time', { datetime: j.updatedAt, title: j.updatedAt }, stamp(j.updatedAt)) : '—'));
+    });
+    return section('jobs', 'Jobs', 'Newest first.',
+      h('div', { class: 'table-wrap' }, h('table', { class: 'jobs' }, h('thead', null, head), h('tbody', null, rows))));
+  }
+
+  function detailChildren(entry) {
     const p = entry.project;
     const systems = list(p.systems).filter(isObject);
     const reviewed = lastReviewed(entry.score);
-    $('detail-view').replaceChildren(
+    return [
       h('div', { class: 'detail-bar' },
         h('button', { type: 'button', class: 'back', id: 'back-to-tiles', on: { click: goTiles } },
           h('span', { 'aria-hidden': 'true' }, '←'), 'All projects')),
@@ -1178,8 +1366,14 @@ const RampartDashboard = (function () {
       h('div', { class: 'detail-summary' }, countsBlock(entry.findings)),
       sheetSection(entry),
       findingsSection(entry),
-      runsSection(entry));
-    renderFindingRows(entry);
+      jobsSection(entry),
+      runsSection(entry),
+    ].filter(Boolean);
+  }
+
+  // Opening a project: a fresh view, scrolled to the top, focus on its heading.
+  function renderDetail(entry) {
+    $('detail-view').replaceChildren(...detailChildren(entry));
     show('detail');
     window.scrollTo(0, 0);
     $('detail-heading').focus({ preventScroll: true });
@@ -1259,13 +1453,26 @@ const RampartDashboard = (function () {
     if (back) focusCard(back, false);
   }
 
+  // "Static snapshot <generatedAt>", or "Live · synced <latest meta/sync time> · executor <online|offline>".
+  function modeBadge() {
+    const data = state.data || {};
+    const at = (iso) => h('time', { datetime: iso, title: iso }, stamp(iso));
+    if (!state.live) return h('span', { class: 'mode-badge', id: 'mode-badge' }, h('span', { class: 'mode' }, 'Static snapshot'), ' ', at(data.generatedAt));
+    const live = isObject(data.live) ? data.live : {};
+    const online = executorOnline(live.executors, Date.now());
+    return h('span', { class: 'mode-badge', id: 'mode-badge' },
+      h('span', { class: 'mode' }, 'Live'),
+      ' · synced ', live.syncedAt ? at(live.syncedAt) : 'never',
+      ' · executor ', h('span', { class: `exec exec-${online ? 'online' : 'offline'}` }, online ? 'online' : 'offline'));
+  }
+
   function renderMasthead() {
     const meta = $('masthead-meta');
     if (!state.data) {
       meta.hidden = true;
       return;
     }
-    meta.replaceChildren(h('span', { class: 'mode' }, 'Static snapshot'), h('span', null, plural(state.entries.length, 'project', 'projects')));
+    morphChildren(meta, [modeBadge(), h('span', null, plural(state.entries.length, 'project', 'projects'))]);
     meta.hidden = false;
   }
 
@@ -1275,7 +1482,10 @@ const RampartDashboard = (function () {
     show('empty');
   }
 
+  // The first call draws the view the address asks for. A later call while tiles or a project are showing (a live update)
+  // patches them in place: no scroll, no focus move, filters kept. A project that disappears sends the view back to the tiles.
   function render(data) {
+    const showing = state.view === 'tiles' || state.view === 'detail';
     state.data = isData(data) ? data : null;
     state.entries = entriesOf(data);
     renderMasthead();
@@ -1284,8 +1494,20 @@ const RampartDashboard = (function () {
       return;
     }
     renderTiles();
-    state.view = null;
-    route();
+    if (!showing) {
+      state.view = null;
+      route();
+      return;
+    }
+    const entry = state.view === 'detail' ? currentEntry() : null;
+    if (state.view === 'detail' && !entry) {
+      route();
+    } else if (entry) {
+      state.filters = normalizeFilters(entry, state.filters);
+      morphChildren($('detail-view'), detailChildren(entry));
+    } else {
+      updateNav();
+    }
   }
 
   // ---- copy and toast ----------------------------------------------------------------------
@@ -1345,9 +1567,112 @@ const RampartDashboard = (function () {
     }
   }
 
-  // Static mode only, for now: the inline slot. Returns a promise so a live source can take its place.
-  function loadData() {
-    return Promise.resolve(readInlineData());
+  // A live source over the dashboard DB: one onSnapshot per collection, held for the life of the page. ready() turns true
+  // once every collection has answered (with documents or a terminal error); current() is the page data from the latest
+  // snapshots; onChange(fn) runs fn after each delivery. A terminal error keeps the documents last seen.
+  function liveSource(db) {
+    const docs = {};
+    const answered = new Set();
+    const listeners = [];
+    const notify = () => listeners.slice().forEach((fn) => fn());
+    const unsubscribe = COLLECTIONS.map((name) => {
+      const done = () => {
+        answered.add(name);
+        notify();
+      };
+      try {
+        return db.collection(name).onSnapshot((snap) => {
+          docs[name] = list(snap && snap.docs).filter((d) => d && d.exists).map((d) => ({ id: d.id, data: d.data() }));
+          done();
+        }, done);
+      } catch (err) {
+        done();
+        return () => {};
+      }
+    });
+    return {
+      db,
+      ready: () => answered.size === COLLECTIONS.length,
+      current: () => pageDataFromDocs(docs),
+      onChange: (fn) => listeners.push(fn),
+      close: () => unsubscribe.forEach((stop) => stop()),
+    };
+  }
+
+  const isSource = (v) => isObject(v) && typeof v.current === 'function' && typeof v.onChange === 'function';
+
+  // A capability namespace from the host, or null: no host (a saved copy of the page), not granted, or a failed call.
+  async function capability(name) {
+    const host = typeof window !== 'undefined' ? window.claude : undefined;
+    if (!host || typeof host.use !== 'function') return null;
+    try {
+      return (await host.use(name)) || null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // The inline slot when it holds data (static mode, unchanged from Plan 1); else a live source when the host serves the db;
+  // else null, which renders the empty state.
+  async function loadData() {
+    const inline = readInlineData();
+    if (inline !== null) return inline;
+    const db = await capability('db');
+    return db ? liveSource(db) : null;
+  }
+
+  // ---- who may write -----------------------------------------------------------------------
+
+  // Controls that write to the DB render only for the artifact's owner, and not when the platform says the owner cannot
+  // write shared data (can() null means "not told": keep them, and let a refused write decide). Everyone else, a signed-out
+  // viewer and every page without a db reads only. <main data-access> mirrors it for styling.
+  const canWrite = () => state.access === 'write';
+
+  function setAccess(level) {
+    state.access = level;
+    const main = $('main');
+    if (main) main.setAttribute('data-access', level);
+  }
+
+  // The owner's first visit records who the owner is (meta/owner), so executors can tell the owner's jobs from anyone
+  // else's. Written once, only when absent; a refused write is left for the next visit.
+  async function recordOwner(db, user) {
+    try {
+      const ref = db.doc('meta/owner');
+      if ((await ref.get()).exists) return;
+      const ownerId = await user.id();
+      if (!ownerId) return;
+      await ref.set({ ownerId, at: new Date().toISOString() });
+    } catch (err) {
+      // Nothing to do: see above.
+    }
+  }
+
+  async function connectUser(db) {
+    const user = await capability('user');
+    if (!user) return;
+    const owner = (await user.isOwner()) === true;
+    const writable = owner && (await user.can('data.write')) !== false;
+    setAccess(writable ? 'write' : 'read');
+    if (state.data) render(state.data);
+    if (owner) await recordOwner(db, user);
+  }
+
+  // Live mode: draw once every collection has answered, then patch on each delivery; the badge re-checks the executor
+  // heartbeat every minute, since an executor going quiet sends no snapshot.
+  function startLive(source) {
+    state.live = source;
+    const draw = () => {
+      if (source.ready()) render(source.current());
+    };
+    source.onChange(draw);
+    draw();
+    if (typeof setInterval === 'function') {
+      setInterval(() => {
+        if (state.data) renderMasthead();
+      }, BADGE_REFRESH_MS);
+    }
+    return connectUser(source.db);
   }
 
   function boot() {
@@ -1370,7 +1695,8 @@ const RampartDashboard = (function () {
     window.addEventListener('popstate', route);
     window.addEventListener('hashchange', route);
     document.addEventListener('keydown', onKey);
-    loadData().then(render).catch((err) => {
+    if (readInlineData() === null) show('loading');
+    loadData().then((source) => (isSource(source) ? startLive(source) : render(source))).catch((err) => {
       if (typeof console !== 'undefined') console.error('Rampart dashboard:', err);
       renderEmpty(true);
     });
@@ -1382,6 +1708,7 @@ const RampartDashboard = (function () {
     LAYERS, ACTION_LABELS, DEFAULT_FILTERS, DEFAULT_ENGINES, parseEngines, runnableLayers,
     isData, hasProjects, openCounts, freshness, lastReviewed, auditCommand, formatLocation,
     parseHash, buildHash, filterFindings, sortFindings, loadData, render,
+    pageDataFromDocs, executorOnline, liveSource, canWrite,
   };
 })();
 </script>

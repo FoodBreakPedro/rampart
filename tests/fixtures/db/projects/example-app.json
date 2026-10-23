@@ -1,0 +1,55 @@
+{
+  "slug": "example-app",
+  "name": "Example App",
+  "criticality": "high",
+  "defaultExecutor": "local",
+  "cloudAllowed": false,
+  "systems": [
+    {
+      "id": "mobile",
+      "type": "mobile-expo",
+      "name": "Expo app",
+      "packs": ["mobile-expo"],
+      "executor": "either",
+      "layers": { "L1": { "cadenceDays": 7 }, "L2": { "cadenceDays": 30 }, "L3": { "cadenceDays": 90 } },
+      "repo": { "remote": "github.com/<owner>/example-app", "defaultBranch": "main" }
+    },
+    {
+      "id": "db",
+      "type": "supabase",
+      "name": "Self-hosted Supabase",
+      "packs": ["supabase", "docker-host"],
+      "criticality": "data",
+      "executor": "local",
+      "layers": { "INFRA": { "cadenceDays": 30 }, "L3": { "cadenceDays": 90 } },
+      "host": { "hostname": "192.0.2.10" },
+      "live": { "url": "https://db.example.invalid/" }
+    }
+  ],
+  "created": "2026-10-23T00:00:00Z",
+  "updated": "2026-10-23T00:00:00Z",
+  "score": {
+    "score": 62.8,
+    "grade": "C",
+    "trend": 4.2,
+    "systems": {
+      "mobile": {
+        "coverage": 13.3, "findingsScore": 57, "hardening": 0, "score": 70.3, "grade": "B",
+        "layers": {
+          "L1": { "lastRun": "2026-10-23T18:02:11Z", "nextDue": "2026-10-30T18:02:11Z", "credit": 1 },
+          "L2": { "lastRun": null, "nextDue": null, "credit": 0 },
+          "L3": { "lastRun": null, "nextDue": null, "credit": 0 }
+        }
+      },
+      "db": {
+        "coverage": 0, "findingsScore": 48, "hardening": 0, "score": 48, "grade": "D",
+        "layers": {
+          "INFRA": { "lastRun": null, "nextDue": null, "credit": 0 },
+          "L3": { "lastRun": null, "nextDue": null, "credit": 0 }
+        }
+      }
+    }
+  },
+  "cadenceOverrides": null,
+  "updatedAt": "2026-10-23T00:00:00Z"
+}
