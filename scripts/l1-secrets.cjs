@@ -11,60 +11,28 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { parseArgs } = require('node:util');
-const { machineId, runDir } = require('./lib/paths.cjs');
-const { redact } = require('./lib/redact.cjs');
+const { runDir } = require('./lib/paths.cjs');
 const { which, run: runTool } = require('./lib/exec.cjs');
+const common = require('./lib/l1-common.cjs');
 const { fromGitleaks } = require('./normalize.cjs');
 const store = require('./store.cjs');
+
+const { resolveSystem, resolveRepo, readInput, parseReport, withDetail, markFailed, runCli } = common;
 
 const RAW_NAME = 'gitleaks.json';
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 const VERSION_TIMEOUT_MS = 10 * 1000;
-const REASON_LINE_MAX = 200;
 const CLEAN_EXIT = 0;
 const LEAKS_EXIT = 1;
-
-const emptyCounts = () => ({ added: 0, updated: 0, unchanged: 0, regressed: 0 });
 
 // ---- scan ---------------------------------------------------------------------------------
 
 // Everything that can be wrong with the arguments is checked here, before a run exists, so a typo leaves nothing behind.
 function resolveTarget({ project, system, repoPath, input }) {
-  const proj = store.readProject(project); // a slug of the wrong shape is a RangeError from the store
-  if (!proj) throw new RangeError(`project ${project} not found`);
-  const sys = proj.systems.find((s) => s.id === system);
-  if (!sys) throw new RangeError(`project ${project} has no system ${system}`);
-
-  if (input !== undefined) {
-    let reportText;
-    try {
-      reportText = fs.readFileSync(input, 'utf8');
-    } catch {
-      throw new RangeError('--input file cannot be read');
-    }
-    return { reportText };
-  }
-  const stored = sys.repo && sys.repo.paths && sys.repo.paths[machineId()];
-  const repo = repoPath || stored;
-  if (!repo) throw new RangeError(`system ${system} has no repo path for this machine (${machineId()}); pass --repo`);
-  const resolved = path.resolve(repo);
-  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
-    throw new RangeError(`repo path is not a directory: ${resolved}`);
-  }
-  return { repo: resolved };
+  const resolved = resolveSystem(project, system);
+  if (input !== undefined) return { reportText: readInput(input) };
+  return { repo: resolveRepo(resolved, repoPath) };
 }
-
-// First non-empty line of the tool's stderr, redacted first and cut second so a cut never leaves half a token behind.
-function firstLine(text) {
-  const line = redact(String(text || '')).split(/\r?\n/).find((l) => l.trim() !== '');
-  return line === undefined ? '' : line.trim().slice(0, REASON_LINE_MAX);
-}
-
-const withDetail = (reason, stderr) => {
-  const line = firstLine(stderr);
-  return line ? `${reason}: ${line}` : reason;
-};
 
 // "gitleaks version" prints the bare version. Optional: any trouble just means the run records no version.
 function toolVersion(bin) {
@@ -104,13 +72,7 @@ function detect(bin, repo, reportFile, timeoutMs, scrub) {
 
 // The report as findings. Messages name what is wrong and never quote the report, which may hold a credential.
 function toFindings(reportText, ctx) {
-  let report;
-  try {
-    report = JSON.parse(reportText.replace(/^\uFEFF/, ''));
-  } catch {
-    throw new TypeError('gitleaks report is not valid JSON');
-  }
-  return fromGitleaks(report, ctx);
+  return fromGitleaks(parseReport(reportText, 'gitleaks'), ctx);
 }
 
 // Scan one system and record the outcome as a run. Returns {run, counts}: the finished run and the findings
@@ -121,7 +83,7 @@ function scanSecrets({ project, system, repoPath, input, timeoutMs = DEFAULT_TIM
   const target = resolveTarget({ project, system, repoPath, input });
   const run = store.createRun(project, { job: 'audit', layers: ['L1'], systems: [system], executor: 'local' });
   const reportFile = path.join(runDir(project, run.runId), 'raw', RAW_NAME);
-  const skipped = (reason) => ({ run: store.finishRun(project, run.runId, { status: 'skipped', reason: redact(reason) }), counts: emptyCounts() });
+  const skipped = (reason) => common.skipped(run, reason);
   // Re-write the report at reportFile through the store, which redacts it. Returns the original text, or null if absent.
   const scrub = () => {
     let text;
@@ -167,67 +129,31 @@ function scanSecrets({ project, system, repoPath, input, timeoutMs = DEFAULT_TIM
     const tool = version ? { name: 'gitleaks', version } : { name: 'gitleaks' };
     return { run: store.finishRun(project, run.runId, { status: 'done', counts, tool }), counts };
   } catch (err) {
-    try {
-      store.finishRun(project, run.runId, { status: 'failed', reason: redact(`${err.name}: ${err.message}`) });
-    } catch {
-      // the original error is the one worth seeing
-    }
+    markFailed(run, err);
     throw err;
   }
 }
 
 // ---- CLI ----------------------------------------------------------------------------------
 
-class UsageError extends Error {}
-
 const USAGE = 'usage: node scripts/l1-secrets.cjs --project <slug> --system <id> [--repo <path>] [--input <gitleaks.json>] [--json]';
 
-function parseCli(argv) {
-  let values;
-  try {
-    ({ values } = parseArgs({
-      args: argv,
-      options: {
-        project: { type: 'string' }, system: { type: 'string' }, repo: { type: 'string' }, input: { type: 'string' }, json: { type: 'boolean' },
-      },
-      strict: true,
-      allowPositionals: false,
-    }));
-  } catch (err) {
-    throw new UsageError(err.message.split('\n')[0]);
-  }
-  for (const name of ['project', 'system']) {
-    if (values[name] === undefined) throw new UsageError(`--${name} is required`);
-  }
-  return values;
-}
-
-function summary({ run, counts }, system) {
-  const head = `l1-secrets ${run.project}/${system}: ${run.status} (run ${run.runId})`;
-  if (run.status !== 'done') return `${head}\nreason: ${run.reason}`;
+// The lines under the head of a done run.
+function details({ run, counts }) {
   const { added, updated, unchanged, regressed } = counts;
   return [
-    head,
     `secrets: ${added} new, ${updated} updated, ${unchanged} unchanged, ${regressed} regressed`,
     `raw report: ${path.join(runDir(run.project, run.runId), 'raw', RAW_NAME)}`,
-  ].join('\n');
-}
-
-function main(argv) {
-  const opts = parseCli(argv);
-  const result = scanSecrets({ project: opts.project, system: opts.system, repoPath: opts.repo, input: opts.input });
-  process.stdout.write(`${opts.json ? JSON.stringify(result, null, 2) : summary(result, opts.system)}\n`);
-  return result.run.status === 'done' ? 0 : 2;
+  ];
 }
 
 if (require.main === module) {
-  try {
-    process.exitCode = main(process.argv.slice(2));
-  } catch (err) {
-    process.exitCode = err instanceof UsageError || err instanceof RangeError ? 2 : 1;
-    process.stderr.write(`l1-secrets: ${redact(err.message)}\n`);
-    if (err instanceof UsageError) process.stderr.write(`${USAGE}\n`);
-  }
+  process.exitCode = runCli({
+    name: 'l1-secrets',
+    usage: USAGE,
+    details,
+    scan: (opts) => scanSecrets({ project: opts.project, system: opts.system, repoPath: opts.repo, input: opts.input }),
+  }, process.argv.slice(2));
 }
 
 module.exports = { scanSecrets };
