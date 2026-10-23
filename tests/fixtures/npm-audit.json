@@ -1,0 +1,64 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "lodash": {
+      "name": "lodash",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        {
+          "source": 1673,
+          "name": "lodash",
+          "dependency": "lodash",
+          "title": "Command Injection in lodash",
+          "url": "https://github.com/advisories/GHSA-35jh-r3h4-6jhm",
+          "severity": "high",
+          "cwe": ["CWE-77", "CWE-94"],
+          "cvss": { "score": 7.2, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:U/C:H/I:H/A:H" },
+          "range": "<4.17.21"
+        },
+        {
+          "source": 1523,
+          "name": "lodash",
+          "dependency": "lodash",
+          "title": "Prototype Pollution in lodash",
+          "url": "https://github.com/advisories/GHSA-p6mc-m468-83gw",
+          "severity": "high",
+          "cwe": ["CWE-1321", "CWE-770"],
+          "cvss": { "score": 7.4, "vectorString": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:H/A:H" },
+          "range": "<4.17.19"
+        }
+      ],
+      "effects": [],
+      "range": "<4.17.21",
+      "nodes": ["node_modules/lodash"],
+      "fixAvailable": true
+    },
+    "qs": {
+      "name": "qs",
+      "severity": "moderate",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1500,
+          "name": "qs",
+          "dependency": "qs",
+          "title": "qs vulnerable to Prototype Pollution",
+          "url": "https://github.com/advisories/GHSA-hrpp-h998-j3pp",
+          "severity": "moderate",
+          "cwe": ["CWE-1321"],
+          "cvss": { "score": 7.5, "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H" },
+          "range": ">=6.7.0 <6.7.3"
+        }
+      ],
+      "effects": ["express"],
+      "range": ">=6.7.0 <6.7.3",
+      "nodes": ["node_modules/qs"],
+      "fixAvailable": { "name": "express", "version": "4.18.2", "isSemVerMajor": false }
+    }
+  },
+  "metadata": {
+    "vulnerabilities": { "info": 0, "low": 0, "moderate": 1, "high": 1, "critical": 0, "total": 2 },
+    "dependencies": { "prod": 58, "dev": 214, "optional": 0, "peer": 0, "peerOptional": 0, "total": 271 }
+  }
+}
