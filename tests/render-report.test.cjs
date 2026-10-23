@@ -7,7 +7,7 @@ const { spawnSync } = require('node:child_process');
 const store = require('../scripts/store.cjs');
 const { scoreProject } = require('../scripts/score.cjs');
 const { runDir, machineId } = require('../scripts/lib/paths.cjs');
-const { renderReport } = require('../scripts/render-report.cjs');
+const { renderReport, openCommand, main } = require('../scripts/render-report.cjs');
 
 const CLI = path.join(__dirname, '..', 'scripts', 'render-report.cjs');
 const SLUG = 'example-app';
@@ -96,7 +96,7 @@ test('a skipped unit is listed under Skips with its reason, and invalid candidat
 test('a skipped run puts its own reason under Skips', () => {
   const { runId } = setup({ layer: 'INFRA', system: 'db', units: [], runPatch: { status: 'skipped', reason: 'host unreachable (connect timeout)' } });
   const md = renderReport(SLUG, runId);
-  assert.match(md.split('## Skips')[1], /host unreachable \(connect timeout\)/);
+  assert.match(md.split('## Skips')[1], /host unreachable \\\(connect timeout\\\)/);
 });
 
 test('evidence, planted credential values and other withheld fields never reach the report', () => {
@@ -157,8 +157,8 @@ test('INFRA locations read host service setting and urls read as the url', () =>
       finding({ id: 'eeeeeeeeeeee', system: 'db', layer: 'INFRA', class: 'tool', severity: 'LOW', location: { url: 'https://example.com/x' }, title: 'Header' }),
     ] });
   const md = renderReport(SLUG, runId);
-  assert.match(md, /192\.0\.2\.10 postgres listen_addresses/);
-  assert.match(md, /https:\/\/example\.com\/x/);
+  assert.match(md, /192\.0\.2\.10 postgres listen\\_addresses/);
+  assert.match(md, /https:\\\/\\\/example\.com\/x/);
   assert.match(md, /Coverage[\s\S]*probe:ports/);
 });
 
@@ -191,4 +191,59 @@ test('the CLI prints the path of REPORT.md', () => {
   assert.equal(r.stdout.trim(), path.join(dir, 'REPORT.md'));
   const bad = spawnSync(process.execPath, [CLI, '--project', SLUG], { encoding: 'utf8', env: { ...process.env, RAMPART_HOME: home } });
   assert.equal(bad.status, 2);
+});
+
+test('links, images, autolinks and emphasis in a title render inert', () => {
+  const titles = ['![x](https://attacker.example/p.png)', '[click](https://attacker.example) <https://a.example> www.a.example *bold* _it_ &amp;'];
+  for (const [i, title] of titles.entries()) {
+    const id = `00000000000${i}`;
+    const { runId } = setup({ findings: [finding({ id, title })] });
+    const line = renderReport(SLUG, runId).split('\n').find((l) => l.includes(id));
+    const bare = line.replace(/\\./g, ''); // what is left once every backslash-escaped character is removed
+    assert.ok(!/[!\[\]*_]/.test(bare.replace(/^- `\w+` /, '').replace(/ \([^()]*\) \[open\]$/, '')), line);
+    assert.ok(!line.includes('://'), line);
+    assert.ok(!line.includes('<'), line);
+    assert.ok(!/www\./i.test(line), line);
+    if (i === 1) assert.ok(line.includes('&amp;amp;'), line);
+  }
+});
+
+test('the headline carries the project score, grade and trend', () => {
+  const { runId } = setup({ findings: [finding()] });
+  const now = new Date();
+  const md = renderReport(SLUG, runId, { now });
+  const expected = scoreProject(store.readProject(SLUG), store.readFindings(SLUG), store.readRuns(SLUG), now);
+  const head = md.split('## Coverage')[0];
+  assert.ok(head.includes(`grade ${expected.grade}, ${expected.score.toFixed(1)}`));
+  assert.ok(head.includes('no trend yet'));
+});
+
+test('a later run that sees a finding does not put it in an older run report', () => {
+  const a = setup({ findings: [finding()] });
+  assert.match(renderReport(SLUG, a.runId), /Record access not scoped/);
+  const b = setup({ findings: [finding()] });
+  assert.match(renderReport(SLUG, b.runId), /Record access not scoped/);
+  assert.match(renderReport(SLUG, a.runId), /No findings in this run\./);
+});
+
+test('openCommand pins the argv per platform and a failed open is only a warning', () => {
+  const f = 'C:\\r p\\a&b^%.md';
+  assert.deepEqual(openCommand(f, 'win32'), ['explorer.exe', [f]]);
+  assert.deepEqual(openCommand('/x/REPORT.md', 'darwin'), ['open', ['/x/REPORT.md']]);
+  assert.deepEqual(openCommand('/x/REPORT.md', 'linux'), ['xdg-open', ['/x/REPORT.md']]);
+  const { runId } = setup();
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const calls = [];
+    let out = '';
+    let err = '';
+    const code = main(['--project', SLUG, '--run', runId, '--open'], {
+      stdout: { write: (s) => { out += s; } }, stderr: { write: (s) => { err += s; } }, platform,
+      run: (cmd, args) => { calls.push([cmd, args]); throw new Error('no opener'); },
+    });
+    assert.equal(code, 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], openCommand('x', platform)[0]);
+    assert.match(err, /warning: could not open/);
+    assert.ok(out.trim().endsWith('REPORT.md'));
+  }
 });

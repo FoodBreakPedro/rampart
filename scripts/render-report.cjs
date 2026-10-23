@@ -30,11 +30,15 @@ const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 function clean(value, cap = TITLE_CAP) {
   let s = redact(String(value ?? '')).replace(/\s+/g, ' ').trim();
   if (s.length > cap) s = `${s.slice(0, cap - 1).trimEnd()}...`;
+  // Links, images, emphasis and autolinks are made inert: a previewer must not fetch or link anything repository text names.
   return s
     .replace(/\\/g, '\\\\')
-    .replace(/\|/g, '\\|')
+    .replace(/&/g, '&amp;')
+    .replace(/<(?=[A-Za-z/!?])/g, '&lt;')
+    .replace(/[|[\]()!*_]/g, '\\$&')
     .replace(/`/g, "'")
-    .replace(/</g, '&lt;')
+    .replace(/:\/\//g, ':\\/\\/')
+    .replace(/\bwww\./gi, (m) => `${m[0]}${m.slice(1, 3)}\\.`)
     .replace(/^(#+|[>+-]|\d+[.)])(?=\s|$)/, '\\$1');
 }
 
@@ -74,11 +78,18 @@ function touchedBy(run, units, findings) {
     if (!f || (system && f.system !== system)) return false;
     if (!system && !(run.systems || []).includes(f.system)) return false;
     if (layers.length && !layers.includes(f.layer)) return false;
-    return (f.verification && f.verification.run === run.runId) || (typeof f.lastSeen === 'string' && f.lastSeen >= run.startedAt);
+    if (f.verification && f.verification.run === run.runId) return true;
+    if (typeof f.lastSeen !== 'string' || f.lastSeen < run.startedAt) return false;
+    // A finished run owns only sightings up to its end; a later run's sighting belongs to that run's report.
+    return !run.finishedAt || f.lastSeen <= run.finishedAt;
   });
 }
 
-function headline(project, run, units, touched, closed) {
+function trendText(result) {
+  return result.trend === null || result.trend === undefined ? 'no trend yet' : `${result.trend > 0 ? '+' : ''}${result.trend.toFixed(1)}`;
+}
+
+function headline(project, run, units, touched, closed, result) {
   const layer = units ? units.layer : (run.layers || []).join(', ');
   const system = units ? units.system : (run.systems || []).join(', ');
   const sys = (project.systems || []).find((s) => s.id === system);
@@ -95,6 +106,7 @@ function headline(project, run, units, touched, closed) {
     `${clean(run.job)} at ${clean(layer)} ran against ${clean(system || 'no system')}${at.length ? ` (${at.join('; ')})` : ''} and ${state}.`,
     `${counted.length} finding${counted.length === 1 ? '' : 's'} survived verification (${fresh} new, ${regressed} regressed) plus ${hardening} hardening note${hardening === 1 ? '' : 's'};`,
     `${closed} closed by this run.`,
+    `Project score after the run: grade ${result.grade}, ${result.score.toFixed(1)}, trend ${trendText(result)}.`,
   ].join(' ');
 }
 
@@ -141,9 +153,8 @@ function skipsSection(run, units) {
   return ['## Skips', '', items.length ? items.map((i) => `- ${i}`).join('\n') : 'Nothing was skipped.'].join('\n');
 }
 
-function scoreSection(project, now) {
-  const result = scoreProject(project, store.readFindings(project.slug), store.readRuns(project.slug), now);
-  const trend = result.trend === null || result.trend === undefined ? 'no trend yet' : `${result.trend > 0 ? '+' : ''}${result.trend.toFixed(1)}`;
+function scoreSection(result) {
+  const trend = trendText(result);
   const lines = ['## Score after this run', '', `Grade ${result.grade}, score ${result.score.toFixed(1)}, trend ${trend}.`];
   const ids = Object.keys(result.systems);
   if (ids.length) {
@@ -175,10 +186,11 @@ function renderReport(slug, runId, { now = new Date() } = {}) {
   const closed = closedIds.length || (run.counts && run.counts.closed) || 0;
 
   const layers = units ? units.layer : (run.layers || []).join(', ');
+  const result = scoreProject(project, store.readFindings(slug), store.readRuns(slug), now);
   const md = [
     `# ${clean(project.name || slug, 80)}: ${clean(run.job)} ${clean(layers)}, run ${clean(runId, 40)}`,
     '',
-    headline(project, run, units, touched, closed),
+    headline(project, run, units, touched, closed, result),
     '',
     coverageSection(run, units),
     '',
@@ -186,7 +198,7 @@ function renderReport(slug, runId, { now = new Date() } = {}) {
     '',
     skipsSection(run, units),
     '',
-    scoreSection(project, now),
+    scoreSection(result),
     '',
   ].join('\n');
   writeAtomic(path.join(dir, 'REPORT.md'), md);
@@ -212,23 +224,24 @@ function parse(argv) {
 
 // The command that opens a file with the OS default app.
 function openCommand(file, platform = process.platform) {
-  if (platform === 'win32') return ['cmd', ['/c', 'start', '""', file]];
+  if (platform === 'win32') return ['explorer.exe', [file]];
   if (platform === 'darwin') return ['open', [file]];
   return ['xdg-open', [file]];
 }
 
-function main(argv, { stdout = process.stdout, stderr = process.stderr, run = exec.run } = {}) {
+function main(argv, { stdout = process.stdout, stderr = process.stderr, run = exec.run, platform = process.platform } = {}) {
   try {
     const opts = parse(argv);
     renderReport(opts.project, opts.run);
     const file = path.join(runDir(opts.project, opts.run), 'REPORT.md');
     stdout.write(`${file}\n`);
     if (opts.open) {
-      const [cmd, args] = openCommand(file);
+      const [cmd, args] = openCommand(file, platform);
       let failed = false;
       try {
         const r = run(cmd, args, { timeoutMs: 15000 });
-        failed = r.timedOut || (r.code !== 0 && r.code !== null);
+        // explorer.exe exits 1 even when it opened the file, so on Windows only a timeout or a launch error counts.
+        failed = r.timedOut || (platform !== 'win32' && r.code !== 0 && r.code !== null);
       } catch {
         failed = true;
       }
