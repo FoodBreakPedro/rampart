@@ -40,7 +40,8 @@ function fixtureDocs() {
 // Options: failOn {c: code} ends c's subscription with that error instead of delivering; pending [c] delivers nothing for
 // c until release(c); cachedFirst {c: 'empty' | 'full'} first delivers a fromCache snapshot (no documents, or the seed's),
 // and the definitive one only on release(c); holdWrites keeps each update() unsettled in `held` until the test calls its
-// resolve() (the write lands and is delivered) or reject(reason).
+// resolve() (the write lands and is delivered) or reject(reason). update() merges nested objects and replaces anything else
+// (arrays included), as db.d.ts says.
 function stubDb(seed, { failOn = {}, pending = [], cachedFirst = {}, holdWrites = false } = {}) {
   const docs = {};
   const subs = [];
@@ -49,6 +50,12 @@ function stubDb(seed, { failOn = {}, pending = [], cachedFirst = {}, holdWrites 
   const meta = Object.freeze({ fromCache: false, hasPendingWrites: false });
   const cachedMeta = Object.freeze({ fromCache: true, hasPendingWrites: false });
   for (const c of Object.keys(seed)) docs[c] = new Map(Object.entries(seed[c]).map(([id, b]) => [id, deepFreeze(clone(b))]));
+  const isPlain = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const merge = (base, patch) => {
+    const out = { ...(isPlain(base) ? base : {}) };
+    for (const [k, v] of Object.entries(patch)) out[k] = isPlain(v) && isPlain(out[k]) ? merge(out[k], v) : v;
+    return out;
+  };
   const docSnap = (id, body) => Object.freeze({ id, exists: body !== undefined, data: () => body, metadata: meta });
 
   function snapshotFor(sub, { cached = null } = {}) {
@@ -87,7 +94,7 @@ function stubDb(seed, { failOn = {}, pending = [], cachedFirst = {}, holdWrites 
       update: (data) => {
         writes.push({ op: 'update', path: p, data: clone(data) });
         const land = () => {
-          put(c, id, { ...docs[c].get(id), ...data });
+          put(c, id, merge(docs[c].get(id), data));
           deliver(c);
         };
         if (!holdWrites) return Promise.resolve().then(land);
@@ -141,7 +148,7 @@ const stubUser = ({ owner = false, can = null, id = OWNER_ID } = {}) => Object.f
 });
 
 // window.claude with use(name) recording each name asked for.
-function stubClaude({ db = null, user = null, mcp = null } = {}) {
+function stubClaude({ db = null, user = null, mcp = null, downloads = null } = {}) {
   const asked = [];
   return {
     asked,
@@ -150,6 +157,7 @@ function stubClaude({ db = null, user = null, mcp = null } = {}) {
       if (name === 'db') return db;
       if (name === 'user') return user;
       if (name === 'mcp') return mcp;
+      if (name === 'downloads') return downloads;
       return null;
     },
   };
@@ -218,9 +226,9 @@ const withHeartbeat = (seed, at) => {
   return out;
 };
 
-async function bootLive({ seed = withHeartbeat(fixtureDocs(), new Date().toISOString()), user = stubUser(), hash = '', options, mcp = null, engines = null } = {}) {
+async function bootLive({ seed = withHeartbeat(fixtureDocs(), new Date().toISOString()), user = stubUser(), hash = '', options, mcp = null, engines = null, downloads = null } = {}) {
   const store = stubDb(seed, options);
-  const claude = stubClaude({ db: store.db, user, mcp });
+  const claude = stubClaude({ db: store.db, user, mcp, downloads });
   const page = bootPage({ claude, hash, engines });
   await settle();
   return { ...page, store, claude };
@@ -1318,4 +1326,342 @@ test('jobs: at confirm a requeue re-reads the job and does nothing when it is no
   assert.deepEqual(mcp.calls, [], 'nothing dispatched');
   assert.match($('toast').textContent, /job-stale/);
   assert.match($('toast').textContent, /claimed/);
+});
+
+// ---- export (Task 7) ---------------------------------------------------------------------------
+
+const EVIDENCE_PLANT = 'EVIDENCE-PLANT-do-not-export';
+const EXPLOIT_PLANT = 'EXPLOIT-PLANT-do-not-export';
+const REASON_PLANT = 'REASON-PLANT-do-not-export';
+
+// Findings in every location shape and status, each carrying planted evidence, exploit and reason text.
+function sarifFindings() {
+  const base = (id, over) => ({
+    id, project: 'p', system: 's', layer: 'L1', source: 'manual', ruleId: `rule/${id}`, title: `Title ${id}`, severity: 'LOW',
+    confidence: 'HIGH', class: 'verified', status: 'open', evidence: `${EVIDENCE_PLANT} ${id}`, exploitScenario: `${EXPLOIT_PLANT} ${id}`,
+    recommendation: 'Fix it.', location: { path: 'src/a.js', line: 3 }, ...over,
+  });
+  return [
+    base('000000000001', { severity: 'CRITICAL', location: { path: 'src/app/login.js', line: 42 }, ruleId: 'rule/shared' }),
+    base('000000000002', { severity: 'HIGH', status: 'regressed', location: { url: 'https://app.example/login', header: 'csp' }, ruleId: 'rule/shared' }),
+    base('000000000003', { severity: 'MEDIUM', location: { host: '192.0.2.10', service: 'ssh', setting: 'PasswordAuthentication' } }),
+    base('000000000004', { severity: 'LOW', class: 'tool', location: { package: 'left-pad', ecosystem: 'npm', path: 'package-lock.json' } }),
+    base('000000000005', { severity: 'INFO', class: 'hardening', location: { path: 'Dockerfile' } }),
+    base('000000000006', { status: 'fixed' }),
+    base('000000000007', { status: 'accepted_risk', disposition: { status: 'accepted_risk', reason: REASON_PLANT, by: 'u_x', at: '2026-10-23T00:00:00Z' } }),
+    base('000000000008', { status: 'false_positive', disposition: { status: 'false_positive', reason: REASON_PLANT, by: 'u_x', at: '2026-10-23T00:00:00Z' } }),
+  ];
+}
+
+test('export: toSarif is SARIF 2.1.0 with one result per open finding, one rule per ruleId, and no evidence text', () => {
+  const { api } = bootPage();
+  const findings = sarifFindings();
+  const out = clone(api.toSarif(findings, { toolVersion: '0.3.0-alpha.1' }));
+  assert.equal(out.version, '2.1.0');
+  assert.equal(out.$schema, 'https://json.schemastore.org/sarif-2.1.0.json');
+  assert.equal(out.runs.length, 1);
+  const [run] = out.runs;
+  assert.equal(run.tool.driver.name, 'Rampart');
+  assert.equal(run.tool.driver.version, '0.3.0-alpha.1');
+  const open = findings.filter((f) => f.status === 'open' || f.status === 'regressed');
+  assert.equal(run.results.length, open.length, 'one result per open or regressed finding');
+  assert.deepEqual(run.results.map((r) => r.properties.id), open.map((f) => f.id));
+  const ruleIds = [...new Set(open.map((f) => f.ruleId))];
+  assert.deepEqual(run.tool.driver.rules.map((r) => r.id), ruleIds, 'one rule per distinct ruleId');
+  for (const r of run.results) {
+    assert.equal(run.tool.driver.rules[r.ruleIndex].id, r.ruleId, 'ruleIndex points at its rule');
+    const f = findings.find((x) => x.id === r.properties.id);
+    assert.equal(r.message.text, f.title);
+    assert.deepEqual(r.properties, { class: f.class, status: f.status, id: f.id, severity: f.severity });
+    assert.deepEqual(r.partialFingerprints, { rampartId: f.id });
+  }
+  assert.deepEqual(run.results.map((r) => r.level), ['error', 'error', 'warning', 'note', 'note'], 'level from severity');
+  const loc = (i) => run.results[i].locations[0];
+  assert.deepEqual(loc(0).physicalLocation, { artifactLocation: { uri: 'src/app/login.js' }, region: { startLine: 42 } });
+  assert.equal(loc(1).physicalLocation, undefined);
+  assert.equal(loc(1).logicalLocations[0].kind, 'url');
+  assert.equal(loc(1).logicalLocations[0].name, 'https://app.example/login');
+  assert.equal(loc(2).logicalLocations[0].kind, 'host');
+  assert.equal(loc(2).logicalLocations[0].name, '192.0.2.10');
+  assert.equal(loc(3).logicalLocations[0].kind, 'package');
+  assert.equal(loc(3).logicalLocations[0].name, 'left-pad');
+  assert.deepEqual(loc(3).physicalLocation, { artifactLocation: { uri: 'package-lock.json' } }, 'the manifest it was found in');
+  assert.deepEqual(loc(4).physicalLocation, { artifactLocation: { uri: 'Dockerfile' } }, 'a path without a line has no region');
+  const text = JSON.stringify(out);
+  for (const plant of [EVIDENCE_PLANT, EXPLOIT_PLANT, REASON_PLANT, 'Fix it.']) assert.ok(!text.includes(plant), `no ${plant} in the SARIF`);
+  assert.ok(!/"evidence"|"exploitScenario"|"reason"/.test(text));
+  const bare = clone(api.toSarif([]));
+  assert.equal(bare.runs[0].results.length, 0);
+  assert.deepEqual(bare.runs[0].tool.driver.rules, []);
+  assert.equal('version' in bare.runs[0].tool.driver, false, 'no tool version unless given');
+});
+
+// A downloads namespace whose save records each request and resolves {status: 'saved'}, or rejects with `reject`.
+function stubDownloads({ reject = null } = {}) {
+  const saves = [];
+  const ns = Object.freeze({
+    save: async (req) => {
+      saves.push({ filename: req.filename, data: String(req.data) });
+      if (reject) throw reject;
+      return { status: 'saved' };
+    },
+  });
+  return { saves, ns };
+}
+
+const exportButton = (doc, kind) => doc.getElementById(`export-${kind}`);
+
+test('export: a viewer who cannot write still downloads the findings as JSONL and SARIF; nothing is written', async () => {
+  const downloads = stubDownloads();
+  const seed = fixtureDocs();
+  const { document, store, $, errors } = await bootLive({ user: stubUser({ owner: false, can: true }), hash: '#p-example-app', downloads: downloads.ns });
+  assert.equal(document.querySelectorAll('[data-write]').length, 0);
+  const jsonl = exportButton(document, 'jsonl');
+  const sarif = exportButton(document, 'sarif');
+  assert.equal(jsonl.textContent, 'Download findings (JSONL)');
+  assert.equal(sarif.textContent, 'Download SARIF');
+  await press(jsonl);
+  assert.equal(downloads.saves.length, 1);
+  assert.equal(downloads.saves[0].filename, 'example-app-findings.jsonl.txt');
+  const rows = downloads.saves[0].data.trim().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(rows.map((r) => r.id).sort(), ['a3f9c21be0d4', 'b71e04c9d2a8'], 'every finding of the project, one per line');
+  assert.match($('toast').textContent, /example-app-findings\.jsonl\.txt/);
+  await press(sarif);
+  assert.equal(downloads.saves.length, 2);
+  assert.equal(downloads.saves[1].filename, 'example-app-findings.sarif.json');
+  const out = JSON.parse(downloads.saves[1].data);
+  assert.equal(out.version, '2.1.0');
+  assert.equal(out.runs[0].results.length, 2, 'both example-app findings are open');
+  for (const id of ['a3f9c21be0d4', 'b71e04c9d2a8']) assert.ok(!downloads.saves[1].data.includes(seed.findings[id].evidence), 'no evidence');
+  assert.deepEqual(store.writes, []);
+  assert.deepEqual(errors, []);
+});
+
+test('export: no downloads namespace hides the buttons, live or static; static mode with one exports without asking for the db', async () => {
+  let page = await bootLive({ user: ownerUser(), hash: '#p-example-app' });
+  same(exportButton(page.document, 'jsonl'), null);
+  same(exportButton(page.document, 'sarif'), null);
+  let claude = stubClaude({ db: stubDb(fixtureDocs()).db });
+  page = bootPage({ inline: JSON.stringify(STATIC), claude, hash: '#p-example-app' });
+  await settle();
+  same(exportButton(page.document, 'jsonl'), null, 'static mode without downloads: no button');
+  const downloads = stubDownloads();
+  claude = stubClaude({ db: stubDb(fixtureDocs()).db, downloads: downloads.ns });
+  page = bootPage({ inline: JSON.stringify(STATIC), claude, hash: '#p-example-app' });
+  await settle();
+  assert.ok(!claude.asked.includes('db'), 'static mode never asks for the db');
+  await press(exportButton(page.document, 'sarif'));
+  assert.equal(downloads.saves.length, 1);
+  assert.equal(downloads.saves[0].filename, 'example-app-findings.sarif.json');
+  assert.equal(JSON.parse(downloads.saves[0].data).version, '2.1.0');
+});
+
+test('export: a declined save is not an error; an unavailable save hides the buttons; nothing raw reaches the toast', async () => {
+  let downloads = stubDownloads({ reject: { code: 'declined', message: 'RAW-declined' } });
+  let page = await bootLive({ user: ownerUser(), hash: '#p-example-app', downloads: downloads.ns });
+  await press(exportButton(page.document, 'jsonl'));
+  assert.equal(downloads.saves.length, 1);
+  assert.doesNotMatch(page.$('toast').textContent, /RAW-|Could not|not available/);
+  assert.ok(exportButton(page.document, 'jsonl') && !exportButton(page.document, 'jsonl').disabled, 'the buttons stay, ready again');
+  assert.deepEqual(page.errors, []);
+
+  downloads = stubDownloads({ reject: { code: 'rate_limited', message: 'RAW-rate' } });
+  page = await bootLive({ user: ownerUser(), hash: '#p-example-app', downloads: downloads.ns });
+  await press(exportButton(page.document, 'sarif'));
+  assert.match(page.$('toast').textContent, /\S/);
+  assert.doesNotMatch(page.$('toast').textContent, /RAW-/);
+  assert.ok(exportButton(page.document, 'sarif'), 'a busy prompt keeps the buttons');
+
+  downloads = stubDownloads({ reject: { code: 'unavailable', message: 'RAW-unavailable' } });
+  page = await bootLive({ user: ownerUser(), hash: '#p-example-app', downloads: downloads.ns });
+  await press(exportButton(page.document, 'jsonl'));
+  assert.match(page.$('toast').textContent, /not available/);
+  assert.doesNotMatch(page.$('toast').textContent, /RAW-/);
+  same(exportButton(page.document, 'jsonl'), null, 'unavailable hides the buttons');
+  same(exportButton(page.document, 'sarif'), null);
+});
+
+// ---- settings (Task 7) -------------------------------------------------------------------------
+
+const settingsForm = (doc, slug) => doc.querySelector(`form[data-settings="${slug}"]`);
+const settingsWrites = (store) => store.writes.filter((w) => w.path.startsWith('projects/'));
+const cadenceInput = (form, system, layer) => form.querySelector(`input[data-system="${system}"][data-layer="${layer}"]`);
+
+async function saveSettings(form) {
+  form.dispatchEvent(makeEvent('submit'));
+  await settle();
+}
+
+function setField(el, value) {
+  if (el.getAttribute('type') === 'checkbox') el.checked = value;
+  else el.value = value;
+  el.dispatchEvent(makeEvent(el.tagName === 'SELECT' || el.getAttribute('type') === 'checkbox' ? 'change' : 'input'));
+}
+
+test('settings: only the owner gets the settings form, and every control in it is tagged data-write', async () => {
+  const { document } = await bootLive({ user: ownerUser(), hash: '#p-example-app' });
+  const form = settingsForm(document, 'example-app');
+  assert.ok(form && form.hasAttribute('data-write'));
+  const controls = [...form.querySelectorAll('input'), ...form.querySelectorAll('select'), ...form.querySelectorAll('button')];
+  assert.equal(controls.length, 1 + 2 + 5 + 1, 'cloud toggle, executor and effort, one cadence per declared layer, Save');
+  for (const control of controls) assert.ok(control.hasAttribute('data-write'), `${control.tagName} ${control.getAttribute('name')} is data-write`);
+  for (const control of [...form.querySelectorAll('input'), ...form.querySelectorAll('select')]) {
+    const label = document.querySelector(`label[for="${control.id}"]`);
+    assert.ok(label && label.textContent.trim(), `${control.getAttribute('name')} has a visible label`);
+  }
+  assert.equal(form.querySelector('input[name="cloudAllowed"]').checked, false);
+  assert.equal(form.querySelector('select[name="defaultExecutor"]').value, 'local');
+  assert.equal(form.querySelector('select[name="huntEffort"]').value, 'medium', 'no huntEffort reads as the medium default');
+  assert.equal(cadenceInput(form, 'mobile', 'L1').value, '7');
+  assert.equal(cadenceInput(form, 'db', 'INFRA').value, '30');
+  for (const user of [stubUser({ owner: false, can: true }), stubUser({ owner: true, can: false }), null]) {
+    const page = await bootLive({ user, hash: '#p-example-app' });
+    same(settingsForm(page.document, 'example-app'), null, 'no settings for a viewer, can() false or a signed-out page');
+  }
+  const claude = stubClaude({ db: stubDb(fixtureDocs()).db, user: ownerUser() });
+  const page = bootPage({ inline: JSON.stringify(STATIC), claude, hash: '#p-example-app' });
+  await settle();
+  same(settingsForm(page.document, 'example-app'), null, 'no settings in static mode');
+});
+
+test('settings: Save writes only the changed keys plus updatedAt; a cadence change writes only its own path', async () => {
+  const before = Date.now();
+  const { document, store, $ } = await bootLive({ user: ownerUser(), hash: '#p-example-app' });
+  let form = settingsForm(document, 'example-app');
+  setField(form.querySelector('select[name="huntEffort"]'), 'high');
+  await saveSettings(form);
+  let writes = settingsWrites(store);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].op, 'update');
+  assert.equal(writes[0].path, 'projects/example-app');
+  assert.deepEqual(Object.keys(writes[0].data).sort(), ['huntEffort', 'updatedAt']);
+  assert.equal(writes[0].data.huntEffort, 'high');
+  assert.equal(new Date(writes[0].data.updatedAt).toISOString(), writes[0].data.updatedAt);
+  assert.ok(Date.parse(writes[0].data.updatedAt) >= before - 1000);
+  assert.match($('toast').textContent, /Saved/);
+
+  form = settingsForm(document, 'example-app');
+  setField(cadenceInput(form, 'mobile', 'L1'), '14');
+  await saveSettings(form);
+  writes = settingsWrites(store);
+  assert.equal(writes.length, 2);
+  assert.deepEqual(Object.keys(writes[1].data).sort(), ['cadenceOverrides', 'updatedAt']);
+  assert.deepEqual(writes[1].data.cadenceOverrides, { mobile: { L1: 14 } });
+
+  form = settingsForm(document, 'example-app');
+  setField(form.querySelector('input[name="cloudAllowed"]'), true);
+  setField(form.querySelector('select[name="defaultExecutor"]'), 'cloud');
+  setField(cadenceInput(form, 'db', 'L3'), '60');
+  await saveSettings(form);
+  writes = settingsWrites(store);
+  assert.equal(writes.length, 3);
+  assert.deepEqual(writes[2].data, { cloudAllowed: true, defaultExecutor: 'cloud', cadenceOverrides: { db: { L3: 60 } }, updatedAt: writes[2].data.updatedAt });
+  const stored = await readDoc(store, 'projects/example-app');
+  assert.deepEqual(stored.cadenceOverrides, { mobile: { L1: 14 }, db: { L3: 60 } }, 'the two cadence writes merged');
+
+  form = settingsForm(document, 'example-app');
+  assert.equal(cadenceInput(form, 'mobile', 'L1').value, '14', 'a pending override shows as the cadence');
+  await saveSettings(form);
+  assert.equal(settingsWrites(store).length, 3, 'nothing changed: nothing written');
+  assert.ok(!form.querySelector('.settings-error').hidden);
+});
+
+test('settings: a cadence must be a whole number of days from 1 to 365; a bad one writes nothing and says why', async () => {
+  const { document, store } = await bootLive({ user: ownerUser(), hash: '#p-example-app' });
+  for (const bad of ['0', '366', '1.5', 'abc', '', '-3']) {
+    const form = settingsForm(document, 'example-app');
+    const input = cadenceInput(form, 'mobile', 'L2');
+    setField(input, bad);
+    await saveSettings(form);
+    assert.equal(settingsWrites(store).length, 0, `${JSON.stringify(bad)} is refused`);
+    assert.equal(input.getAttribute('aria-invalid'), 'true');
+    const error = form.querySelector('.settings-error');
+    assert.ok(!error.hidden && /1 to 365/.test(error.textContent), 'an inline message says why');
+  }
+  const form = settingsForm(document, 'example-app');
+  setField(cadenceInput(form, 'mobile', 'L2'), '365');
+  await saveSettings(form);
+  assert.deepEqual(settingsWrites(store)[0].data.cadenceOverrides, { mobile: { L2: 365 } });
+  assert.equal(cadenceInput(settingsForm(document, 'example-app'), 'mobile', 'L2').hasAttribute('aria-invalid'), false);
+});
+
+test('settings: cloud can only be turned on for a project with a repo on github.com; the toggle says why it cannot', async () => {
+  const seed = withHeartbeat(fixtureDocs(), new Date().toISOString());
+  delete seed.projects['example-app'].systems[0].repo;
+  const { document, store } = await bootLive({ seed, user: ownerUser(), hash: '#p-example-app' });
+  const form = settingsForm(document, 'example-app');
+  const toggle = form.querySelector('input[name="cloudAllowed"]');
+  assert.equal(toggle.disabled, true);
+  const why = document.getElementById(toggle.getAttribute('aria-describedby'));
+  assert.match(why.textContent, /github\.com/);
+  toggle.removeAttribute('disabled');
+  setField(toggle, true);
+  await saveSettings(form);
+  assert.equal(settingsWrites(store).length, 0, 'forced on anyway: refused');
+  assert.match(form.querySelector('.settings-error').textContent, /github\.com/);
+
+  const allowed = withHeartbeat(fixtureDocs(), new Date().toISOString());
+  delete allowed.projects['example-app'].systems[0].repo;
+  allowed.projects['example-app'].cloudAllowed = true;
+  const page = await bootLive({ seed: allowed, user: ownerUser(), hash: '#p-example-app' });
+  const on = settingsForm(page.document, 'example-app').querySelector('input[name="cloudAllowed"]');
+  assert.equal(on.disabled, false, 'a project that has cloud on can always turn it off');
+  setField(on, false);
+  await saveSettings(settingsForm(page.document, 'example-app'));
+  assert.deepEqual(Object.keys(settingsWrites(page.store)[0].data).sort(), ['cloudAllowed', 'updatedAt']);
+  assert.equal(settingsWrites(page.store)[0].data.cloudAllowed, false);
+});
+
+test('settings: cadence shows the system layer plus any pending override; a null override (consumed by a push) is none (R26)', async () => {
+  const seed = withHeartbeat(fixtureDocs(), new Date().toISOString());
+  seed.projects['example-app'].cadenceOverrides = { mobile: { L1: 3 } };
+  const { document, store } = await bootLive({ seed, user: ownerUser(), hash: '#p-example-app' });
+  let form = settingsForm(document, 'example-app');
+  assert.equal(cadenceInput(form, 'mobile', 'L1').value, '3');
+  assert.match(form.textContent, /applies on the next sync/i);
+  assert.equal(cadenceInput(form, 'mobile', 'L2').value, '30');
+  const pushed = clone(seed.projects['example-app']);
+  pushed.cadenceOverrides = null;
+  pushed.systems[0].layers.L1.cadenceDays = 3;
+  store.push('projects', 'example-app', pushed);
+  await settle();
+  form = settingsForm(document, 'example-app');
+  assert.equal(cadenceInput(form, 'mobile', 'L1').value, '3');
+  assert.doesNotMatch(form.textContent, /applies on the next sync/i, 'no pending note once applied');
+});
+
+test('settings: a rejected write reverts the form and toasts what failed, never the raw error; one write at a time', async () => {
+  const { document, store, $, errors } = await bootLive({ user: ownerUser(), hash: '#p-example-app', options: { holdWrites: true } });
+  let form = settingsForm(document, 'example-app');
+  setField(form.querySelector('select[name="huntEffort"]'), 'low');
+  await saveSettings(form);
+  form = settingsForm(document, 'example-app');
+  assert.equal(form.querySelector('select[name="huntEffort"]').value, 'low', 'shown at once');
+  assert.ok(form.querySelector('button').disabled, 'Save is disabled while the write is in flight');
+  await saveSettings(form);
+  assert.equal(settingsWrites(store).length, 1, 'a second save while the first is in flight writes nothing');
+  store.held[0].reject({ code: 'not_granted', message: 'RAW-not-granted' });
+  await settle();
+  form = settingsForm(document, 'example-app');
+  assert.equal(form.querySelector('select[name="huntEffort"]').value, 'medium', 'reverted');
+  assert.equal(form.querySelector('button').disabled, false);
+  const text = $('toast').textContent;
+  assert.match(text, /Could not save the settings/);
+  assert.doesNotMatch(text, /RAW-|\[object|Error/);
+  assert.deepEqual(errors, []);
+});
+
+test('settings: a form being edited keeps its values through a live update', async () => {
+  const seed = withHeartbeat(fixtureDocs(), new Date().toISOString());
+  const { document, store } = await bootLive({ seed, user: ownerUser(), hash: '#p-example-app' });
+  const form = settingsForm(document, 'example-app');
+  const input = cadenceInput(form, 'mobile', 'L1');
+  setField(input, '21');
+  input.focus();
+  store.push('projects', 'example-app', { ...seed.projects['example-app'], score: { ...seed.projects['example-app'].score, score: 70 } });
+  await settle();
+  same(settingsForm(document, 'example-app'), form);
+  assert.equal(input.value, '21');
+  same(document.activeElement, input);
+  assert.equal(settingsWrites(store).length, 0);
 });

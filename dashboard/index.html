@@ -447,6 +447,49 @@ tr.is-closed td { color: var(--muted); }
 tr.is-stale .status-queued { color: var(--warn); background: var(--warn-bg); }
 .job-tools { margin-top: 6px; }
 
+/* Export buttons above the findings filters: plain outlined buttons, since a download asks the viewer before it saves. */
+.export { display: flex; flex-wrap: wrap; gap: 8px; }
+.export-btn {
+  padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--ink);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.export-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.export-btn:disabled { opacity: 0.6; cursor: progress; }
+
+/* Project settings (live mode, owner only): two groups on a surface, each layer's cadence a small number field. */
+.settings {
+  display: grid; gap: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+}
+.settings-group { margin: 0; padding: 0; border: 0; min-width: 0; display: grid; gap: 10px; }
+.settings-group > legend { padding: 0; margin-bottom: 2px; }
+.settings-check { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.settings-check input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.settings-why { font-size: 12.5px; color: var(--muted); max-width: 72ch; }
+.settings-field { display: grid; gap: 5px; min-width: 0; max-width: 260px; }
+.settings-field label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.settings select, .settings input[type="number"] {
+  width: 100%; min-width: 0; padding: 7px 10px; font: inherit; font-size: 13px; font-variant-numeric: tabular-nums;
+  border: 1px solid var(--line-strong); border-radius: 8px; background-color: var(--surface); color: var(--ink);
+}
+.settings [aria-invalid="true"] { border-color: var(--bad); outline-color: var(--bad); }
+.settings-systems { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.settings-system {
+  margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: 10px; padding: 10px 12px 12px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--sunk);
+}
+.settings-system > legend { padding: 0 4px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.settings-days { width: 88px; }
+.settings-pending { font-size: 11.5px; color: var(--info); }
+.settings-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.settings-save {
+  padding: 7px 14px; border: 1px solid var(--accent); border-radius: 8px;
+  background: var(--accent); color: var(--surface); font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.settings-save:hover:not(:disabled) { background: var(--surface); color: var(--accent); }
+.settings :disabled { opacity: 0.6; cursor: not-allowed; }
+.settings[aria-busy="true"] :disabled { cursor: progress; }
+.settings-error { color: var(--bad); font-size: 12.5px; }
+
 /* The confirm sheet: a modal dialog over a scrim, centred, inside the safe-area gutters. */
 .sheet-scrim {
   position: fixed; inset: 0; z-index: 30; display: grid; place-items: center;
@@ -513,7 +556,8 @@ tr.is-stale .status-queued { color: var(--warn); background: var(--warn-bg); }
   .card { padding: 16px; }
   .empty { padding: 22px; margin-top: 16px; }
   .empty-title { font-size: 19px; }
-  .decide select, .decide input { font-size: 16px; } /* under 16px, phones zoom the page on focus */
+  .decide select, .decide input, .settings select, .settings input[type="number"] { font-size: 16px; } /* under 16px, phones zoom the page on focus */
+  .settings-field { max-width: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -815,6 +859,71 @@ const RampartDashboard = (function () {
     return '';
   }
 
+  // ---- export: findings as SARIF 2.1.0 (pure, no DOM) -------------------------------------
+
+  const SARIF_LEVELS = { CRITICAL: 'error', HIGH: 'error', MEDIUM: 'warning', LOW: 'note', INFO: 'note' };
+
+  // A relative path as a SARIF uri: forward slashes, each segment percent-encoded.
+  const sarifUri = (path) => String(path).replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/');
+
+  // A Rampart location as SARIF locations: a code path (with its line when known) is a physicalLocation; a url, host or
+  // package is a logicalLocation whose kind says which, and a package's manifest path is its physicalLocation too.
+  function sarifLocations(loc) {
+    if (!isObject(loc)) return [];
+    const physical = (path, line) => {
+      const out = { artifactLocation: { uri: sarifUri(path) } };
+      if (Number.isInteger(line) && line >= 1) out.region = { startLine: line };
+      return out;
+    };
+    const logical = (kind, name, props) => {
+      const out = { name: String(name), kind };
+      const bag = {};
+      for (const [k, v] of Object.entries(props)) if (typeof v === 'string' && v !== '') bag[k] = v;
+      if (Object.keys(bag).length) out.properties = bag;
+      return out;
+    };
+    if (typeof loc.package === 'string') {
+      const out = { logicalLocations: [logical('package', loc.package, { ecosystem: loc.ecosystem })] };
+      if (typeof loc.path === 'string' && loc.path) out.physicalLocation = physical(loc.path);
+      return [out];
+    }
+    if (typeof loc.path === 'string' && loc.path) return [{ physicalLocation: physical(loc.path, loc.line) }];
+    if (typeof loc.url === 'string') return [{ logicalLocations: [logical('url', loc.url, { header: loc.header })] }];
+    if (typeof loc.host === 'string') return [{ logicalLocations: [logical('host', loc.host, { service: loc.service, setting: loc.setting })] }];
+    return [];
+  }
+
+  // SARIF 2.1.0 for the open (open or regressed) findings: one run by Rampart, one rule per distinct ruleId, one result per
+  // finding. A result carries the title, the location, class/status/id/severity and the finding id as its fingerprint; never
+  // the evidence, exploit scenario, recommendation or a decision's reason.
+  function toSarif(findings, options) {
+    const toolVersion = isObject(options) && typeof options.toolVersion === 'string' && options.toolVersion ? options.toolVersion : null;
+    const rules = [];
+    const ruleIndex = new Map();
+    const results = list(findings).filter(isActive).map((f) => {
+      const ruleId = typeof f.ruleId === 'string' && f.ruleId ? f.ruleId : 'rampart/unknown';
+      if (!ruleIndex.has(ruleId)) {
+        ruleIndex.set(ruleId, rules.length);
+        rules.push({ id: ruleId, shortDescription: { text: String(f.title || ruleId) } });
+      }
+      const result = {
+        ruleId,
+        ruleIndex: ruleIndex.get(ruleId),
+        level: own(SARIF_LEVELS, f.severity) ? SARIF_LEVELS[f.severity] : 'warning',
+        message: { text: String(f.title || ruleId) },
+      };
+      const locations = sarifLocations(f.location);
+      if (locations.length) result.locations = locations;
+      result.partialFingerprints = { rampartId: String(f.id) };
+      result.properties = { class: f.class, status: f.status, id: String(f.id), severity: f.severity };
+      return result;
+    });
+    const driver = { name: 'Rampart' };
+    if (toolVersion) driver.version = toolVersion;
+    driver.rules = rules;
+    return { $schema: 'https://json.schemastore.org/sarif-2.1.0.json', version: '2.1.0', runs: [{ tool: { driver }, results }] };
+  }
+
   // View state in the hash as one plain anchor token: p-<slug>, then ~<filter>.<value> for each filter off its default.
   const encodePart = (value) =>
     encodeURIComponent(String(value)).replace(/[~!*'()]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
@@ -939,7 +1048,9 @@ const RampartDashboard = (function () {
 
   // The page data static mode renders, from the DB's documents: {collection: [{id, data}]}. A project doc is the public
   // project plus its score (sync-plan.cjs projectDoc); findings, runs and jobs join it by their `project` field, and a
-  // finding's `disposition` field is its decision. `live` carries what the mode badge needs.
+  // finding's `disposition` field is its decision. `live` carries what the mode badge needs. The project doc's
+  // cadenceOverrides (cadence changes saved here that no sync has applied yet; null once a push consumed them, R26) go on
+  // the entry, not the project.
   function pageDataFromDocs(docs) {
     const bodies = (name) => list(isObject(docs) ? docs[name] : null)
       .filter((d) => isObject(d) && typeof d.id === 'string' && isObject(d.data))
@@ -971,6 +1082,7 @@ const RampartDashboard = (function () {
         runs: runsOf(slug).map(({ id: runId, ...run }) => Object.assign({ runId }, run)),
         dispositions,
         jobs: jobsOf(slug),
+        cadenceOverrides: isObject(cadenceOverrides) ? cadenceOverrides : null,
       };
     }).sort((a, b) => a.project.slug.localeCompare(b.project.slug));
     return {
@@ -1041,6 +1153,7 @@ const RampartDashboard = (function () {
     morphAttributes(from, to);
     morphChildren(from, Array.from(to.childNodes));
     if ((from.tagName === 'SELECT' || from.tagName === 'INPUT') && from.value !== to.value) from.value = to.value;
+    if (from.tagName === 'INPUT' && from.getAttribute('type') === 'checkbox' && from.checked !== to.checked) from.checked = to.checked;
   }
 
   // Make parent's children match next (detached nodes), reusing parent's own where they match. Children that will not be
@@ -1086,6 +1199,10 @@ const RampartDashboard = (function () {
     sheet: null, // the open confirm sheet: {scrim, dialog, opener, plan}
     waiting: new Set(), // job ids queued here that no executor was reached for: their row says to start /rampart watch
     jobWrites: new Set(), // job ids with a write in flight (one at a time per job)
+    settingsSaving: new Map(), // project slug -> the settings patch in flight (one write at a time per project doc)
+    downloads: null, // the downloads capability once the host gave one; the export buttons render only then
+    downloadsAsked: false,
+    exporting: false, // a save prompt is open (the host allows one at a time)
   };
 
   function show(view) {
@@ -1678,7 +1795,7 @@ const RampartDashboard = (function () {
   }
 
   // Everything the sheet shows and the confirm writes, from the data on screen when the sheet opens; {error} when the
-  // project, system, finding or job is gone or no estimate can be made. A requeue keeps the job's own route.
+  // project, system, finding or job is gone or no estimate can be made. A requeue routes again on the data on screen (R30a).
   function jobPlan(req) {
     const entry = state.entries.find((e) => e.project.slug === req.slug);
     if (!entry) return { error: 'This project is no longer in the dashboard data.' };
@@ -2092,7 +2209,7 @@ const RampartDashboard = (function () {
     const head = h('tr', null, ['ID', 'Severity', 'Class', 'System', 'Title', 'Location', 'Status', 'Last seen']
       .map((t) => h('th', { scope: 'col', class: t === 'Last seen' ? 'num' : null }, t)));
     return section('findings', 'Findings', 'Open a title for its evidence and recommendation.',
-      controls, tools,
+      exportTools(), controls, tools,
       h('div', { class: 'table-wrap' }, h('table', { class: 'findings' }, h('thead', null, head), h('tbody', { id: 'findings-body' }, view.rows))));
   }
 
@@ -2187,6 +2304,248 @@ const RampartDashboard = (function () {
       h('div', { class: 'table-wrap' }, h('table', { class: 'jobs' }, h('thead', null, head), h('tbody', null, rows))));
   }
 
+  // ---- settings (live mode, owner only) ----------------------------------------------------
+
+  // The project settings the page may change, written to projects/<slug>; the watch loop's pull applies them to
+  // project.json (scripts/sync-plan.cjs mergedSettings): cloudAllowed, defaultExecutor, huntEffort, and cadenceOverrides
+  // {<systemId>: {<layer>: days}}. Save writes only what changed, plus updatedAt, with update: nested objects merge, so a
+  // cadence change touches only its own path. The form has the decision form's gate (canWrite, R6).
+  const EXECUTOR_KINDS = Object.freeze(['local', 'cloud']);
+  const EFFORTS = Object.freeze(['low', 'medium', 'high']);
+  const CADENCE_MAX = 365;
+  const canConfigure = () => canDecide();
+
+  // Cloud can be turned on only when a system's repo is on github.com; Jobs.route still decides each job.
+  const cloudEligible = (project) =>
+    list(project.systems).some((s) => isObject(s) && isObject(s.repo) && Jobs.isGithubRemote(s.repo.remote));
+
+  function currentSettings(project) {
+    return {
+      cloudAllowed: project.cloudAllowed === true,
+      defaultExecutor: known(EXECUTOR_KINDS, project.defaultExecutor, 'local'),
+      huntEffort: known(EFFORTS, project.huntEffort, 'medium'), // the cost estimate's default
+    };
+  }
+
+  // A layer's cadence as the page shows it: an override saved here that no sync has applied yet, else the system's own
+  // cadenceDays. A null cadenceOverrides (consumed by a push, R26) is no override.
+  function cadenceOf(entry, system, layer) {
+    const base = isObject(system.layers[layer]) && Number.isInteger(system.layers[layer].cadenceDays) ? system.layers[layer].cadenceDays : null;
+    const overrides = isObject(entry.cadenceOverrides) && isObject(entry.cadenceOverrides[system.id]) ? entry.cadenceOverrides[system.id] : {};
+    const pending = overrides[layer];
+    if (Number.isInteger(pending) && pending >= 1 && pending !== base) return { days: pending, pending: true };
+    return { days: base, pending: false };
+  }
+
+  // The entry as the settings form shows it while a save is in flight: the patch over the project and its overrides.
+  function withSettingsInFlight(entry) {
+    const patch = state.settingsSaving.get(String(entry.project.slug));
+    if (!patch) return entry;
+    const { cadenceOverrides, updatedAt, ...top } = patch;
+    const overrides = Object.assign({}, isObject(entry.cadenceOverrides) ? entry.cadenceOverrides : {});
+    for (const id of Object.keys(cadenceOverrides || {})) overrides[id] = Object.assign({}, isObject(overrides[id]) ? overrides[id] : {}, cadenceOverrides[id]);
+    return Object.assign({}, entry, { project: Object.assign({}, entry.project, top), cadenceOverrides: overrides });
+  }
+
+  function settingsSelect(id, name, label, options, value, busy) {
+    const select = h('select', { id, name, 'data-write': true, disabled: busy },
+      options.map(([v, text]) => h('option', { value: v }, text)));
+    select.value = value;
+    return h('div', { class: 'settings-field' }, h('label', { for: id }, label), select);
+  }
+
+  function settingsSection(entry) {
+    if (!canConfigure()) return null;
+    const slug = String(entry.project.slug);
+    const busy = state.settingsSaving.has(slug);
+    const view = withSettingsInFlight(entry);
+    const now = currentSettings(view.project);
+    const eligible = cloudEligible(view.project);
+    const id = (name) => `settings-${slug}-${name}`;
+    const errorId = id('error');
+    const cadence = list(view.project.systems).filter((s) => isObject(s) && declaredLayers(s).length).map((sys) =>
+      h('fieldset', { class: 'settings-system', 'data-key': String(sys.id) },
+        h('legend', null, sys.name && sys.name !== sys.id ? `${sys.name} (${sys.id})` : String(sys.id)),
+        declaredLayers(sys).map((L) => {
+          const c = cadenceOf(view, sys, L);
+          const inputId = id(`cadence-${sys.id}-${L}`);
+          return h('div', { class: 'settings-field settings-days' },
+            h('label', { for: inputId }, `${L}, days`),
+            h('input', {
+              id: inputId, name: 'cadence', type: 'number', inputmode: 'numeric', min: '1', max: String(CADENCE_MAX), step: '1',
+              value: c.days === null ? '' : String(c.days), 'data-system': String(sys.id), 'data-layer': L, 'data-write': true,
+              disabled: busy, 'aria-describedby': errorId,
+            }),
+            c.pending ? h('span', { class: 'settings-pending' }, 'Saved; applies on the next sync') : null);
+        })));
+    const form = h('form', {
+      class: 'settings', 'data-write': true, 'data-settings': slug, novalidate: true, 'aria-busy': busy ? 'true' : null,
+      on: { input: markDirty, change: markDirty, submit: saveSettings },
+    },
+    h('fieldset', { class: 'settings-group' },
+      h('legend', { class: 'label' }, 'Where jobs run'),
+      h('div', { class: 'settings-check' },
+        h('input', {
+          type: 'checkbox', id: id('cloud'), name: 'cloudAllowed', 'data-write': true, checked: now.cloudAllowed,
+          disabled: busy || (!eligible && !now.cloudAllowed), 'aria-describedby': id('cloud-why'),
+        }),
+        h('label', { for: id('cloud') }, 'Allow cloud sessions')),
+      h('p', { class: 'settings-why', id: id('cloud-why') }, eligible
+        ? 'Each job still runs in the cloud only on a system whose repo is on github.com and that is not reached through a host.'
+        : 'Cloud sessions need a system whose repo is on github.com, and this project has none.'),
+      settingsSelect(id('executor'), 'defaultExecutor', 'Default executor', [['local', 'Local'], ['cloud', 'Cloud']], now.defaultExecutor, busy),
+      settingsSelect(id('effort'), 'huntEffort', 'L3 hunt effort', [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']], now.huntEffort, busy)),
+    h('fieldset', { class: 'settings-group' },
+      h('legend', { class: 'label' }, 'Cadence (days between audits, 1 to 365)'),
+      h('div', { class: 'settings-systems' }, cadence.length ? cadence : h('p', { class: 'muted' }, 'No layers declared yet.'))),
+    h('div', { class: 'settings-foot' },
+      h('button', { type: 'submit', class: 'settings-save', 'data-write': true, disabled: busy }, busy ? 'Saving…' : 'Save settings'),
+      h('p', { class: 'settings-error', id: errorId, role: 'alert', hidden: true })));
+    const el = section('settings', 'Settings', 'Rampart applies a saved change to the project on its next sync.', form);
+    el.setAttribute('data-key', 'settings');
+    return el;
+  }
+
+  // The DB write. async, so a path the store's builder refuses (it throws) arrives as a rejection like any other.
+  async function writeSettings(slug, patch) {
+    return state.live.db.doc(`projects/${slug}`).update(patch);
+  }
+
+  // Save: check every field, then write the changed keys and updatedAt. The form shows the change at once; when the write
+  // settles the DB's documents speak again, so a refused write reverts the form, and a toast says what failed.
+  function saveSettings(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const slug = form.getAttribute('data-settings');
+    if (!canConfigure() || state.settingsSaving.has(slug)) return;
+    const error = form.querySelector('.settings-error');
+    for (const el of form.querySelectorAll('[aria-invalid]')) el.removeAttribute('aria-invalid');
+    const refuse = (message, field) => {
+      error.textContent = message;
+      error.hidden = false;
+      if (field) {
+        field.setAttribute('aria-invalid', 'true');
+        field.focus();
+      }
+    };
+    const entry = state.entries.find((e) => e.project.slug === slug);
+    if (!entry) return refuse('This project is no longer in the dashboard data.');
+    const now = currentSettings(entry.project);
+    const patch = {};
+    const cloudBox = form.querySelector('input[name="cloudAllowed"]');
+    const cloud = cloudBox.checked === true;
+    if (cloud !== now.cloudAllowed) {
+      if (cloud && !cloudEligible(entry.project)) return refuse('Cloud sessions need a system whose repo is on github.com.', cloudBox);
+      patch.cloudAllowed = cloud;
+    }
+    const executor = form.querySelector('select[name="defaultExecutor"]');
+    if (EXECUTOR_KINDS.indexOf(executor.value) === -1) return refuse('Choose local or cloud as the default executor.', executor);
+    if (executor.value !== now.defaultExecutor) patch.defaultExecutor = executor.value;
+    const effort = form.querySelector('select[name="huntEffort"]');
+    if (EFFORTS.indexOf(effort.value) === -1) return refuse('Choose low, medium or high as the hunt effort.', effort);
+    if (effort.value !== now.huntEffort) patch.huntEffort = effort.value;
+    const overrides = {};
+    for (const input of form.querySelectorAll('input[name="cadence"]')) {
+      const systemId = input.getAttribute('data-system');
+      const layer = input.getAttribute('data-layer');
+      const system = list(entry.project.systems).find((s) => isObject(s) && String(s.id) === systemId);
+      if (!system || !isObject(system.layers) || !isObject(system.layers[layer])) continue;
+      const text = String(input.value || '').trim();
+      const days = /^\d+$/.test(text) ? Number(text) : NaN;
+      if (!(days >= 1 && days <= CADENCE_MAX)) {
+        return refuse(`The ${layer} cadence of ${system.name || systemId} must be a whole number of days from 1 to ${CADENCE_MAX}.`, input);
+      }
+      if (days !== cadenceOf(entry, system, layer).days) (overrides[systemId] = overrides[systemId] || {})[layer] = days;
+    }
+    if (Object.keys(overrides).length) patch.cadenceOverrides = overrides;
+    if (!Object.keys(patch).length) return refuse('Nothing to save: these are the current settings.');
+    patch.updatedAt = new Date().toISOString();
+    error.hidden = true;
+    form.removeAttribute('data-dirty');
+    state.settingsSaving.set(slug, patch);
+    rerender();
+    const name = entry.project.name || slug;
+    const settled = () => {
+      state.settingsSaving.delete(slug);
+      rerender();
+    };
+    writeSettings(slug, patch).then(() => {
+      settled();
+      toast(`Saved the settings for ${name}. Rampart applies them on its next sync.`);
+    }, (err) => {
+      settled();
+      toast(`Could not save the settings for ${name}. ${writeFailure(err)}`, null, ERROR_TOAST_MS);
+    });
+  }
+
+  // ---- export (every viewer the host lets save files, live or static) ----------------------
+
+  // The downloads capability is asked for once, when a project opens; the buttons render only when the host gives it.
+  function askDownloads() {
+    if (state.downloadsAsked) return;
+    state.downloadsAsked = true;
+    capability('downloads').then((ns) => {
+      if (!ns || typeof ns.save !== 'function') return;
+      state.downloads = ns;
+      rerender();
+    });
+  }
+
+  // The project's findings as the page already has them (privacy-filtered by buildData or the push): JSONL, or SARIF for the
+  // open ones. The allowlist of downloads.d.ts has neither .jsonl nor .sarif, so the files are .jsonl.txt and .sarif.json.
+  function exportTools() {
+    if (!state.downloads) return null;
+    const button = (kind, label) => h('button', {
+      type: 'button', class: 'export-btn', id: `export-${kind}`, 'data-export': kind, disabled: state.exporting, on: { click: exportFindings },
+    }, label);
+    return h('div', { class: 'export', 'data-key': 'export', role: 'group', 'aria-label': 'Download the findings' },
+      button('jsonl', 'Download findings (JSONL)'), button('sarif', 'Download SARIF'));
+  }
+
+  // Refusals that leave saving possible in this view; every other code (unavailable, not_granted, the lifecycle codes and
+  // any code this page does not know) means it is not, and the buttons go.
+  const DOWNLOAD_RETRYABLE = Object.freeze([
+    'declined', 'rate_limited', 'too_large', 'rejected_extension', 'extension_not_enabled', 'bad_request', 'transform_error',
+  ]);
+
+  // What the toast says when a save is refused, by error code (downloads.d.ts; an unknown code reads as unavailable). A
+  // declined save is the viewer's answer, not an error: null, no toast.
+  function downloadFailure(code) {
+    if (code === 'declined') return null;
+    if (code === 'rate_limited') return 'Another download is waiting for your answer. Finish it, then try again.';
+    if (code === 'too_large') return 'The file is too large to download here.';
+    if (code === 'rejected_extension' || code === 'extension_not_enabled') return 'This file type cannot be downloaded here.';
+    if (code === 'bad_request' || code === 'transform_error') return 'The file could not be prepared. Reload the page and try again.';
+    return 'Downloads are not available in this view.';
+  }
+
+  async function exportFindings(event) {
+    const kind = event.currentTarget.getAttribute('data-export');
+    const downloads = state.downloads;
+    const entry = entriesOf(state.data).find((e) => e.project.slug === state.slug);
+    if (!downloads || !entry || state.exporting) return;
+    const slug = entry.project.slug;
+    const findings = list(entry.findings).filter(isObject);
+    const file = kind === 'sarif'
+      ? { filename: `${slug}-findings.sarif.json`, data: `${JSON.stringify(toSarif(findings), null, 2)}\n` }
+      : { filename: `${slug}-findings.jsonl.txt`, data: `${findings.map((f) => JSON.stringify(f)).join('\n')}\n` };
+    state.exporting = true;
+    rerender();
+    try {
+      const result = await downloads.save(file);
+      state.exporting = false;
+      rerender();
+      if (isObject(result) && result.status === 'saved') toast(`Downloaded ${file.filename}`);
+    } catch (err) {
+      const code = isObject(err) && typeof err.code === 'string' ? err.code : 'unavailable';
+      if (DOWNLOAD_RETRYABLE.indexOf(code) === -1) state.downloads = null;
+      state.exporting = false;
+      rerender();
+      const message = downloadFailure(code);
+      if (message) toast(message, null, ERROR_TOAST_MS);
+    }
+  }
+
   function detailChildren(entry) {
     const p = entry.project;
     const systems = list(p.systems).filter(isObject);
@@ -2209,6 +2568,7 @@ const RampartDashboard = (function () {
       sheetSection(entry),
       findingsSection(entry),
       jobsSection(entry),
+      settingsSection(entry),
       runsSection(entry),
     ].filter(Boolean);
   }
@@ -2217,6 +2577,7 @@ const RampartDashboard = (function () {
   function renderDetail(entry) {
     $('detail-view').replaceChildren(...detailChildren(entry));
     show('detail');
+    askDownloads();
     window.scrollTo(0, 0);
     $('detail-heading').focus({ preventScroll: true });
   }
@@ -2612,7 +2973,7 @@ const RampartDashboard = (function () {
     LAYERS, ACTION_LABELS, DEFAULT_FILTERS, DEFAULT_ENGINES, parseEngines, runnableLayers,
     isData, hasProjects, openCounts, freshness, lastReviewed, auditCommand, formatLocation,
     parseHash, buildHash, filterFindings, sortFindings, loadData, render,
-    pageDataFromDocs, executorOnline, liveSource, canWrite,
+    pageDataFromDocs, executorOnline, liveSource, canWrite, toSarif,
   };
 })();
 </script>
