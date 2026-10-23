@@ -11,7 +11,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { rampartHome, projectDir, runDir, newRunId } = require('./lib/paths.cjs');
+const { rampartHome, machineId, projectDir, runDir, newRunId } = require('./lib/paths.cjs');
 const { validate, loadSchema } = require('./lib/validate.cjs');
 const { redact } = require('./lib/redact.cjs');
 
@@ -388,19 +388,24 @@ class UsageError extends Error {}
 const USAGE = [
   'usage: node scripts/store.cjs <verb> [args] [--json]',
   '  projects',
-  '  project <slug>',
+  '  project <slug>                (--json adds machineId: this machine\'s key in repo.paths)',
   '  project-save <file.json>',
-  '  findings <slug> [--status <status>]',
+  '  findings <slug> [--status <status>] [--source <source>] [--system <id>] [--since <iso>] [--new-since <iso>]',
+  '                  [--id <id>] [--ids]',
   '  disposition <slug> <id> <status> --reason "<text>" [--by <name>]',
   '  set-class <slug> <id> <class> --note "<text>"',
 ].join('\n');
 
-const VALUE_FLAGS = ['status', 'reason', 'by', 'note'];
+const VALUE_FLAGS = ['status', 'reason', 'by', 'note', 'source', 'system', 'since', 'new-since', 'id'];
+const BOOLEAN_FLAGS = ['json', 'ids'];
+const FINDING_FILTERS = ['status', 'source', 'system', 'since', 'new-since', 'id'];
+const FINDING_ID_RE = /^[0-9a-f]{12}$/;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T|$)/;
 const VERBS = {
   projects: { args: [], flags: [] },
   project: { args: ['slug'], flags: [] },
   'project-save': { args: ['file.json'], flags: [] },
-  findings: { args: ['slug'], flags: ['status'] },
+  findings: { args: ['slug'], flags: [...FINDING_FILTERS, 'ids'] },
   disposition: { args: ['slug', 'id', 'status'], flags: ['reason', 'by'], required: ['reason'] },
   'set-class': { args: ['slug', 'id', 'class'], flags: ['note'], required: ['note'] },
 };
@@ -416,8 +421,8 @@ function parseArgs(argv) {
     }
     const eq = arg.indexOf('=');
     const name = eq === -1 ? arg.slice(2) : arg.slice(2, eq);
-    if (name === 'json' && eq === -1) {
-      flags.json = true;
+    if (BOOLEAN_FLAGS.includes(name) && eq === -1) {
+      flags[name] = true;
     } else if (VALUE_FLAGS.includes(name)) {
       const value = eq === -1 ? argv[++i] : arg.slice(eq + 1);
       if (value === undefined) throw new UsageError(`--${name} needs a value`);
@@ -427,6 +432,39 @@ function parseArgs(argv) {
     }
   }
   return { args, flags };
+}
+
+// A time given to --since or --new-since, in ms. It must start like an ISO date (YYYY-MM-DD) and parse.
+function filterTime(name, value) {
+  const ms = ISO_DATE_RE.test(value) ? Date.parse(value) : NaN;
+  if (!Number.isFinite(ms)) throw new UsageError(`--${name} must be an ISO date-time, such as 2026-10-23T18:02:11.000Z`);
+  return ms;
+}
+
+// The findings filters, AND-combined, as one predicate. --since keeps findings last seen at or after the time (every
+// sighting moves lastSeen, so it means "reported by a scan since then"); --new-since keeps those first seen at or after it.
+// A finding whose time cannot be read does not pass a time filter.
+function findingFilter(flags) {
+  for (const name of FINDING_FILTERS) {
+    if (flags[name] === '') throw new UsageError(`--${name} needs a value`);
+  }
+  const { status, source, system, id } = flags;
+  if (status !== undefined && !FINDING_STATUSES.includes(status)) {
+    throw new UsageError(`--status must be one of ${FINDING_STATUSES.join(', ')}`);
+  }
+  const sources = loadSchema('finding').properties.source.enum;
+  if (source !== undefined && !sources.includes(source)) throw new UsageError(`--source must be one of ${sources.join(', ')}`);
+  if (id !== undefined && !FINDING_ID_RE.test(id)) throw new UsageError('--id must be a finding id (12 hex characters)');
+  const since = flags.since === undefined ? null : filterTime('since', flags.since);
+  const newSince = flags['new-since'] === undefined ? null : filterTime('new-since', flags['new-since']);
+  const atOrAfter = (stamp, ms) => typeof stamp === 'string' && Date.parse(stamp) >= ms;
+  return (f) =>
+    (status === undefined || f.status === status) &&
+    (source === undefined || f.source === source) &&
+    (system === undefined || f.system === system) &&
+    (id === undefined || f.id === id) &&
+    (since === null || atOrAfter(f.lastSeen, since)) &&
+    (newSince === null || atOrAfter(f.firstSeen, newSince));
 }
 
 function defaultBy() {
@@ -446,7 +484,11 @@ const HANDLERS = {
     const p = readProject(slug);
     if (!p) throw new Error(`project ${slug} not found`);
     const systems = p.systems.map((s) => `  ${s.id}  ${s.type}  ${s.name}`);
-    return { text: [`${p.slug}: ${p.name} (criticality ${p.criticality}, executor ${p.defaultExecutor})`, ...systems].join('\n'), json: p };
+    // machineId is not part of the project: it tells the reader which repo.paths entry is this machine's.
+    return {
+      text: [`${p.slug}: ${p.name} (criticality ${p.criticality}, executor ${p.defaultExecutor})`, ...systems].join('\n'),
+      json: { ...p, machineId: machineId() },
+    };
   },
   'project-save': ([file]) => {
     const text = readOptional(file);
@@ -460,11 +502,10 @@ const HANDLERS = {
     const saved = writeProject(project);
     return { text: saved.slug, json: saved };
   },
-  findings: ([slug], { status }) => {
-    if (status !== undefined && !FINDING_STATUSES.includes(status)) {
-      throw new UsageError(`--status must be one of ${FINDING_STATUSES.join(', ')}`);
-    }
-    const rows = readFindings(slug).filter((f) => status === undefined || f.status === status);
+  findings: ([slug], flags) => {
+    const rows = readFindings(slug).filter(findingFilter(flags));
+    // --ids prints only the ids (one per line, or a JSON array), so a long list stays short.
+    if (flags.ids) return { text: rows.map((f) => f.id).join('\n'), json: rows.map((f) => f.id) };
     return { text: rows.map((f) => [f.id, f.severity, f.status, f.class, f.title].join('  ')).join('\n'), json: rows };
   },
   disposition: ([slug, id, status], { reason, by }) => {

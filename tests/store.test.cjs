@@ -6,6 +6,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const store = require('../scripts/store.cjs');
 const { validate, loadSchema } = require('../scripts/lib/validate.cjs');
+const { machineId } = require('../scripts/lib/paths.cjs');
 
 const STORE = path.join(__dirname, '..', 'scripts', 'store.cjs');
 const SLUG = 'example-app';
@@ -921,7 +922,10 @@ test('CLI projects and project print the store contents, as text or with --json'
   assert.equal(text.status, 0, text.stderr);
   assert.match(text.stdout, /example-app/);
   assert.match(text.stdout, /Example App/);
-  assert.deepEqual(JSON.parse(cli('project', SLUG, '--json').stdout), store.readProject(SLUG));
+  const printed = JSON.parse(cli('project', SLUG, '--json').stdout);
+  assert.deepEqual(printed, { ...store.readProject(SLUG), machineId: machineId() }, 'the project plus this machine\'s id');
+  assert.match(printed.machineId, /^[0-9a-f]{12}$/);
+  assert.ok(!('machineId' in store.readProject(SLUG)), 'machineId is printed, never stored');
 
   const missing = cli('project', 'no-such-project');
   assert.equal(missing.status, 1);
@@ -945,6 +949,74 @@ test('CLI findings lists findings and filters by --status', () => {
 
   assert.equal(cli('findings', SLUG, '--status', 'bogus').status, 2);
   assert.equal(cli('findings', 'no-such-project').stdout, '');
+});
+
+// A gitleaks hit in system "mobile" (or another system), as the L1 secrets scan records it.
+const gitleaksHit = (id, system = 'mobile') => finding({
+  id, system, layer: 'L1', source: 'gitleaks', class: 'tool', ruleId: `gitleaks/generic-api-key@${id}`,
+  title: 'Possible API key in src/config.ts', location: { path: 'src/config.ts', symbol: null, commit: id },
+});
+
+test('CLI findings filters by --source, --system, --since and --new-since, all AND-combined', () => {
+  store.upsertFindings(SLUG, [finding(), gitleaksHit(ID_B)], RUN); // A (infra-probe, db) and B, first seen now
+  tick();
+  const between = iso();
+  tick();
+  store.upsertFindings(SLUG, [gitleaksHit(ID_B), gitleaksHit(ID_C, 'web')], RUN); // B seen again, C new
+  const ids = (...args) => {
+    const r = cli('findings', SLUG, ...args, '--ids', '--json');
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(r.stdout).sort();
+  };
+
+  assert.deepEqual(ids(), [ID_A, ID_B, ID_C]);
+  assert.deepEqual(ids('--source', 'gitleaks'), [ID_B, ID_C]);
+  assert.deepEqual(ids('--system', 'web'), [ID_C]);
+  assert.deepEqual(ids('--since', between), [ID_B, ID_C], '--since is lastSeen: B was reported again, A was not');
+  assert.deepEqual(ids('--new-since', between), [ID_C], '--new-since is firstSeen: only C is new');
+  assert.deepEqual(ids('--source', 'gitleaks', '--system', 'mobile', '--since', between), [ID_B]);
+  assert.deepEqual(ids('--source', 'gitleaks', '--system', 'mobile', '--new-since', between), []);
+  assert.deepEqual(ids('--source', 'gitleaks', '--status', 'open', '--since=' + between), [ID_B, ID_C]);
+  assert.deepEqual(ids('--source', 'trivy'), []);
+  assert.deepEqual(ids('--since', '2999-01-01'), [], 'a date-only value is read as midnight UTC');
+
+  store.setDisposition(SLUG, ID_C, { status: 'false_positive', reason: 'triage: fixture', by: 'rampart' });
+  assert.deepEqual(ids('--source', 'gitleaks', '--status', 'open'), [ID_B]);
+});
+
+test('CLI findings --ids prints one id per line, and --id fetches one record', () => {
+  store.upsertFindings(SLUG, [finding(), gitleaksHit(ID_B)], RUN);
+
+  const text = cli('findings', SLUG, '--ids');
+  assert.equal(text.status, 0, text.stderr);
+  assert.deepEqual(text.stdout.trim().split('\n').sort(), [ID_A, ID_B], 'ids only, nothing else on the line');
+
+  const one = cli('findings', SLUG, '--id', ID_B, '--json');
+  assert.equal(one.status, 0, one.stderr);
+  const rows = JSON.parse(one.stdout);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, ID_B);
+  assert.deepEqual(rows[0].location, { path: 'src/config.ts', symbol: null, commit: ID_B });
+
+  assert.equal(cli('findings', SLUG, '--id', ID_C).stdout, '', 'an id the project does not have lists nothing');
+  assert.equal(cli('findings', SLUG, '--id', ID_A, '--ids').stdout, `${ID_A}\n`);
+});
+
+test('CLI findings rejects bad filter values with exit 2 and prints nothing', () => {
+  store.upsertFindings(SLUG, [finding()], RUN);
+  const cases = [
+    ['--source', 'gitleak'], ['--source', ''], ['--system', ''], ['--system=', '--ids'],
+    ['--since', 'yesterday'], ['--since', '23/10/2026'], ['--since', '2026-13-45'], ['--new-since', 'now'],
+    ['--id', 'A3F9C21BE0D4'], ['--id', 'a3f9c21b'], ['--ids=1'], ['--since'],
+  ];
+  for (const args of cases) {
+    const r = cli('findings', SLUG, ...args);
+    assert.equal(r.status, 2, `findings ${args.join(' ')}: ${r.stderr}`);
+    assert.equal(r.stdout, '', args.join(' '));
+  }
+  assert.match(cli('findings', SLUG, '--source', 'gitleak').stderr, /--source must be one of .*gitleaks/);
+  assert.equal(cli('projects', '--ids').status, 2, 'only findings takes --ids');
+  assert.equal(cli('project', SLUG, '--since', '2026-10-23').status, 2, 'only findings takes the filters');
 });
 
 test('CLI disposition records the decision; set-class promotes a finding', () => {
