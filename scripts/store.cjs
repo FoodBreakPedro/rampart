@@ -23,7 +23,8 @@ const FINDING_STATUSES = ['open', 'fixed', 'false_positive', 'accepted_risk', 'r
 const CLASSES = ['verified', 'tool', 'hardening'];
 const FINAL_RUN_STATUSES = ['done', 'skipped', 'failed'];
 // Fields an upsert replaces on an existing finding. Everything else (id, project, system, layer, source, ruleId,
-// status, firstSeen, lastSeen, fixedIn) belongs to the store or to the finding's identity.
+// status, firstSeen, lastSeen, fixedIn) belongs to the store or to the finding's identity. One exception inside
+// the list: a verified finding re-reported as a plain tool hit keeps its class and evidence (see upsertFindings).
 const MUTABLE = [
   'title', 'severity', 'confidence', 'cwe', 'location', 'evidence', 'exploitScenario',
   'preconditions', 'recommendation', 'verification', 'externalIds', 'class', 'pack',
@@ -148,7 +149,13 @@ function writeProject(project) {
 const readFindings = (slug) => readJsonl(projectFile(slug, 'findings.jsonl'));
 const writeFindings = (slug, rows) => writeAtomic(projectFile(slug, 'findings.jsonl'), toJsonl(rows));
 
-// Merge incoming findings into findings.jsonl by id. runId is checked but not stored: a finding has no field for it.
+// Merge incoming findings into findings.jsonl by id. runId is checked and named in the disposition of a regressed
+// finding; a finding itself has no field for it.
+// A promotion survives re-scans: if the stored class is 'verified' and the incoming one is 'tool' (the scanner
+// re-reporting what triage already confirmed), the stored class and evidence are kept. Other class changes follow
+// the incoming finding.
+// When a fixed finding reappears, its record in dispositions.json becomes 'regressed' too, so the file never says
+// 'fixed' for a regressed finding.
 function upsertFindings(slug, findings, runId) {
   checkSlug(slug);
   checkRunId(runId);
@@ -159,6 +166,7 @@ function upsertFindings(slug, findings, runId) {
 
   const stamp = now();
   const byId = new Map(readFindings(slug).map((f) => [f.id, f]));
+  const regressed = [];
   // The same id twice in one batch is one sighting; the later copy wins.
   for (const incoming of new Map(findings.map((f) => [f.id, f])).values()) {
     const cur = byId.get(incoming.id);
@@ -169,15 +177,29 @@ function upsertFindings(slug, findings, runId) {
       cur.lastSeen = stamp;
       counts.unchanged++;
     } else {
-      const changed = MUTABLE.filter((k) => incoming[k] !== undefined && canon(incoming[k]) !== canon(cur[k]));
+      const keepTriage = cur.class === 'verified' && incoming.class === 'tool';
+      const changed = MUTABLE.filter(
+        (k) =>
+          !(keepTriage && (k === 'class' || k === 'evidence')) &&
+          incoming[k] !== undefined &&
+          canon(incoming[k]) !== canon(cur[k])
+      );
       for (const k of changed) cur[k] = incoming[k];
       cur.lastSeen = stamp;
       if (cur.status === 'fixed') {
         cur.status = 'regressed';
+        regressed.push(cur.id);
         counts.regressed++;
       } else if (changed.length) counts.updated++;
       else counts.unchanged++;
     }
+  }
+  if (regressed.length) {
+    const dispositions = readDispositions(slug);
+    for (const id of regressed) {
+      dispositions[id] = { status: 'regressed', reason: `reappeared in run ${runId}`, by: 'rampart', at: stamp };
+    }
+    writeAtomic(projectFile(slug, 'dispositions.json'), toJson(dispositions));
   }
   writeFindings(slug, [...byId.values()]);
   return counts;

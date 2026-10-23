@@ -256,6 +256,115 @@ test('upsert: a fixed finding that comes back is regressed, keeping its original
   assert.equal(store.readFindings(SLUG)[0].status, 'regressed');
 });
 
+test('upsert: a regression rewrites the disposition record, so dispositions.json never says fixed for it', () => {
+  store.upsertFindings(SLUG, [finding(), finding({ id: ID_B })], RUN);
+  store.setDisposition(SLUG, ID_A, { status: 'fixed', reason: 'patched in abc123', by: 'pedro' });
+  store.setDisposition(SLUG, ID_B, { status: 'fixed', reason: 'patched in def456', by: 'pedro' });
+  const untouched = store.readDispositions(SLUG)[ID_B];
+  tick();
+
+  // Only A comes back; B stays fixed and keeps its record.
+  const run2 = '2026-10-24T09-30-00Z';
+  const before = iso();
+  store.upsertFindings(SLUG, [finding()], run2);
+  const after = iso();
+
+  const disp = readJsonFile(projectPath('dispositions.json'));
+  const { at, ...rest } = disp[ID_A];
+  assert.deepEqual(rest, { status: 'regressed', reason: `reappeared in run ${run2}`, by: 'rampart' });
+  assert.ok(at >= before && at <= after);
+  assert.deepEqual(disp[ID_B], untouched);
+  assert.deepEqual(store.readDispositions(SLUG), disp);
+  const rows = readJsonlFile(projectPath('findings.jsonl'));
+  assert.equal(rows[0].status, 'regressed');
+  assert.equal(rows[1].status, 'fixed');
+
+  // Seen again while regressed: no new regression, so the record is not rewritten.
+  tick();
+  store.upsertFindings(SLUG, [finding()], '2026-10-25T09-30-00Z');
+  assert.deepEqual(readJsonFile(projectPath('dispositions.json'))[ID_A], disp[ID_A]);
+
+  // A person can still close it again.
+  store.setDisposition(SLUG, ID_A, { status: 'fixed', reason: 'patched again', by: 'pedro' });
+  assert.equal(store.readDispositions(SLUG)[ID_A].status, 'fixed');
+});
+
+test('upsert: a regression with no earlier disposition record still writes one', () => {
+  store.upsertFindings(SLUG, [finding()], RUN);
+  // Mark it fixed directly in findings.jsonl, as an import or an older store might have.
+  const rows = store.readFindings(SLUG);
+  rows[0].status = 'fixed';
+  fs.writeFileSync(projectPath('findings.jsonl'), rows.map((r) => `${JSON.stringify(r)}\n`).join(''));
+  assert.ok(!fs.existsSync(projectPath('dispositions.json')));
+
+  assert.deepEqual(store.upsertFindings(SLUG, [finding()], RUN), { added: 0, updated: 0, unchanged: 0, regressed: 1 });
+  assert.equal(store.readDispositions(SLUG)[ID_A].status, 'regressed');
+});
+
+test('upsert: a promotion survives re-scans (verified is not reset to tool, evidence is kept)', () => {
+  const scan = () => finding({ class: 'tool', evidence: 'gitleaks: generic-api-key at config.ts' });
+  store.upsertFindings(SLUG, [scan()], RUN);
+  store.setClass(SLUG, ID_A, 'verified', 'triage: real key');
+  const promoted = store.readFindings(SLUG)[0];
+  assert.equal(promoted.class, 'verified');
+  assert.ok(promoted.evidence.endsWith('; triage: real key'));
+  tick();
+
+  // The scanner reports the same hit again, as a plain tool finding.
+  const res = store.upsertFindings(SLUG, [scan()], RUN);
+  assert.deepEqual(res, { added: 0, updated: 0, unchanged: 1, regressed: 0 });
+  const row = readJsonlFile(projectPath('findings.jsonl'))[0];
+  assert.equal(row.class, 'verified');
+  assert.equal(row.evidence, promoted.evidence);
+  assert.ok(row.evidence.endsWith('; triage: real key'));
+  assert.ok(row.lastSeen > promoted.lastSeen);
+
+  // Another mutable field that did change still updates; class and evidence are still kept.
+  const res2 = store.upsertFindings(SLUG, [{ ...scan(), severity: 'LOW', title: 'Renamed rule' }], RUN);
+  assert.deepEqual(res2, { added: 0, updated: 1, unchanged: 0, regressed: 0 });
+  const row2 = store.readFindings(SLUG)[0];
+  assert.equal(row2.severity, 'LOW');
+  assert.equal(row2.title, 'Renamed rule');
+  assert.equal(row2.class, 'verified');
+  assert.equal(row2.evidence, promoted.evidence);
+});
+
+test('upsert: a fixed verified finding re-reported as a tool hit regresses but keeps its promotion', () => {
+  store.upsertFindings(SLUG, [finding({ class: 'tool', evidence: 'scanner says so' })], RUN);
+  store.setClass(SLUG, ID_A, 'verified', 'triage: real key');
+  const promoted = store.readFindings(SLUG)[0];
+  store.setDisposition(SLUG, ID_A, { status: 'fixed', reason: 'key rotated', by: 'pedro' });
+
+  const res = store.upsertFindings(SLUG, [finding({ class: 'tool', evidence: 'scanner says so' })], RUN);
+  assert.deepEqual(res, { added: 0, updated: 0, unchanged: 0, regressed: 1 });
+  const row = store.readFindings(SLUG)[0];
+  assert.equal(row.status, 'regressed');
+  assert.equal(row.class, 'verified');
+  assert.equal(row.evidence, promoted.evidence);
+});
+
+test('upsert: every other class transition follows the incoming finding', () => {
+  const cases = [
+    ['verified', 'hardening'],
+    ['verified', 'verified'],
+    ['tool', 'verified'],
+    ['tool', 'hardening'],
+    ['tool', 'tool'],
+    ['hardening', 'verified'],
+    ['hardening', 'tool'],
+  ];
+  for (const [stored, incoming] of cases) {
+    const slug = `class-${stored}-to-${incoming}`;
+    store.upsertFindings(slug, [finding({ class: stored, evidence: 'old evidence' })], RUN);
+    const res = store.upsertFindings(slug, [finding({ class: incoming, evidence: 'new evidence' })], RUN);
+    const row = store.readFindings(slug)[0];
+    const label = `${stored} -> ${incoming}`;
+    assert.equal(row.class, incoming, label);
+    assert.equal(row.evidence, 'new evidence', label);
+    assert.deepEqual(res, { added: 0, updated: 1, unchanged: 0, regressed: 0 }, label);
+  }
+});
+
 for (const status of ['false_positive', 'accepted_risk']) {
   test(`upsert: a ${status} finding keeps its status and fields; only lastSeen moves`, () => {
     store.upsertFindings(SLUG, [finding()], RUN);
