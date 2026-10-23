@@ -527,16 +527,19 @@ function assemble(slug, runId) {
 
   const infra = doc.layer === 'INFRA';
   let closed = 0;
+  let closedIds = [];
   if (covered.length) {
     const allCovered = covered.length === units.length && closable.length === units.length;
     const inCovered = (f) => f.location && typeof f.location.path === 'string' && closable.some((u) => coverage.unitContains(u.id, f.location.path));
-    closed = store.closeMissing(slug, {
+    const res = store.closeMissing(slug, {
       system: doc.system,
       source: infra ? 'infra-probe' : 'rampart-hunter',
       runId,
       seenIds: [...t.verified, ...t.undecided].map((e) => e.candidate.candidateId),
       filter: (f) => f.layer === doc.layer && (infra ? allCovered : inCovered(f)),
-    }).closed;
+    });
+    closed = res.closed;
+    closedIds = res.ids;
   }
 
   // Skipped units are left out of the ledger: its gaps treat a skipped entry as covered.
@@ -548,6 +551,8 @@ function assemble(slug, runId) {
   }
   store.writeCoverage(slug, ledger);
   writeAtomic(path.join(dir, 'units.json'), toJson({ ...doc, units }));
+  // The run's own finding list (ids only): the report reads it, since a finding's lastSeen moves on with every later run.
+  writeAtomic(path.join(dir, 'findings.json'), toJson({ verified: findings.map((f) => f.id), closed: closedIds }));
 
   const counts = {
     added: upserted.added, updated: upserted.updated, unchanged: upserted.unchanged,

@@ -301,7 +301,7 @@ function closeMissing(slug, { system, source, runId, seenIds, filter } = {}) {
   const candidate = (f) =>
     f.system === system && sources.includes(f.source) && (f.status === 'open' || f.status === 'regressed') && !seen.has(f.id);
   const closing = findings.filter((f) => candidate(f) && (!filter || filter(f)));
-  if (!closing.length) return { closed: 0 };
+  if (!closing.length) return { closed: 0, ids: [] };
 
   const stamp = now();
   const dispositions = readDispositions(slug);
@@ -313,7 +313,7 @@ function closeMissing(slug, { system, source, runId, seenIds, filter } = {}) {
   // which the next scan puts right, not a closed finding with no reason.
   writeAtomic(projectFile(slug, 'dispositions.json'), toJson(dispositions));
   writeFindings(slug, findings);
-  return { closed: closing.length };
+  return { closed: closing.length, ids: closing.map((f) => f.id) };
 }
 
 function loadFinding(slug, id) {

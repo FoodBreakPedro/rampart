@@ -218,12 +218,25 @@ test('the headline carries the project score, grade and trend', () => {
   assert.ok(head.includes('no trend yet'));
 });
 
-test('a later run that sees a finding does not put it in an older run report', () => {
+test('a later run re-seeing a finding keeps it in the older report; a finding first seen later is absent', () => {
   const a = setup({ findings: [finding()] });
-  assert.match(renderReport(SLUG, a.runId), /Record access not scoped/);
-  const b = setup({ findings: [finding()] });
-  assert.match(renderReport(SLUG, b.runId), /Record access not scoped/);
-  assert.match(renderReport(SLUG, a.runId), /No findings in this run\./);
+  const b = setup({ findings: [finding(), finding({ id: 'bbbbbbbbbbbb', title: 'Only in B' })] });
+  const reportA = renderReport(SLUG, a.runId);
+  assert.match(reportA, /Record access not scoped/);
+  assert.ok(!reportA.includes('Only in B'));
+  const reportB = renderReport(SLUG, b.runId);
+  assert.match(reportB, /Only in B/);
+});
+
+test('findings.json from assemble decides the list, closed ones are listed with their status', () => {
+  const { runId, dir } = setup({ findings: [finding(), finding({ id: 'bbbbbbbbbbbb', title: 'Closed one' }), finding({ id: 'cccccccccccc', title: 'Unlisted' })] });
+  store.setDisposition(SLUG, 'bbbbbbbbbbbb', { status: 'fixed', reason: 'not reproduced in run x', by: 'rampart' });
+  fs.writeFileSync(path.join(dir, 'findings.json'), JSON.stringify({ verified: ['aaaaaaaaaaaa'], closed: ['bbbbbbbbbbbb'] }));
+  const md = renderReport(SLUG, runId);
+  assert.match(md, /Record access not scoped/);
+  assert.match(md, /Closed one.*[fixed]/);
+  assert.ok(!md.includes('Unlisted'));
+  assert.match(md.split('## Coverage')[0], /1 finding survived verification.*1 closed by this run/);
 });
 
 test('openCommand pins the argv per platform and a failed open is only a warning', () => {

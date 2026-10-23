@@ -666,7 +666,8 @@ test('closeMissing: only the open or regressed findings of that system and sourc
   const res = store.closeMissing(SLUG, closeArgs());
   const finished = iso();
 
-  assert.deepEqual(res, { closed: 2 });
+  assert.equal(res.closed, 2);
+  assert.deepEqual([...res.ids].sort(), [ID_B, ID_C].sort(), "the ids it closed");
   const after = byId();
   assert.equal(after[ID_A].status, 'open', 'still reported');
   assert.equal(after[ID_B].status, 'fixed');
@@ -694,14 +695,14 @@ test('closeMissing: only the open or regressed findings of that system and sourc
 
 test('closeMissing: a second call changes nothing, and seenIds may be a Set or empty', () => {
   seedClosable();
-  assert.deepEqual(store.closeMissing(SLUG, closeArgs({ seenIds: new Set([ID_A]) })), { closed: 2 });
+  assert.equal(store.closeMissing(SLUG, closeArgs({ seenIds: new Set([ID_A]) })).closed, 2);
   const rows = readText(projectPath('findings.jsonl'));
   const disp = readText(projectPath('dispositions.json'));
-  assert.deepEqual(store.closeMissing(SLUG, closeArgs({ runId: '2026-10-25T09-30-00Z' })), { closed: 0 });
+  assert.equal(store.closeMissing(SLUG, closeArgs({ runId: '2026-10-25T09-30-00Z' })).closed, 0);
   assert.equal(readText(projectPath('findings.jsonl')), rows);
   assert.equal(readText(projectPath('dispositions.json')), disp, 'the reason still names the run that closed it');
 
-  assert.deepEqual(store.closeMissing(SLUG, closeArgs({ seenIds: [] })), { closed: 1 }, 'with nothing seen, A closes as well');
+  assert.equal(store.closeMissing(SLUG, closeArgs({ seenIds: [] })).closed, 1, 'with nothing seen, A closes as well');
   assert.equal(byId()[ID_A].status, 'fixed');
 });
 
@@ -709,7 +710,7 @@ test('closeMissing: a filter narrows the candidates further, and only sees the f
   seedClosable();
   const seenByFilter = [];
   const res = store.closeMissing(SLUG, closeArgs({ filter: (f) => { seenByFilter.push(f.id); return f.id === ID_C; } }));
-  assert.deepEqual(res, { closed: 1 });
+  assert.equal(res.closed, 1);
   assert.deepEqual(seenByFilter.sort(), [ID_B, ID_C].sort(), 'not A (seen), D, E, F (triaged or fixed), G (other system) or H (other source)');
   const after = byId();
   assert.equal(after[ID_B].status, 'open', 'the filter kept it');
@@ -717,16 +718,16 @@ test('closeMissing: a filter narrows the candidates further, and only sees the f
   assert.equal(store.readDispositions(SLUG)[ID_B], undefined);
 
   const rows = readText(projectPath('findings.jsonl'));
-  assert.deepEqual(store.closeMissing(SLUG, closeArgs({ filter: () => false })), { closed: 0 });
+  assert.equal(store.closeMissing(SLUG, closeArgs({ filter: () => false })).closed, 0);
   assert.equal(readText(projectPath('findings.jsonl')), rows, 'nothing closes, nothing is rewritten');
-  assert.deepEqual(store.closeMissing(SLUG, closeArgs({ filter: () => true })), { closed: 1 }, 'a filter that takes all is no filter');
+  assert.equal(store.closeMissing(SLUG, closeArgs({ filter: () => true })).closed, 1, 'a filter that takes all is no filter');
   assert.equal(byId()[ID_B].status, 'fixed');
 });
 
 test('closeMissing: source may be a list, and then every source in it is closed for that system', () => {
   seedClosable();
   const res = store.closeMissing(SLUG, closeArgs({ source: ['headers', 'trivy'] }));
-  assert.deepEqual(res, { closed: 3 }, 'B and C (headers) and H (trivy)');
+  assert.equal(res.closed, 3, 'B and C (headers) and H (trivy)');
   const after = byId();
   assert.equal(after[ID_H].status, 'fixed');
   assert.equal(after[ID_G].status, 'open', 'another system stays');
@@ -743,7 +744,7 @@ test('closeMissing: a closed finding that comes back is regressed by the next up
 });
 
 test('closeMissing: a project with no findings is {closed: 0} and writes nothing', () => {
-  assert.deepEqual(store.closeMissing(SLUG, closeArgs()), { closed: 0 });
+  assert.equal(store.closeMissing(SLUG, closeArgs()).closed, 0);
   assert.ok(!fs.existsSync(projectPath('findings.jsonl')));
   assert.ok(!fs.existsSync(projectPath('dispositions.json')));
 });

@@ -71,18 +71,24 @@ function revisionText(run) {
   return `${clean(String(r.commit).slice(0, 12))}${r.dirty ? ' (uncommitted changes)' : ''}`;
 }
 
-function touchedBy(run, units, findings) {
+// The findings this run reports, and which of them it closed. assemble's findings.json is the record of what this run did; without
+// it (older runs) a finding counts when it was first seen no later than the run's end and last seen no earlier than its start.
+function touchedBy(run, units, findings, list, nowIso) {
+  if (list && Array.isArray(list.verified)) {
+    const closedIds = new Set(Array.isArray(list.closed) ? list.closed : []);
+    const wanted = new Set([...list.verified, ...closedIds]);
+    return { touched: findings.filter((f) => f && wanted.has(f.id)), closedIds };
+  }
   const layers = run.layers || [];
   const system = units ? units.system : null;
-  return findings.filter((f) => {
+  const touched = findings.filter((f) => {
     if (!f || (system && f.system !== system)) return false;
     if (!system && !(run.systems || []).includes(f.system)) return false;
     if (layers.length && !layers.includes(f.layer)) return false;
     if (f.verification && f.verification.run === run.runId) return true;
-    if (typeof f.lastSeen !== 'string' || f.lastSeen < run.startedAt) return false;
-    // A finished run owns only sightings up to its end; a later run's sighting belongs to that run's report.
-    return !run.finishedAt || f.lastSeen <= run.finishedAt;
+    return typeof f.lastSeen === 'string' && f.lastSeen >= run.startedAt && (typeof f.firstSeen !== 'string' || f.firstSeen <= (run.finishedAt || nowIso));
   });
+  return { touched, closedIds: new Set() };
 }
 
 function trendText(result) {
@@ -178,19 +184,23 @@ function renderReport(slug, runId, { now = new Date() } = {}) {
   }
   const dir = runDir(slug, runId);
   const units = readJsonOrNull(path.join(dir, 'units.json'));
-  const touched = touchedBy(run, units && typeof units === 'object' ? units : null, store.readFindings(slug));
-  const dispositions = store.readDispositions(slug);
-  const system = units ? units.system : null;
-  const closedIds = Object.entries(dispositions).filter(([id, d]) => d && d.status === 'fixed' && String(d.reason || '').includes(runId)
-    && (!system || (store.readFindings(slug).find((f) => f.id === id) || {}).system === system));
-  const closed = closedIds.length || (run.counts && run.counts.closed) || 0;
+  const allFindings = store.readFindings(slug);
+  const list = readJsonOrNull(path.join(dir, 'findings.json'));
+  const { touched, closedIds } = touchedBy(run, units && typeof units === 'object' ? units : null, allFindings, list, now.toISOString());
+  let closed = closedIds.size;
+  if (!list) {
+    const system = units ? units.system : null;
+    closed = Object.entries(store.readDispositions(slug)).filter(([id, d]) => d && d.status === 'fixed' && String(d.reason || '').includes(runId)
+      && (!system || (allFindings.find((f) => f.id === id) || {}).system === system)).length || (run.counts && run.counts.closed) || 0;
+  }
+  const seen = touched.filter((f) => !closedIds.has(f.id));
 
   const layers = units ? units.layer : (run.layers || []).join(', ');
   const result = scoreProject(project, store.readFindings(slug), store.readRuns(slug), now);
   const md = [
     `# ${clean(project.name || slug, 80)}: ${clean(run.job)} ${clean(layers)}, run ${clean(runId, 40)}`,
     '',
-    headline(project, run, units, touched, closed, result),
+    headline(project, run, units, seen, closed, result),
     '',
     coverageSection(run, units),
     '',

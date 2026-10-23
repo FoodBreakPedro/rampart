@@ -319,6 +319,18 @@ test('closeMissing closes a vanished finding in a covered unit and leaves one in
   assert.equal(byId['b'.repeat(12)], 'open');
 });
 
+test('assemble writes findings.json with the ids it upserted and the ids it closed', () => {
+  const s = setup({ units: ['app/api/users'], hunters: [['app/api/users', 'authz-scoping']] });
+  const base = { project: SLUG, system: SYS, layer: LAYER, source: 'rampart-hunter', class: 'verified', pack: 'web-nextjs@1.0.0', severity: 'MEDIUM', confidence: 'HIGH', cwe: [], title: 't', evidence: 'e', exploitScenario: 's', preconditions: 'p', recommendation: 'r', verification: { verifiers: 1, confirmed: 1, run: '2026-10-22T00-00-00Z' }, status: 'open', externalIds: { claudeSecurityPluginFindingId: null, cve: null } };
+  store.upsertFindings(SLUG, [{ ...base, id: 'a'.repeat(12), ruleId: 'web-nextjs/authz-scoping', location: { path: 'app/api/users/gone.ts', symbol: 'GET' } }], '2026-10-22T00-00-00Z');
+  putCandidates(s, 'app/api/users', 'authz-scoping', 'medium-idor');
+  putVote(s, 'app/api/users', 'authz-scoping', 'c1', 1, 'confirm');
+  const res = hio.assemble(SLUG, s.runId);
+  const doc = JSON.parse(fs.readFileSync(path.join(s.dir, 'findings.json'), 'utf8'));
+  assert.deepEqual(doc, { verified: res.findings, closed: ['a'.repeat(12)] });
+  assert.equal(doc.verified.length, 1);
+});
+
 test('all units failed: the run finishes failed with a reason, never clean', () => {
   const s = setup();
   const res = hio.assemble(SLUG, s.runId);
