@@ -17,9 +17,9 @@ Read by absolute path under the folder:
 
 - The folder's `CLAUDE.md`, `AGENTS.md` and `README.md`, at its root and in the folders the scanner's `evidence` points to.
 - Config that names deployments: `package.json`, `next.config.*`, `vercel.json`, `netlify.toml`, `wrangler.toml`, `wrangler.json*`, `eas.json`, `app.json`, `supabase/config.toml`, `docker-compose*.yml`, `compose.yml`, and files under `infra/`.
-- `ls "<path>"` to list a folder. `git remote -v` only when the folder is your working directory; the scanner already recorded `repo.remote` when git knew one.
+- `ls "<path>"` to list a folder. Do not run git: the scanner already recorded the credential-stripped `repo.remote` when git knew one.
 
-Never open `.env`, `.env.*` or any other `.env*` file, private keys (`*.pem`, `*.key`, `id_rsa*`) or credential files, whatever their name suggests. Never copy a credential value, or any part of one, into your answer.
+Never open `.env`, `.env.*` or any other `.env*` file, private keys (`*.pem`, `*.key`, `id_rsa*`) or credential files, whatever their name suggests, and Grep and Glob never search them either: exclude them from every pattern. Never copy a credential value, or any part of one, into your answer.
 
 ## How to draft
 
