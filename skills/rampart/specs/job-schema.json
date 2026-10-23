@@ -3,7 +3,7 @@
   "title": "Rampart job",
   "description": "A queued unit of work (jobs/<id> in the dashboard DB). createdBy, confirmedAt and costShown record the owner's confirmation.",
   "type": "object",
-  "required": ["id", "type", "project", "executor", "status", "createdBy", "confirmedAt", "costShown"],
+  "required": ["id", "type", "project", "executorKind", "status", "createdBy", "confirmedAt", "costShown", "updatedAt"],
   "additionalProperties": false,
   "properties": {
     "id": { "type": "string" },
@@ -13,12 +13,32 @@
     "layer": { "enum": ["L1", "L2", "L3", "INFRA"] },
     "findingId": { "type": "string", "pattern": "^[0-9a-f]{12}$" },
     "params": { "type": "object" },
-    "executor": { "enum": ["local", "cloud"] },
+    "executorKind": { "enum": ["local", "cloud"], "description": "Where the job runs: a local watch session or a cloud session." },
     "status": { "enum": ["queued", "claimed", "running", "done", "failed"] },
     "createdBy": { "type": "string" },
     "confirmedAt": { "type": "string" },
     "costShown": { "type": ["string", "number"], "description": "The cost estimate the page showed before the job was queued." },
+    "costEstimate": {
+      "type": "object",
+      "required": ["agents", "note"],
+      "properties": {
+        "agents": { "type": "integer", "minimum": 0 },
+        "note": { "type": "string" }
+      }
+    },
+    "applyConfirmation": {
+      "type": ["object", "null"],
+      "description": "The second, typed confirmation an apply job needs; null until given.",
+      "required": ["typed", "at"],
+      "properties": {
+        "typed": { "type": "string" },
+        "at": { "type": "string" }
+      }
+    },
+    "updatedAt": { "type": "string", "description": "ISO time of the last write; the last writer wins on it." },
+    "claimedAt": { "type": "string" },
     "claimedBy": { "type": "string" },
+    "sessionId": { "type": "string", "description": "The cloud or local session working the job." },
     "startedAt": { "type": "string" },
     "finishedAt": { "type": "string" },
     "resultSummary": { "type": "string" },

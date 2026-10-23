@@ -418,22 +418,23 @@ const validJob = () => ({
   layer: 'L1',
   findingId: 'a3f9c21be0d4',
   params: { scope: 'full', anything: [1, 2] },
-  executor: 'local',
+  executorKind: 'local',
   status: 'queued',
   createdBy: '<owner>',
   confirmedAt: '2026-10-23T18:00:00Z',
   costShown: '~$2',
+  updatedAt: '2026-10-23T18:00:00Z',
 });
 
 test('job schema accepts a queued job, a minimal job and a finished job', () => {
   const s = loadSchema('job');
   assert.deepEqual(validate(s, validJob()), { ok: true, errors: [] });
   const minimal = {
-    id: 'job-0002', type: 'inventory', project: 'example-app', executor: 'cloud', status: 'queued',
-    createdBy: '<owner>', confirmedAt: '2026-10-23T18:00:00Z', costShown: 0,
+    id: 'job-0002', type: 'inventory', project: 'example-app', executorKind: 'cloud', status: 'queued',
+    createdBy: '<owner>', confirmedAt: '2026-10-23T18:00:00Z', costShown: 0, updatedAt: '2026-10-23T18:00:00Z',
   };
   assert.deepEqual(validate(s, minimal), { ok: true, errors: [] });
-  const done = { ...validJob(), status: 'done', claimedBy: 'session-1', startedAt: '2026-10-23T18:01:00Z', finishedAt: '2026-10-23T18:02:00Z', resultSummary: '2 added', runId: '2026-10-23T18-01-00Z' };
+  const done = { ...validJob(), status: 'done', claimedAt: '2026-10-23T18:00:30Z', claimedBy: 'session-1', startedAt: '2026-10-23T18:01:00Z', finishedAt: '2026-10-23T18:02:00Z', resultSummary: '2 added', runId: '2026-10-23T18-01-00Z' };
   assert.deepEqual(validate(s, done), { ok: true, errors: [] });
 });
 
@@ -445,14 +446,84 @@ test('job schema: enums, patterns, required fields and stray fields', () => {
     return validate(s, j).errors;
   };
   assert.deepEqual(bad((j) => { j.status = 'cancelled'; }), ['status: expected one of queued, claimed, running, done, failed']);
-  assert.deepEqual(bad((j) => { j.executor = 'either'; }), ['executor: expected one of local, cloud']);
+  assert.deepEqual(bad((j) => { j.executorKind = 'either'; }), ['executorKind: expected one of local, cloud']);
+  assert.deepEqual(bad((j) => { j.executor = 'local'; }), ['executor: unexpected property']);
   assert.deepEqual(bad((j) => { j.type = 'deploy'; }), ['type: expected one of inventory, audit, verify, fix, apply, dashboard, doctor, import']);
   assert.deepEqual(bad((j) => { j.layer = 'L9'; }), ['layer: expected one of L1, L2, L3, INFRA']);
   assert.deepEqual(bad((j) => { j.findingId = 'xyz'; }), ['findingId: does not match pattern ^[0-9a-f]{12}$']);
   assert.deepEqual(bad((j) => { j.params = 'full'; }), ['params: expected object, got string']);
   assert.deepEqual(bad((j) => { j.costShown = true; }), ['costShown: expected string or number, got boolean']);
   assert.deepEqual(bad((j) => { j.queue = 'x'; }), ['queue: unexpected property']);
-  for (const key of ['id', 'type', 'project', 'executor', 'status', 'createdBy', 'confirmedAt', 'costShown']) {
+  for (const key of ['id', 'type', 'project', 'executorKind', 'status', 'createdBy', 'confirmedAt', 'costShown', 'updatedAt']) {
     assert.deepEqual(bad((j) => { delete j[key]; }), [`${key}: required property missing`], key);
+  }
+});
+
+// ---- dashboard fields (live DB documents) -------------------------------------------------
+
+test('job: applyConfirmation, costEstimate and sessionId validate; null confirmation is allowed', () => {
+  const s = loadSchema('job');
+  const apply = {
+    ...validJob(), type: 'apply', findingId: 'a3f9c21be0d4', sessionId: 'session-9',
+    costEstimate: { agents: 3, note: '~3 agents' },
+    applyConfirmation: { typed: 'a3f9c21be0d4', at: '2026-10-23T18:00:10Z' },
+  };
+  assert.deepEqual(validate(s, apply), { ok: true, errors: [] });
+  assert.deepEqual(validate(s, { ...apply, applyConfirmation: null }), { ok: true, errors: [] });
+  const bad = (mutate) => {
+    const j = clone(apply);
+    mutate(j);
+    return validate(s, j).errors;
+  };
+  assert.deepEqual(bad((j) => { delete j.applyConfirmation.typed; }), ['applyConfirmation.typed: required property missing']);
+  assert.deepEqual(bad((j) => { j.applyConfirmation = 'yes'; }), ['applyConfirmation: expected object or null, got string']);
+  assert.deepEqual(bad((j) => { delete j.costEstimate.note; }), ['costEstimate.note: required property missing']);
+  assert.deepEqual(bad((j) => { j.costEstimate.agents = '3'; }), ['costEstimate.agents: expected integer, got string']);
+  assert.deepEqual(bad((j) => { j.sessionId = 7; }), ['sessionId: expected string, got number']);
+});
+
+test('finding: disposition is {status, reason, by, at} or null; updatedAt is a string', () => {
+  const s = loadSchema('finding');
+  const f = fixture('finding.valid.json');
+  f.updatedAt = '2026-10-23T18:10:00Z';
+  f.disposition = null;
+  assert.deepEqual(validate(s, f), { ok: true, errors: [] });
+  f.disposition = { status: 'accepted_risk', reason: 'internal tool only', by: '<owner>', at: '2026-10-23T18:10:00Z' };
+  assert.deepEqual(validate(s, f), { ok: true, errors: [] });
+  for (const status of ['open', 'fixed', 'false_positive', 'accepted_risk']) {
+    assert.deepEqual(validate(s, { ...f, disposition: { ...f.disposition, status } }).errors, [], status);
+  }
+  assert.deepEqual(validate(s, { ...f, disposition: { ...f.disposition, status: 'regressed' } }).errors, ['disposition.status: expected one of open, fixed, false_positive, accepted_risk']);
+  const missing = clone(f);
+  delete missing.disposition.by;
+  assert.deepEqual(validate(s, missing).errors, ['disposition.by: required property missing']);
+  assert.deepEqual(validate(s, { ...f, disposition: 'open' }).errors, ['disposition: expected object or null, got string']);
+  assert.deepEqual(validate(s, { ...f, updatedAt: 5 }).errors, ['updatedAt: expected string, got number']);
+});
+
+test('run: updatedAt and reportMd are optional strings', () => {
+  const s = loadSchema('run');
+  assert.deepEqual(validate(s, { ...validRun(), updatedAt: '2026-10-23T18:05:00Z', reportMd: '# Report' }), { ok: true, errors: [] });
+  assert.deepEqual(validate(s, { ...validRun(), reportMd: 3 }).errors, ['reportMd: expected string, got number']);
+});
+
+test('project: huntEffort is an optional low|medium|high', () => {
+  const s = loadSchema('project');
+  for (const e of ['low', 'medium', 'high']) assert.deepEqual(validate(s, { ...fixture('project.valid.json'), huntEffort: e }).errors, [], e);
+  assert.deepEqual(validate(s, { ...fixture('project.valid.json'), huntEffort: 'max' }).errors, ['huntEffort: expected one of low, medium, high']);
+});
+
+// ---- db-rules.json ------------------------------------------------------------------------
+
+test('db-rules.json is the array form: root plus one owner-write rule per collection', () => {
+  const rules = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'skills', 'rampart', 'specs', 'db-rules.json'), 'utf8'));
+  assert.ok(Array.isArray(rules));
+  assert.deepEqual(rules[0], { path: '', read: 'view', write: 'owner' });
+  const collections = ['projects', 'findings', 'runs', 'jobs', 'executors', 'packs', 'meta'];
+  assert.deepEqual(rules.slice(1).map((r) => r.path), collections);
+  for (const r of rules) {
+    assert.deepEqual(Object.keys(r).sort(), ['path', 'read', 'write']);
+    assert.equal(r.read, 'view', `${r.path || '(root)'} read`);
+    assert.equal(r.write, 'owner', `${r.path || '(root)'} write`);
   }
 });

@@ -16,6 +16,8 @@
     "reason": { "type": "string", "description": "Why the run was skipped or failed." },
     "startedAt": { "type": "string" },
     "finishedAt": { "type": "string" },
+    "updatedAt": { "type": "string", "description": "ISO time of the last write; the last writer wins on it." },
+    "reportMd": { "type": "string", "description": "The report text, carried by the run summary in the dashboard DB." },
     "counts": {
       "type": "object",
       "required": ["added", "updated", "unchanged", "hardening"],

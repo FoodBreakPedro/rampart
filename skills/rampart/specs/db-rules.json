@@ -1,0 +1,10 @@
+[
+  { "path": "", "read": "view", "write": "owner" },
+  { "path": "projects", "read": "view", "write": "owner" },
+  { "path": "findings", "read": "view", "write": "owner" },
+  { "path": "runs", "read": "view", "write": "owner" },
+  { "path": "jobs", "read": "view", "write": "owner" },
+  { "path": "executors", "read": "view", "write": "owner" },
+  { "path": "packs", "read": "view", "write": "owner" },
+  { "path": "meta", "read": "view", "write": "owner" }
+]
