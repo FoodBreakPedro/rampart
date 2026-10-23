@@ -68,6 +68,8 @@ function packVersionsFor(system, layer) {
 
 // ---- units --------------------------------------------------------------------------------
 
+const isReachable = (unitId) => !BACKGROUND_ROOTS.has(unitId.split('/')[0]);
+
 function unitsForRepo(repoPath, { maxDepth = DEFAULT_MAX_DEPTH, ignore = DEFAULT_IGNORE } = {}) {
   const counts = new Map();
   const walk = (rel) => {
@@ -84,7 +86,7 @@ function unitsForRepo(repoPath, { maxDepth = DEFAULT_MAX_DEPTH, ignore = DEFAULT
   walk('');
   return [...counts.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([id, files]) => ({ id, kind: 'dir', files, reachable: !BACKGROUND_ROOTS.has(id.split('/')[0]) }));
+    .map(([id, files]) => ({ id, kind: 'dir', files, reachable: isReachable(id) }));
 }
 
 function unitsForHost(system, pack) {
@@ -180,4 +182,4 @@ function render(command, result) {
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
-module.exports = { unitOf, unitContains, packVersionsFor, isIgnored, unitsForRepo, unitsForHost, markCovered, gaps, main, DEFAULT_IGNORE };
+module.exports = { unitOf, unitContains, packVersionsFor, isIgnored, isReachable, unitsForRepo, unitsForHost, markCovered, gaps, main, DEFAULT_IGNORE };
