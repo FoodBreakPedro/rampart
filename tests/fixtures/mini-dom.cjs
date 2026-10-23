@@ -193,10 +193,10 @@ class Element extends Node {
   get open() { return this.hasAttribute('open'); }
   set open(v) { if (v) this.setAttribute('open', ''); else this.removeAttribute('open'); }
   get disabled() { return this.hasAttribute('disabled'); }
+  set disabled(v) { if (v) this.setAttribute('disabled', ''); else this.removeAttribute('disabled'); }
   // checked: what was set, else the checked attribute (the attribute stops counting once the property is set, as in a browser).
   get checked() { return this._checked !== undefined ? this._checked : this.hasAttribute('checked'); }
   set checked(v) { this._checked = Boolean(v); }
-  set disabled(v) { if (v) this.setAttribute('disabled', ''); else this.removeAttribute('disabled'); }
 
   get children() { return this.childNodes.filter((n) => n.nodeType === 1); }
   get firstElementChild() { return this.children[0] || null; }

@@ -1665,3 +1665,105 @@ test('settings: a form being edited keeps its values through a live update', asy
   same(document.activeElement, input);
   assert.equal(settingsWrites(store).length, 0);
 });
+
+// ---- Task 7 fix round 1 ------------------------------------------------------------------------
+
+test('settings: Save writes only the controls the owner changed; a field changed elsewhere meanwhile is not reverted', async () => {
+  const seed = withHeartbeat(fixtureDocs(), new Date().toISOString());
+  const { document, store } = await bootLive({ seed, user: ownerUser(), hash: '#p-example-app' });
+  const form = settingsForm(document, 'example-app');
+  setField(form.querySelector('select[name="huntEffort"]'), 'high');
+  // Another tab (or a sync) changes the default executor while this form is being edited.
+  store.push('projects', 'example-app', { ...seed.projects['example-app'], defaultExecutor: 'cloud', updatedAt: new Date().toISOString() });
+  await settle();
+  same(settingsForm(document, 'example-app'), form, 'the edited form is kept');
+  assert.equal(form.querySelector('select[name="defaultExecutor"]').value, 'local', 'still showing what it showed');
+  await saveSettings(form);
+  const writes = settingsWrites(store);
+  assert.equal(writes.length, 1);
+  assert.deepEqual(Object.keys(writes[0].data).sort(), ['huntEffort', 'updatedAt'], 'the untouched executor is not written back');
+  const stored = await readDoc(store, 'projects/example-app');
+  assert.equal(stored.defaultExecutor, 'cloud', 'the other change stands');
+  assert.equal(stored.huntEffort, 'high');
+});
+
+test('settings: an untouched cadence outside 1 to 365 does not block saving another field', async () => {
+  const seed = withHeartbeat(fixtureDocs(), new Date().toISOString());
+  seed.projects['example-app'].systems[1].layers.INFRA.cadenceDays = 400;
+  const { document, store } = await bootLive({ seed, user: ownerUser(), hash: '#p-example-app' });
+  const form = settingsForm(document, 'example-app');
+  assert.equal(cadenceInput(form, 'db', 'INFRA').value, '400');
+  setField(form.querySelector('select[name="huntEffort"]'), 'low');
+  await saveSettings(form);
+  const writes = settingsWrites(store);
+  assert.equal(writes.length, 1, 'saved');
+  assert.deepEqual(Object.keys(writes[0].data).sort(), ['huntEffort', 'updatedAt']);
+  assert.equal(cadenceInput(settingsForm(document, 'example-app'), 'db', 'INFRA').hasAttribute('aria-invalid'), false);
+});
+
+test('settings: a host-backed system does not make a project eligible for cloud, even with a github repo (R29)', async () => {
+  const seed = withHeartbeat(fixtureDocs(), new Date().toISOString());
+  delete seed.projects['example-app'].systems[0].repo;
+  seed.projects['example-app'].systems[1].repo = { remote: 'github.com/<owner>/example-db', defaultBranch: 'main' };
+  const { document } = await bootLive({ seed, user: ownerUser(), hash: '#p-example-app' });
+  const toggle = settingsForm(document, 'example-app').querySelector('input[name="cloudAllowed"]');
+  assert.equal(toggle.disabled, true, 'db has a github repo but is reached through a host');
+});
+
+test('settings: a reverted write unticks a box the owner ticked', async () => {
+  const { document, store } = await bootLive({ user: ownerUser(), hash: '#p-example-app', options: { holdWrites: true } });
+  const form = settingsForm(document, 'example-app');
+  const box = form.querySelector('input[name="cloudAllowed"]');
+  setField(box, true);
+  await saveSettings(form);
+  assert.equal(box.checked, true, 'shown at once');
+  store.held[0].reject({ code: 'unavailable', message: 'RAW' });
+  await settle();
+  same(settingsForm(document, 'example-app').querySelector('input[name="cloudAllowed"]'), box, 'the same box, patched');
+  assert.equal(box.checked, false, 'reverted');
+});
+
+// A downloads namespace whose save stays unanswered until the test calls answer() or refuse(err).
+function heldDownloads() {
+  const pending = [];
+  const ns = Object.freeze({
+    save: (req) => new Promise((resolve, reject) => pending.push({ req, answer: () => resolve({ status: 'saved' }), refuse: reject })),
+  });
+  return { pending, ns };
+}
+
+test('export: both buttons are disabled while a prompt is open; the focus returns to the pressed button after', async () => {
+  const downloads = heldDownloads();
+  const { document } = await bootLive({ user: ownerUser(), hash: '#p-example-app', downloads: downloads.ns });
+  const jsonl = exportButton(document, 'jsonl');
+  const sarif = exportButton(document, 'sarif');
+  jsonl.focus();
+  await press(jsonl);
+  assert.equal(downloads.pending.length, 1);
+  assert.ok(jsonl.disabled && sarif.disabled, 'disabled while the prompt is open');
+  await press(sarif);
+  assert.equal(downloads.pending.length, 1, 'no second prompt');
+  document.body.focus();
+  downloads.pending[0].answer();
+  await settle();
+  same(exportButton(document, 'jsonl'), jsonl);
+  assert.ok(!jsonl.disabled && !sarif.disabled);
+  same(document.activeElement, jsonl, 'focus back on the pressed button');
+  sarif.focus();
+  await press(sarif);
+  document.body.focus();
+  downloads.pending[1].refuse({ code: 'declined', message: 'RAW' });
+  await settle();
+  same(document.activeElement, sarif, 'after a declined prompt too');
+});
+
+test('export: extension_not_enabled stops: the buttons go and the toast invites no retry', async () => {
+  const downloads = stubDownloads({ reject: { code: 'extension_not_enabled', message: 'RAW-ext' } });
+  const page = await bootLive({ user: ownerUser(), hash: '#p-example-app', downloads: downloads.ns });
+  await press(exportButton(page.document, 'sarif'));
+  const text = page.$('toast').textContent;
+  assert.match(text, /\S/);
+  assert.doesNotMatch(text, /RAW-|try again|again/i);
+  same(exportButton(page.document, 'sarif'), null);
+  same(exportButton(page.document, 'jsonl'), null);
+});
