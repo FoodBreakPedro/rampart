@@ -177,6 +177,42 @@ test('upsert twice: the second pass is unchanged, firstSeen stays and lastSeen m
   assert.deepEqual({ ...rows[0], lastSeen: 0 }, { ...first, lastSeen: 0 });
 });
 
+// verification.run names the run that last looked at a finding, so it moves on every scan. It is stored, but a finding
+// whose only difference is that run id has not changed.
+const NEXT_RUN = '2026-10-23T18-09-45Z';
+const seenIn = (runId, over = {}) => finding({ verification: { ...finding().verification, run: runId }, ...over });
+
+test('upsert: a different verification.run alone is unchanged, and the stored run is the new one', () => {
+  store.upsertFindings(SLUG, [seenIn(RUN)], RUN);
+  const res = store.upsertFindings(SLUG, [seenIn(NEXT_RUN)], NEXT_RUN);
+  assert.deepEqual(res, { added: 0, updated: 0, unchanged: 1, regressed: 0 });
+  const row = readJsonlFile(projectPath('findings.jsonl'))[0];
+  assert.deepEqual(row.verification, { ...finding().verification, run: NEXT_RUN });
+});
+
+test('upsert: a verification change beyond the run id still counts as updated, and any other change alongside the run id does too', () => {
+  store.upsertFindings(SLUG, [seenIn(RUN)], RUN);
+  const verifiers = { ...finding().verification, verifiers: 5, run: NEXT_RUN };
+  assert.deepEqual(store.upsertFindings(SLUG, [finding({ verification: verifiers })], NEXT_RUN), { added: 0, updated: 1, unchanged: 0, regressed: 0 });
+  assert.deepEqual(store.readFindings(SLUG)[0].verification, verifiers);
+
+  const third = '2026-10-23T18-15-00Z';
+  assert.deepEqual(store.upsertFindings(SLUG, [seenIn(third, { severity: 'LOW' })], third), { added: 0, updated: 1, unchanged: 0, regressed: 0 });
+  const row = store.readFindings(SLUG)[0];
+  assert.equal(row.severity, 'LOW');
+  assert.equal(row.verification.run, third);
+});
+
+test('upsert: a fixed finding that comes back under a new run is regressed and records that run', () => {
+  store.upsertFindings(SLUG, [seenIn(RUN)], RUN);
+  store.setDisposition(SLUG, ID_A, { status: 'fixed', reason: 'patched', by: 'pedro' });
+  const res = store.upsertFindings(SLUG, [seenIn(NEXT_RUN)], NEXT_RUN);
+  assert.deepEqual(res, { added: 0, updated: 0, unchanged: 0, regressed: 1 });
+  const row = store.readFindings(SLUG)[0];
+  assert.equal(row.status, 'regressed');
+  assert.equal(row.verification.run, NEXT_RUN);
+});
+
 test('upsert: changed mutable fields are replaced and counted as updated; store-owned fields are not', () => {
   store.upsertFindings(SLUG, [finding()], RUN);
   const first = store.readFindings(SLUG)[0];

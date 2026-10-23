@@ -208,19 +208,18 @@ test('(e) --input works with no tool installed at all', () => {
 
 // ---- behaviour around the cases -----------------------------------------------------------
 
-test('a second scan of the same leaks adds nothing and keeps the same findings and firstSeen', () => {
-  scanSecrets({ project: SLUG, system: 'mobile' });
+test('a second scan of the same leaks changes nothing: unchanged 2, same findings and firstSeen, run id recorded', () => {
+  const first = scanSecrets({ project: SLUG, system: 'mobile' });
   const before = store.readFindings(SLUG);
   const { run, counts } = scanSecrets({ project: SLUG, system: 'mobile' });
   assert.equal(run.status, 'done');
-  // Both leaks are known already. Whether the store files them under "updated" or "unchanged" is its own rule: a tool
-  // finding's verification.run names the latest run, so today it counts them as updated.
-  assert.equal(counts.added, 0);
-  assert.equal(counts.regressed, 0);
-  assert.equal(counts.updated + counts.unchanged, 2);
+  assert.notEqual(run.runId, first.run.runId);
+  assert.deepEqual(counts, { added: 0, updated: 0, unchanged: 2, regressed: 0 });
+  assert.deepEqual(run.counts, { added: 0, updated: 0, unchanged: 2, hardening: 0, regressed: 0 });
   const after = store.readFindings(SLUG);
   assert.deepEqual(after.map((f) => f.id), before.map((f) => f.id));
   assert.deepEqual(after.map((f) => f.firstSeen), before.map((f) => f.firstSeen));
+  assert.ok(after.every((f) => f.verification.run === run.runId), 'the stored finding names the latest run');
 });
 
 test('a scan that outlives the timeout is a skipped run, "gitleaks timed out"', () => {

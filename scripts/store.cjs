@@ -115,6 +115,10 @@ const canon = (value) =>
     isObject(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : v
   );
 
+// What an upsert compares for one mutable field. verification.run names the run that last looked at the finding, so it
+// changes on every scan: it is stored (see upsertFindings) but is not a change by itself.
+const comparable = (key, value) => (key === 'verification' && isObject(value) ? { ...value, run: undefined } : value);
+
 // ---- projects -----------------------------------------------------------------------------
 
 function listProjects() {
@@ -156,6 +160,8 @@ const writeFindings = (slug, rows) => writeAtomic(projectFile(slug, 'findings.js
 // the incoming finding.
 // When a fixed finding reappears, its record in dispositions.json becomes 'regressed' too, so the file never says
 // 'fixed' for a regressed finding.
+// A finding whose only difference is verification.run counts as unchanged, but the stored verification still moves to the
+// incoming one, so it always names the latest run that saw the finding.
 function upsertFindings(slug, findings, runId) {
   checkSlug(slug);
   checkRunId(runId);
@@ -182,9 +188,10 @@ function upsertFindings(slug, findings, runId) {
         (k) =>
           !(keepTriage && (k === 'class' || k === 'evidence')) &&
           incoming[k] !== undefined &&
-          canon(incoming[k]) !== canon(cur[k])
+          canon(comparable(k, incoming[k])) !== canon(comparable(k, cur[k]))
       );
       for (const k of changed) cur[k] = incoming[k];
+      if (incoming.verification !== undefined) cur.verification = incoming.verification;
       cur.lastSeen = stamp;
       if (cur.status === 'fixed') {
         cur.status = 'regressed';
