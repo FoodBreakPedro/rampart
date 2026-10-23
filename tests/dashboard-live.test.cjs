@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const { createDocument } = require('./fixtures/mini-dom.cjs');
+const { createDocument, makeEvent } = require('./fixtures/mini-dom.cjs');
 
 // Live mode of dashboard/index.html: the page script runs in a vm context over a minimal DOM (tests/fixtures/mini-dom.cjs),
 // with a stub window.claude whose db replays the documents under tests/fixtures/db/<collection>/<id>.json and lets a test
@@ -39,11 +39,13 @@ function fixtureDocs() {
 // registered and again on every push; doc(path).get/set/update/delete. Snapshots and bodies are frozen, like the real ones.
 // Options: failOn {c: code} ends c's subscription with that error instead of delivering; pending [c] delivers nothing for
 // c until release(c); cachedFirst {c: 'empty' | 'full'} first delivers a fromCache snapshot (no documents, or the seed's),
-// and the definitive one only on release(c).
-function stubDb(seed, { failOn = {}, pending = [], cachedFirst = {} } = {}) {
+// and the definitive one only on release(c); holdWrites keeps each update() unsettled in `held` until the test calls its
+// resolve() (the write lands and is delivered) or reject(reason).
+function stubDb(seed, { failOn = {}, pending = [], cachedFirst = {}, holdWrites = false } = {}) {
   const docs = {};
   const subs = [];
   const writes = [];
+  const held = [];
   const meta = Object.freeze({ fromCache: false, hasPendingWrites: false });
   const cachedMeta = Object.freeze({ fromCache: true, hasPendingWrites: false });
   for (const c of Object.keys(seed)) docs[c] = new Map(Object.entries(seed[c]).map(([id, b]) => [id, deepFreeze(clone(b))]));
@@ -82,10 +84,14 @@ function stubDb(seed, { failOn = {}, pending = [], cachedFirst = {} } = {}) {
         put(c, id, data);
         deliver(c);
       },
-      update: async (data) => {
+      update: (data) => {
         writes.push({ op: 'update', path: p, data: clone(data) });
-        put(c, id, { ...docs[c].get(id), ...data });
-        deliver(c);
+        const land = () => {
+          put(c, id, { ...docs[c].get(id), ...data });
+          deliver(c);
+        };
+        if (!holdWrites) return Promise.resolve().then(land);
+        return new Promise((resolve, reject) => held.push({ path: p, resolve: () => { land(); resolve(); }, reject }));
       },
       delete: async () => {
         writes.push({ op: 'delete', path: p });
@@ -119,6 +125,7 @@ function stubDb(seed, { failOn = {}, pending = [], cachedFirst = {} } = {}) {
     db,
     subs,
     writes,
+    held,
     push(c, id, body) { put(c, id, body); deliver(c); },
     remove(c, id) { put(c, id, undefined); deliver(c); },
     release: (c) => deliver(c),
@@ -482,9 +489,12 @@ test('access: a viewer who is not the owner is read-only; the owner is read-writ
     [stubUser({ owner: true, can: null }), 'write'],
   ];
   for (const [user, expected] of cases) {
-    const { $, api } = await bootLive({ user });
+    const { $, api, document } = await bootLive({ user, hash: '#p-example-app~status.all' });
     assert.equal($('main').getAttribute('data-access'), expected, JSON.stringify(user && { owner: user.isOwner.toString() }));
     assert.equal(api.canWrite(), expected === 'write');
+    const controls = document.querySelectorAll('[data-write]').length;
+    if (expected === 'write') assert.ok(controls > 0, 'the owner sees the write controls');
+    else assert.equal(controls, 0, 'no write control for a read-only viewer');
   }
 });
 
@@ -642,4 +652,191 @@ test('people: a decision\'s author shows as Rampart, owner or a viewer, never as
   assert.match(page.document.querySelector('tr[data-key="c0ffee123456"]').querySelector('.finding-details').textContent,
     /Accepted risk: Static brochure site, no scripts \(owner, /);
   assert.ok(!allText(page.document.documentElement).includes('<owner-user-id>'));
+});
+
+// ---- dispositions (Task 4) ---------------------------------------------------------------------
+
+const ownerUser = () => stubUser({ owner: true, can: true });
+const formFor = (doc, id) => doc.querySelector(`form[data-finding="${id}"]`);
+const rowFor = (doc, id) => doc.querySelector(`tr[data-key="${id}"]`);
+const decisionWrites = (store) => store.writes.filter((w) => w.path.startsWith('findings/'));
+
+// Pick a status (and type a reason) in a finding's decision form, as a viewer would, then save it.
+async function decide(doc, id, status, reason) {
+  const form = formFor(doc, id);
+  const select = form.querySelector('select');
+  select.value = status;
+  select.dispatchEvent(makeEvent('change'));
+  if (reason !== undefined) {
+    const input = form.querySelector('input');
+    input.value = reason;
+    input.dispatchEvent(makeEvent('input'));
+  }
+  form.dispatchEvent(makeEvent('submit'));
+  await settle();
+  return form;
+}
+
+test('dispositions: the owner gets a labelled status select and reason input on each finding', async () => {
+  const { document } = await bootLive({ user: ownerUser(), hash: '#p-example-app~status.all' });
+  for (const id of ['a3f9c21be0d4', 'b71e04c9d2a8']) {
+    const form = formFor(document, id);
+    assert.ok(form, `a decision form for ${id}`);
+    assert.ok(form.hasAttribute('data-write'));
+    const select = form.querySelector('select');
+    const input = form.querySelector('input');
+    assert.ok(select.hasAttribute('data-write') && input.hasAttribute('data-write'));
+    assert.ok(form.querySelector('button').hasAttribute('data-write'));
+    assert.deepEqual(select.querySelectorAll('option').map((o) => o.value), ['open', 'fixed', 'false_positive', 'accepted_risk']);
+    assert.equal(select.value, 'open', 'the current status is selected');
+    for (const control of [select, input]) {
+      const label = document.querySelector(`label[for="${control.id}"]`);
+      assert.ok(label && label.textContent.trim(), `${control.tagName} has a visible label`);
+    }
+  }
+});
+
+test('dispositions: a change writes exactly {status, disposition: {status, reason, by, at}, updatedAt} with one stamp', async () => {
+  const before = Date.now();
+  const { document, store, $ } = await bootLive({ user: ownerUser(), hash: '#p-example-app~status.all' });
+  await decide(document, 'b71e04c9d2a8', 'false_positive', '  Not reachable from the app  ');
+  const writes = decisionWrites(store);
+  assert.equal(writes.length, 1);
+  const [w] = writes;
+  assert.equal(w.op, 'update');
+  assert.equal(w.path, 'findings/b71e04c9d2a8');
+  assert.deepEqual(Object.keys(w.data).sort(), ['disposition', 'status', 'updatedAt']);
+  assert.deepEqual(Object.keys(w.data.disposition).sort(), ['at', 'by', 'reason', 'status']);
+  assert.equal(w.data.status, 'false_positive');
+  assert.equal(w.data.disposition.status, 'false_positive');
+  assert.equal(w.data.disposition.reason, 'Not reachable from the app', 'the reason is trimmed');
+  assert.equal(w.data.disposition.by, OWNER_ID, 'by is the user id');
+  assert.equal(w.data.disposition.at, w.data.updatedAt, 'one ISO stamp');
+  assert.equal(new Date(w.data.updatedAt).toISOString(), w.data.updatedAt);
+  assert.ok(Date.parse(w.data.updatedAt) >= before - 1000);
+  const row = rowFor(document, 'b71e04c9d2a8');
+  assert.equal(row.querySelector('.status').textContent, 'False positive');
+  assert.match(row.querySelector('.finding-details').textContent, /False positive: Not reachable from the app \(owner, /);
+  assert.ok(!allText(document.documentElement).includes(OWNER_ID), 'the user id is never shown');
+  assert.match($('toast').textContent, /b71e04c9d2a8/);
+  const select = formFor(document, 'b71e04c9d2a8').querySelector('select');
+  assert.equal(select.disabled, false, 'enabled again once the write settled');
+});
+
+test('dispositions: false positive and accepted risk need a reason; open and fixed store an empty one', async () => {
+  const { document, store } = await bootLive({ user: ownerUser(), hash: '#p-example-app~status.all' });
+  for (const status of ['accepted_risk', 'false_positive']) {
+    const form = await decide(document, 'a3f9c21be0d4', status, '   ');
+    assert.equal(decisionWrites(store).length, 0, `${status} without a reason writes nothing`);
+    const error = form.querySelector('.decide-error');
+    assert.ok(!error.hidden && error.textContent.trim(), 'an inline message says why');
+    assert.equal(form.querySelector('input').getAttribute('aria-invalid'), 'true');
+  }
+  await decide(document, 'a3f9c21be0d4', 'fixed', '');
+  const [w] = decisionWrites(store);
+  assert.equal(w.data.status, 'fixed');
+  assert.equal(w.data.disposition.reason, '');
+});
+
+test('dispositions: one write in flight per finding; the control is disabled until it settles', async () => {
+  const { document, store } = await bootLive({ user: ownerUser(), hash: '#p-example-app~status.all', options: { holdWrites: true } });
+  await decide(document, 'a3f9c21be0d4', 'fixed');
+  const form = formFor(document, 'a3f9c21be0d4');
+  assert.equal(rowFor(document, 'a3f9c21be0d4').querySelector('.status').textContent, 'Fixed', 'shown at once');
+  assert.ok(form.querySelector('select').disabled && form.querySelector('input').disabled && form.querySelector('button').disabled);
+  form.dispatchEvent(makeEvent('submit'));
+  await settle();
+  assert.equal(decisionWrites(store).length, 1, 'a second save while the first is in flight writes nothing');
+  store.held[0].resolve();
+  await settle();
+  assert.equal(form.querySelector('select').disabled, false);
+  assert.equal(rowFor(document, 'a3f9c21be0d4').querySelector('.status').textContent, 'Fixed');
+});
+
+test('dispositions: a rejected write (any code) reverts the row and toasts what failed, never the raw error', async () => {
+  const rejections = [
+    { code: 'not_granted', message: 'RAW-not-granted' },
+    { code: 'revoked', message: 'RAW-revoked' },
+    { code: 'invalid_argument', message: 'RAW-invalid' },
+    { code: 'unavailable', message: 'RAW-unavailable' },
+    { code: 'something_new', message: 'RAW-new' },
+    new Error('RAW-thrown'),
+  ];
+  for (const reason of rejections) {
+    const { document, store, $, errors } = await bootLive({ user: ownerUser(), hash: '#p-example-app~status.all', options: { holdWrites: true } });
+    await decide(document, 'b71e04c9d2a8', 'accepted_risk', 'Tracked upstream');
+    assert.equal(rowFor(document, 'b71e04c9d2a8').querySelector('.status').textContent, 'Accepted risk');
+    store.held[0].reject(reason);
+    await settle();
+    const row = rowFor(document, 'b71e04c9d2a8');
+    assert.equal(row.querySelector('.status').textContent, 'Open', `reverted after ${reason.code || 'a thrown error'}`);
+    assert.doesNotMatch(row.querySelector('.finding-details').textContent, /Accepted risk/);
+    const form = formFor(document, 'b71e04c9d2a8');
+    assert.equal(form.querySelector('select').value, 'open');
+    assert.equal(form.querySelector('select').disabled, false);
+    const toastText = $('toast').textContent;
+    assert.match(toastText, /Could not save the decision on b71e04c9d2a8/);
+    assert.doesNotMatch(toastText, /RAW-|\[object|Error/);
+    assert.deepEqual(errors, []);
+  }
+});
+
+test('dispositions: a form being edited keeps its choice and text through an unrelated live update', async () => {
+  const { document, store } = await bootLive({ user: ownerUser(), hash: '#p-example-app~status.all' });
+  const form = formFor(document, 'b71e04c9d2a8');
+  const select = form.querySelector('select');
+  const input = form.querySelector('input');
+  select.value = 'accepted_risk';
+  select.dispatchEvent(makeEvent('change'));
+  input.value = 'Half typed';
+  input.dispatchEvent(makeEvent('input'));
+  input.focus();
+  const seed = fixtureDocs();
+  store.push('projects', 'example-app', { ...seed.projects['example-app'], score: { ...seed.projects['example-app'].score, score: 70 } });
+  await settle();
+  same(formFor(document, 'b71e04c9d2a8'), form);
+  assert.equal(select.value, 'accepted_risk');
+  assert.equal(input.value, 'Half typed');
+  same(document.activeElement, input);
+  assert.equal(decisionWrites(store).length, 0);
+});
+
+test('dispositions: no control for viewers, a signed-out page, can() false, a null user or an owner without an id', async () => {
+  for (const user of [
+    stubUser({ owner: false, can: true }),
+    stubUser({ owner: true, can: false }),
+    stubUser({ owner: true, can: true, id: null }),
+    null,
+  ]) {
+    const { document, store } = await bootLive({ user, hash: '#p-example-app~status.all' });
+    assert.equal(document.querySelectorAll('[data-write]').length, 0);
+    assert.equal(document.querySelectorAll('form').length, 0);
+    assert.deepEqual(decisionWrites(store), []);
+  }
+});
+
+test('dispositions: static mode has no decision control, and a decision never shows a raw user id (R27)', async () => {
+  const data = clone(STATIC);
+  const finding = (id, status) => ({
+    id, project: 'example-app', system: 'mobile', layer: 'L1', source: 'npm-audit', ruleId: `rule-${id}`, title: `Finding ${id}`,
+    severity: 'LOW', confidence: 'HIGH', class: 'tool', status, firstSeen: '2026-10-22T00:00:00Z', lastSeen: '2026-10-22T00:00:00Z',
+  });
+  data.projects[0].findings = [finding('000000000001', 'accepted_risk'), finding('000000000002', 'fixed'), finding('000000000003', 'false_positive')];
+  data.projects[0].dispositions = {
+    '000000000001': { status: 'accepted_risk', reason: 'Tracked', by: 'u_page_user_placeholder', at: '2026-10-22T10:00:00Z' },
+    '000000000002': { status: 'fixed', reason: '', by: 'rampart', at: '2026-10-22T10:00:00Z' },
+    '000000000003': { status: 'false_positive', reason: 'Test fixture', by: 'local-name', at: '2026-10-22T10:00:00Z' },
+  };
+  const claude = stubClaude({ db: stubDb(fixtureDocs()).db, user: ownerUser() });
+  const { document } = bootPage({ inline: JSON.stringify(data), claude, hash: '#p-example-app~status.all' });
+  await settle();
+  assert.equal(document.querySelectorAll('[data-write]').length, 0);
+  assert.equal(document.querySelectorAll('form').length, 0);
+  const details = (id) => rowFor(document, id).querySelector('.finding-details').textContent;
+  assert.match(details('000000000001'), /Accepted risk: Tracked \(dashboard user, /);
+  assert.match(details('000000000002'), /Fixed \(Rampart, /);
+  assert.match(details('000000000003'), /False positive: Test fixture \(local-name, /);
+  // The page's own inline data slot holds the raw store data; what is rendered is <main>.
+  assert.ok(!allText(document.getElementById('main')).includes('u_page_user_placeholder'));
+  assert.ok(document.querySelector('button.action'), 'the copy-the-command buttons are still there');
 });

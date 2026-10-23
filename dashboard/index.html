@@ -408,6 +408,27 @@ tr.is-closed td { color: var(--muted); }
 .loc { min-width: 180px; max-width: 320px; font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
 .empty-row td { padding: 24px 12px; text-align: center; color: var(--muted); }
 .run-reason { display: block; margin-top: 4px; max-width: 280px; font-size: 12px; color: var(--muted); }
+
+/* Decision form inside a finding's details: live mode, for the owner only. Fields stack, so it fits the title column at any
+   width. */
+.decide { margin: 12px 0 4px; padding-top: 12px; border-top: 1px solid var(--line); }
+.decide-set { margin: 0; padding: 0; border: 0; min-width: 0; display: grid; gap: 10px; }
+.decide-set legend { padding: 0; margin-bottom: 2px; }
+.decide-field { display: grid; gap: 5px; min-width: 0; }
+.decide-field label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.decide-need { font-weight: 400; }
+.decide select, .decide input {
+  width: 100%; min-width: 0; padding: 7px 10px; font: inherit; font-size: 13px;
+  border: 1px solid var(--line-strong); border-radius: 8px; background-color: var(--surface); color: var(--ink);
+}
+.decide input[aria-invalid="true"] { border-color: var(--bad); }
+.decide-save {
+  justify-self: start; padding: 7px 14px; border: 1px solid var(--accent); border-radius: 8px;
+  background: var(--accent); color: var(--surface); font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.decide-save:hover:not(:disabled) { background: var(--surface); color: var(--accent); }
+.decide :disabled { opacity: 0.6; cursor: progress; }
+.decide-error { color: var(--bad); font-size: 12.5px; }
 .run-counts { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
 /* ---- empty state ---- */
@@ -448,6 +469,7 @@ tr.is-closed td { color: var(--muted); }
   .card { padding: 16px; }
   .empty { padding: 22px; margin-top: 16px; }
   .empty-title { font-size: 19px; }
+  .decide select, .decide input { font-size: 16px; } /* under 16px, phones zoom the page on focus */
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -537,6 +559,10 @@ const RampartDashboard = (function () {
   const STATUS_LABELS = {
     open: 'Open', regressed: 'Regressed', fixed: 'Fixed', false_positive: 'False positive', accepted_risk: 'Accepted risk',
   };
+  // What a person can decide about a finding on the page; the last two are judgments and need a reason.
+  const DECISIONS = Object.freeze(['open', 'fixed', 'false_positive', 'accepted_risk']);
+  const NEEDS_REASON = Object.freeze(['false_positive', 'accepted_risk']);
+  const REASON_MAX = 500;
   const RUN_STATUS_LABELS = { running: 'Running', done: 'Done', skipped: 'Skipped', failed: 'Failed' };
   const JOB_STATUSES = ['queued', 'claimed', 'running', 'done', 'failed'];
   const JOB_STATUS_LABELS = { queued: 'Queued', claimed: 'Claimed', running: 'Running', done: 'Done', failed: 'Failed' };
@@ -827,7 +853,8 @@ const RampartDashboard = (function () {
   // Patching in place. A live update rebuilds the view with h() into detached nodes, then morphChildren makes the page's
   // nodes match them: text and attributes change, the nodes stay. Children with a data-key (a tile's slug, a system, finding,
   // run or job id) are matched by key and the rest by position; a child whose tag differs is replaced. A <details> keeps the
-  // open state the viewer gave it and a <select> takes the new value. Kept nodes keep their own event listeners, so a
+  // open state the viewer gave it, a <select> or <input> takes the new value, and an element marked data-dirty (a decision
+  // form the viewer is editing) is left exactly as it is until they save. Kept nodes keep their own event listeners, so a
   // listener must read anything that can change from its element (actionButton reads data-command), not from a closure.
   const keyOf = (node) => (node.nodeType === 1 && node.hasAttribute('data-key') ? node.getAttribute('data-key') : null);
   const sameKind = (a, b) => a.nodeType === b.nodeType && (a.nodeType !== 1 || (a.tagName === b.tagName && keyOf(a) === keyOf(b)));
@@ -848,9 +875,10 @@ const RampartDashboard = (function () {
       if (from.nodeValue !== to.nodeValue) from.nodeValue = to.nodeValue;
       return;
     }
+    if (from.hasAttribute('data-dirty')) return;
     morphAttributes(from, to);
     morphChildren(from, Array.from(to.childNodes));
-    if (from.tagName === 'SELECT' && from.value !== to.value) from.value = to.value;
+    if ((from.tagName === 'SELECT' || from.tagName === 'INPUT') && from.value !== to.value) from.value = to.value;
   }
 
   // Make parent's children match next (detached nodes), reusing parent's own where they match. Children that will not be
@@ -889,6 +917,9 @@ const RampartDashboard = (function () {
     engines: DEFAULT_ENGINES.slice(),
     live: null, // the live source, in live mode
     access: 'read', // 'write' only for the owner with db write access (canWrite)
+    userId: null, // the writer's user id, which signs a decision's `by`; read only when access is 'write'
+    saving: new Set(), // finding ids with a decision write in flight (one at a time per finding)
+    optimistic: new Map(), // finding id -> {status, disposition} shown while its write is in flight
   };
 
   function show(view) {
@@ -1223,10 +1254,12 @@ const RampartDashboard = (function () {
   }
 
   // Who made a decision. A page decision's `by` is an opaque user id, which is never shown: in live mode it reads "owner"
-  // when it is meta/owner's id and "a viewer" otherwise. Static mode shows the local store's `by` (an OS user name).
+  // when it is meta/owner's id and "a viewer" otherwise. Static mode shows the local store's `by` (an OS user name), except
+  // a page decision pulled into the store, whose user id (u_...) reads "dashboard user".
   function author(by) {
     if (by === 'rampart') return 'Rampart';
-    if (!state.live || !by) return by;
+    if (!by) return by;
+    if (!state.live) return String(by).indexOf('u_') === 0 ? 'dashboard user' : String(by);
     const live = state.data && isObject(state.data.live) ? state.data.live : {};
     return live.ownerId && by === live.ownerId ? 'owner' : 'a viewer';
   }
@@ -1256,8 +1289,144 @@ const RampartDashboard = (function () {
     ].filter((row) => row[1] !== null && row[1] !== undefined && row[1] !== '');
     return h('details', null,
       h('summary', null, f.title || f.ruleId || f.id),
-      h('dl', { class: 'finding-details' }, rows.map(([k, value, cls]) => [h('dt', null, k), h('dd', cls ? { class: cls } : null, String(value))])));
+      h('dl', { class: 'finding-details' }, rows.map(([k, value, cls]) => [h('dt', null, k), h('dd', cls ? { class: cls } : null, String(value))])),
+      canDecide() ? decisionForm(f, disposition) : null);
   }
+
+  // ---- decisions (live mode, owner only) ---------------------------------------------------
+
+  // The decision form renders only in live mode, for a viewer who may write (canWrite), with a user id to sign `by` with.
+  const canDecide = () => Boolean(state.live) && canWrite() && typeof state.userId === 'string' && state.userId !== '';
+  const needsReason = (status) => NEEDS_REASON.indexOf(status) !== -1;
+  const reasonHint = (status) => (needsReason(status) ? '(required)' : '(optional)');
+
+  // A status select, a reason input and Save, every one tagged data-write. The current status is selected (a finding that
+  // is regressed first asks for a decision) and the current decision's reason is filled in. While its write is in flight
+  // the controls are disabled. The handlers read the finding id from data-finding, never from a closure (see morph).
+  function decisionForm(f, disposition) {
+    const id = String(f.id);
+    const busy = state.saving.has(id);
+    const current = known(DECISIONS, f.status, '');
+    const reason = isObject(disposition) && disposition.status === f.status && typeof disposition.reason === 'string' ? disposition.reason : '';
+    const ids = { status: `decide-status-${id}`, reason: `decide-reason-${id}`, hint: `decide-hint-${id}`, error: `decide-error-${id}` };
+    const select = h('select', { id: ids.status, name: 'status', 'data-write': true, disabled: busy },
+      current ? null : h('option', { value: '', disabled: true }, `${STATUS_LABELS[f.status] || 'Unknown'}: choose a decision`),
+      DECISIONS.map((s) => h('option', { value: s }, STATUS_LABELS[s])));
+    select.value = current;
+    return h('form', {
+      class: 'decide', 'data-write': true, 'data-finding': id, novalidate: true, 'aria-busy': busy ? 'true' : null,
+      on: { input: markDirty, change: decisionChanged, submit: saveDecision },
+    },
+    h('fieldset', { class: 'decide-set' },
+      h('legend', { class: 'label' }, 'Your decision'),
+      h('div', { class: 'decide-field' }, h('label', { for: ids.status }, 'Status'), select),
+      h('div', { class: 'decide-field' },
+        h('label', { for: ids.reason }, 'Reason ', h('span', { class: 'decide-need', id: ids.hint }, reasonHint(current))),
+        h('input', {
+          id: ids.reason, name: 'reason', type: 'text', maxlength: String(REASON_MAX), autocomplete: 'off', value: reason,
+          'data-write': true, disabled: busy, 'aria-required': needsReason(current) ? 'true' : 'false', 'aria-describedby': ids.error,
+        })),
+      h('button', { type: 'submit', class: 'decide-save', 'data-write': true, disabled: busy }, busy ? 'Saving…' : 'Save decision'),
+      h('p', { class: 'decide-error', id: ids.error, role: 'alert', hidden: true })));
+  }
+
+  // Once the viewer touches a form, live updates leave it alone (data-dirty, see morph) until they save.
+  function markDirty(event) {
+    event.currentTarget.setAttribute('data-dirty', '');
+  }
+
+  function decisionChanged(event) {
+    const form = event.currentTarget;
+    markDirty(event);
+    const status = form.querySelector('select').value;
+    const hint = form.querySelector('.decide-need');
+    if (hint) hint.textContent = reasonHint(status);
+    form.querySelector('input').setAttribute('aria-required', needsReason(status) ? 'true' : 'false');
+  }
+
+  // What the toast says when the DB refuses a decision, by error code (db.d.ts; an unknown code reads as unavailable).
+  function writeFailure(err) {
+    const code = isObject(err) && typeof err.code === 'string' ? err.code : null;
+    if (code === 'not_granted' || code === 'capability_disabled' || code === 'capability_removed') return 'This page may not change the dashboard data.';
+    if (code === 'revoked') return 'Access to the dashboard data was withdrawn. Reload the page.';
+    if (code === 'invalid_argument' || code === 'transform_error') return 'The dashboard data refused the change.';
+    if (code === 'resource_exhausted') return 'Too many changes at once. Wait a moment, then save again.';
+    if (code === 'quota_exceeded') return 'The dashboard data is full.';
+    return 'The dashboard data did not answer. Save again in a moment.';
+  }
+
+  // The DB write. async, so a path the store's builder refuses (it throws) arrives as a rejection like any other.
+  async function writeDecision(id, patch) {
+    return state.live.db.doc(`findings/${id}`).update(patch);
+  }
+
+  // Save: check the choice, then write {status, disposition: {status, reason, by, at}, updatedAt} with one ISO stamp. The
+  // row shows the decision at once; when the write settles the DB's documents speak again, so a refused write reverts the
+  // row, and a toast names the finding that failed.
+  function saveDecision(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const id = form.getAttribute('data-finding');
+    if (!canDecide() || state.saving.has(id)) return;
+    const select = form.querySelector('select');
+    const input = form.querySelector('input');
+    const error = form.querySelector('.decide-error');
+    const refuse = (message, field) => {
+      error.textContent = message;
+      error.hidden = false;
+      if (field) {
+        field.setAttribute('aria-invalid', 'true');
+        field.focus();
+      }
+    };
+    const status = select.value;
+    const reason = String(input.value || '').trim().slice(0, REASON_MAX);
+    const entry = currentEntry();
+    const finding = entry ? list(entry.findings).find((f) => isObject(f) && String(f.id) === id) : null;
+    if (!finding) return refuse('This finding is no longer in the dashboard data.');
+    if (DECISIONS.indexOf(status) === -1) return refuse('Choose a decision.', select);
+    if (needsReason(status) && !reason) return refuse(`Give a reason for marking it ${STATUS_LABELS[status].toLowerCase()}.`, input);
+    const was = own(entry.dispositions, id) && isObject(entry.dispositions[id]) ? entry.dispositions[id] : null;
+    if (status === finding.status && reason === (was && typeof was.reason === 'string' ? was.reason : '')) return refuse('Nothing to save: this is the current decision.');
+    const at = new Date().toISOString();
+    const disposition = { status, reason, by: state.userId, at };
+    error.hidden = true;
+    select.removeAttribute('aria-invalid');
+    input.removeAttribute('aria-invalid');
+    form.removeAttribute('data-dirty');
+    state.saving.add(id);
+    state.optimistic.set(id, { status, disposition });
+    rerender();
+    const settled = () => {
+      state.saving.delete(id);
+      state.optimistic.delete(id);
+      rerender();
+    };
+    writeDecision(id, { status, disposition, updatedAt: at }).then(() => {
+      settled();
+      toast(`Saved: ${id} is ${STATUS_LABELS[status].toLowerCase()}`);
+    }, (err) => {
+      settled();
+      toast(`Could not save the decision on ${id}. ${writeFailure(err)}`, null, ERROR_TOAST_MS);
+    });
+  }
+
+  // A finding with a decision in flight shows that decision (status and disposition) until the write settles.
+  function withDecisionsInFlight(entry) {
+    if (!state.optimistic.size || !list(entry.findings).some((f) => isObject(f) && state.optimistic.has(String(f.id)))) return entry;
+    const dispositions = Object.assign({}, isObject(entry.dispositions) ? entry.dispositions : {});
+    const findings = entry.findings.map((f) => {
+      const pending = isObject(f) ? state.optimistic.get(String(f.id)) : undefined;
+      if (!pending) return f;
+      dispositions[f.id] = pending.disposition;
+      return Object.assign({}, f, { status: pending.status });
+    });
+    return Object.assign({}, entry, { findings, dispositions });
+  }
+
+  const rerender = () => {
+    if (state.data && (state.view === 'tiles' || state.view === 'detail')) render(state.data);
+  };
 
   function findingRow(f, disposition) {
     const sev = known(SEVERITIES, f.severity, null);
@@ -1515,7 +1684,7 @@ const RampartDashboard = (function () {
   function render(data) {
     const showing = state.view === 'tiles' || state.view === 'detail';
     state.data = isData(data) ? data : null;
-    state.entries = entriesOf(data);
+    state.entries = entriesOf(data).map(withDecisionsInFlight);
     renderMasthead();
     if (!state.entries.length) {
       renderEmpty(false);
@@ -1541,14 +1710,16 @@ const RampartDashboard = (function () {
   // ---- copy and toast ----------------------------------------------------------------------
 
   let toastTimer = null;
+  const TOAST_MS = 2600;
+  const ERROR_TOAST_MS = 6000; // a failure stays up long enough to read
 
-  function toast(message, command) {
+  function toast(message, command, ms = TOAST_MS) {
     const el = $('toast');
     el.replaceChildren(message);
     if (command) el.appendChild(h('code', null, command));
     el.classList.add('is-on');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.remove('is-on'), 2600);
+    toastTimer = setTimeout(() => el.classList.remove('is-on'), ms);
   }
 
   // When the clipboard API is missing or refuses, put the text in the off-screen input, select it and try the old copy
@@ -1699,7 +1870,8 @@ const RampartDashboard = (function () {
     }
   }
 
-  // Who is viewing. Any failure here (a call that rejects) leaves the page read-only; it never blanks the view.
+  // Who is viewing. Any failure here (a call that rejects) leaves the page read-only; it never blanks the view. A writer's
+  // user id signs their decisions; without one (null, or id() failing) no decision control renders.
   async function connectUser(db) {
     const user = await capability('user');
     if (!user) return;
@@ -1712,6 +1884,16 @@ const RampartDashboard = (function () {
       owner = false;
       writable = false;
     }
+    let userId = null;
+    if (writable) {
+      try {
+        const id = await user.id();
+        userId = typeof id === 'string' && id !== '' ? id : null;
+      } catch (err) {
+        userId = null;
+      }
+    }
+    state.userId = userId;
     setAccess(writable ? 'write' : 'read');
     if (state.view === 'tiles' || state.view === 'detail') render(state.data);
     if (owner) await recordOwner(db, user);
