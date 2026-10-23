@@ -14,3 +14,9 @@
 - `/rampart doctor`: Node, gitleaks, trivy, python3, gh, ssh and git, the `claude-security` plugin, the store and packs, and what degrades without each.
 - `/rampart dashboard --static`: every project as a tile with grade, score, open findings by severity and layer freshness, plus a per-project score sheet, as one HTML file in the store that works in light and dark and at phone width.
 - Test suite on the built-in `node:test` runner, with no npm dependencies.
+
+### Known limitations
+
+- No project grades above C: repo systems declare L2 and L3, which have no engine until Plan 2, so their coverage is capped even with zero findings.
+- The dashboard tile's trend reads 0.0 right after a job, because the job saves its score snapshot before it renders the page; a fix is pending.
+- Real gitleaks and trivy runs were not exercised on the build machine; the secrets and dependency checks were tested with recorded reports and fake binaries.

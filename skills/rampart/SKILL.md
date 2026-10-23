@@ -20,7 +20,7 @@ allowed-tools:
 
 This is the front desk. Its whole purpose is to work out which job the user wants and drive it by that job's recipe.
 
-1. **If the request already names a job**, in the arguments (`$ARGUMENTS`) or in plain words, skip the menu and go to step 3. Match it with this table; "audit" or "scan" with no layer means audit L1.
+1. **If the request already names a job**, in the arguments (`$ARGUMENTS`) or in plain words, skip the menu and go to step 3. Match it with this table; "audit" or "scan" with no layer means audit L1. Arguments after the job name, such as `--project <slug>` and `--system <id>` (`/rampart audit L1 --project <slug>`), or the same in plain words ("audit L1 for project <slug>"), are accepted and passed to the recipe: the audit recipe uses `--project` instead of asking which project, and `--system` to check that one system only.
 
    | The user asks for | Job | Recipe |
    |---|---|---|

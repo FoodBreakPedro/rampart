@@ -2,7 +2,7 @@
 
 Rampart is a Claude Code plugin for layered security and vulnerability reviews across all of your systems: code repositories, live sites, databases, automation servers, edge workers and self-hosted hosts. Good security tools already exist, but each covers one slice: a diff, a repository, a checklist. Nothing ties them together, nothing covers the systems that are not a repository, nothing remembers across runs, and nothing gives you one place to see what you have checked, when, and how bad it is. Rampart is that layer. It wraps the existing tools where they exist, fills the gaps (secrets history, dependencies, security headers, infrastructure probes, logic-bug hunts), records everything, scores it, and shows it on a dashboard.
 
-The shape follows a three-level framework. Level 1, for every app: secrets over the full git history and the dependencies' known vulnerabilities, run regularly. Level 2, for every change: an agent security review of the diff and a security-headers check on live hosts. Level 3, for critical features and before launches: a deep multi-agent audit of authentication, billing, tenant isolation and data export. Each project gets one inventory listing its systems, which layers apply to each and where its jobs may run. Every finding has a stable id, so repeat runs dedupe and trends, regressions and time to fix stay visible. By design, a finding from a model hunt must survive a fresh-context verifier whose job is to disprove it, and a fix is drafted for you to review and apply, never applied for you.
+The shape follows a three-level framework. Level 1, for every app: secrets over the full git history and the dependencies' known vulnerabilities, run regularly; Rampart also grades each live site's security headers at this level. Level 2, for every change: an agent security review of the diff. Level 3, for critical features and before launches: a deep multi-agent audit of authentication, billing, tenant isolation and data export. Each project gets one inventory listing its systems, which layers apply to each and where its jobs may run. Every finding has a stable id, so repeat runs dedupe and trends, regressions and time to fix stay visible. By design, a finding from a model hunt must survive a fresh-context verifier whose job is to disprove it, and a fix is drafted for you to review and apply, never applied for you. This alpha implements only part of this shape; see Status.
 
 ## Status
 
@@ -12,6 +12,8 @@ Pre-release. This first alpha, `0.1.0-alpha.1`, covers:
 - **audit L1**: gitleaks over a repository's full history, trivy or the npm/pnpm audit on its lockfile, and a grade of each live URL's security headers; then the score.
 - **doctor**: which tools this machine has, and what degrades without them.
 - **dashboard --static**: every project's score sheet as a local HTML page.
+
+Scores read low on purpose in this alpha. Repo systems declare the L2 and L3 layers, which have no engine yet, so their coverage is capped and no project grades above C, even with zero findings. The cap lifts when Plan 2 ships the hunt engine.
 
 The rest of v0.1 arrives in three more plans:
 
@@ -90,14 +92,15 @@ Everything lands in a per-user store, `~/.rampart`, as plain JSON and JSONL you 
   projects/<slug>/
     project.json        # the inventory and your owner attestation
     findings.jsonl      # one finding per line, keyed by its stable id
-    dispositions.json   # your decisions: fixed, false positive, accepted risk
+    dispositions.json   # fixed, false positive, regressed...: written by the secrets triage, by checks that close
+                        # or reopen a finding, and by later versions
     scores.jsonl        # score snapshots, for trends
     runs/<run-id>/      # run.json, plus raw/ tool reports, redacted before they are written
   drafts/               # the inventory job's last draft of each project
   dashboard.html        # the static dashboard
 ```
 
-The store stays on your machine; this version has no server or account of its own. The checks reach out only as their tools do: the npm or pnpm audit asks the registry about your dependency tree, trivy downloads its vulnerability database, and the headers check fetches each live URL once.
+The store stays on your machine; this version has no server or account of its own. The checks reach out only as their tools do: the npm or pnpm audit asks the registry about your dependency tree, trivy downloads its vulnerability database, and the headers check fetches each live URL once. The inventory mapper and the secrets triage are agent runs: like any Claude Code work, they send the file excerpts they read to Claude.
 
 ## Trust model
 
