@@ -1,11 +1,14 @@
 'use strict';
 const { findingId } = require('./lib/id.cjs');
+const { runChecks } = require('./lib/headers-rubric.cjs');
 
-// Turn the raw JSON of the L1 tools into findings that match finding-schema.json. Each function takes the parsed report and
-// ctx = {project, system, runId, now?} and returns an array; the caller hands the array to the store.
+// Turn the raw JSON of the L1 tools into findings that match finding-schema.json. Each function takes the parsed report (for
+// the headers check, the result of fetching the URL) and ctx = {project, system, runId, now?} and returns an array; the
+// caller hands the array to the store.
 //
-// Every finding is class 'tool', layer 'L1', status 'open', stamped with ctx.now (or the current time) for both
-// firstSeen and lastSeen. The store keeps the real firstSeen when the finding already exists.
+// Every finding is layer 'L1', status 'open', stamped with ctx.now (or the current time) for both firstSeen and lastSeen.
+// The store keeps the real firstSeen when the finding already exists. The class is 'tool' unless the caller says otherwise:
+// the headers check files its gaps as 'hardening'.
 //
 // Nothing here reads a field it does not need. For gitleaks that matters: Secret, Match, Line, Author and Email stay in
 // the report and never reach a finding.
@@ -56,7 +59,7 @@ function toolFinding(c, f) {
     severity: f.severity,
     confidence: f.confidence,
     cwe: f.cwe,
-    class: 'tool',
+    class: f.class || 'tool',
     location: f.location,
     evidence: f.evidence,
     exploitScenario: f.exploitScenario,
@@ -307,4 +310,36 @@ function fromNpmAudit(report, ctx) {
   return findings;
 }
 
-module.exports = { fromGitleaks, fromTrivy, fromNpmAudit };
+// ---- security headers ---------------------------------------------------------------------
+
+const HEADER_EXPLOIT = 'A browser-side attack (script injection, clickjacking, a downgrade to plain HTTP, or a leak through a header) succeeds where the missing or weak header would have stopped it.';
+const HEADER_PRECONDITIONS = 'The attacker can get a victim to load the page or sits on the network path to the victim, and no other control covers the same weakness.';
+
+// result: {url, status, headers}, the final response of the live URL after redirects. headers is a plain object whose keys may
+// be in any case; set-cookie may be an array of lines or one string. One 'hardening' finding per failed check of the rubric
+// in lib/headers-rubric.cjs. A header gap is a defense-in-depth note, so these never count against the findings score.
+// Evidence names the headers only: no cookie name or value, no server banner.
+function fromHeaders(result, ctx) {
+  const c = context(ctx, 'fromHeaders');
+  if (!isObject(result)) throw new TypeError('fromHeaders: result must be an object');
+  if (!isText(result.url)) throw new TypeError('fromHeaders: result.url must be a non-empty string');
+  if (!isObject(result.headers)) throw new TypeError('fromHeaders: result.headers must be an object');
+  const { headers, failed } = runChecks(result.headers);
+  return failed.map((check) => toolFinding(c, {
+    class: 'hardening',
+    source: 'headers',
+    ruleId: `headers/${check.id}`,
+    title: check.title,
+    severity: check.severity,
+    confidence: 'HIGH',
+    cwe: [...check.cwe],
+    location: { url: result.url, header: check.id },
+    evidence: check.evidence(headers),
+    exploitScenario: HEADER_EXPLOIT,
+    preconditions: HEADER_PRECONDITIONS,
+    recommendation: check.recommendation,
+    cve: null,
+  }));
+}
+
+module.exports = { fromGitleaks, fromTrivy, fromNpmAudit, fromHeaders };
