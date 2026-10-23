@@ -23,7 +23,7 @@ A system's score is its coverage points plus its findings points, out of 100.
 ## Per project
 
 - The project score is the mean of its systems' rounded scores, weighted by each system's `criticality`: `auth`, `billing` and `data` weigh 3, `public` 2, `internal` 1. A system with no tag, or a tag outside these five, weighs as `public`. The mean is rounded to one decimal. A project with no systems has measured nothing and scores 0, an F.
-- **Trend** is this score minus the latest saved project snapshot (`scores.jsonl`, `kind: "project"`), rounded to one decimal; there is none before the first snapshot. `score.cjs <slug>` computes the trend first, then saves this score as the next snapshot; `--no-save` leaves the file alone.
+- **Trend** is this score minus the latest saved project snapshot (`scores.jsonl`, `kind: "project"`), rounded to one decimal; there is none before the first snapshot. `score.cjs <slug>` computes the trend first, then saves this score, with that trend, as the next snapshot; `--no-save` leaves the file alone. The dashboard, rendered right after, shows the snapshot's saved trend while the score is unchanged, and the change since the snapshot once it moves.
 
 ## Grades
 

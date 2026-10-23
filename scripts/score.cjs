@@ -8,8 +8,9 @@
 // so a sheet never shows 90.0 beside a B). The project score is the mean of its systems' scores weighted by criticality,
 // and its trend is the change since the last saved project snapshot.
 // CLI: node scripts/score.cjs <slug> [--json] [--no-save]. Prints the sheet (counts and dates only, never finding text)
-// and appends {kind: 'project', score, grade, at} to scores.jsonl unless --no-save. Exit 0 ok, 2 for a missing project, a bad
-// slug or bad arguments, 1 for anything unexpected (a corrupt store, say).
+// and appends {kind: 'project', score, grade, trend, at} to scores.jsonl unless --no-save. The snapshot keeps the trend it
+// was saved with (null for the first), so the dashboard, rendered right after, can show it (render-static.cjs). Exit 0 ok, 2
+// for a missing project, a bad slug or bad arguments, 1 for anything unexpected (a corrupt store, say).
 
 const util = require('node:util');
 const store = require('./store.cjs');
@@ -222,8 +223,8 @@ function main(argv) {
   const now = new Date();
   const result = scoreProject(project, store.readFindings(slug), store.readRuns(slug), now);
   const at = now.toISOString();
-  // The trend above is against the previous snapshot, so this one is saved only after it is computed.
-  if (save) store.appendScore(slug, { kind: 'project', score: result.score, grade: result.grade, at });
+  // The trend above is against the previous snapshot, so this one is saved only after it is computed, and carries it.
+  if (save) store.appendScore(slug, { kind: 'project', score: result.score, grade: result.grade, trend: result.trend, at });
   process.stdout.write(`${json ? JSON.stringify({ project: slug, at, ...result }, null, 2) : render(slug, result)}\n`);
 }
 

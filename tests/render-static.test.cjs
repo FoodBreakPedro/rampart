@@ -164,6 +164,39 @@ test('buildData returns everything the detail view needs: project, score, findin
   assert.deepEqual(entry.findings.find((f) => f.id === '0000000000a1'), findings.find((f) => f.id === '0000000000a1'));
 });
 
+// I6: every job saves a score snapshot and then renders, so the page used to compare the score with itself and read 0.
+const SCORE_CLI = path.join(__dirname, '..', 'scripts', 'score.cjs');
+const scoreCli = () => {
+  const r = spawnSync(process.execPath, [SCORE_CLI, SLUG, '--json'], { env: { ...process.env, RAMPART_HOME: home }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+};
+
+test('I6: score (saving its snapshot) then render: the page shows the trend the score sheet printed, not 0', () => {
+  seed();
+  store.appendScore(SLUG, { kind: 'project', score: 40, grade: 'D', at: '2026-10-01T00:00:00.000Z' }); // an earlier audit
+  const sheet = scoreCli();
+  assert.ok(Number.isFinite(sheet.trend) && sheet.trend !== 0, `the sheet has a real trend (${sheet.trend})`);
+  const shown = buildData().projects[0].score;
+  assert.equal(shown.score, sheet.score);
+  assert.equal(shown.trend, sheet.trend, 'the trend the user was told');
+  const html = fs.readFileSync(renderStatic(), 'utf8');
+  assert.equal(JSON.parse(slot(html)).projects[0].score.trend, sheet.trend);
+});
+
+test('I6: the first snapshot shows no trend, and a score that moved since the snapshot shows the change since it', () => {
+  seed();
+  assert.equal(scoreCli().trend, null);
+  assert.equal(buildData().projects[0].score.trend, null, 'no history yet, so no arrow (not "no change")');
+  const before = buildData().projects[0].score.score;
+  store.upsertFindings(SLUG, [{ ...store.readFindings(SLUG)[0], id: '0000000000c3', ruleId: 'npm/qs', location: { package: 'qs', ecosystem: 'npm' } }], '2026-10-23T12-00-00Z');
+  const moved = buildData().projects[0].score;
+  assert.ok(moved.score < before, 'a new finding since the snapshot');
+  assert.equal(moved.trend, Math.round((moved.score - before) * 10) / 10, 'computed against the snapshot');
+  store.appendScore(SLUG, { kind: 'project', score: moved.score, grade: moved.grade }); // an older snapshot shape: no trend
+  assert.equal(buildData().projects[0].score.trend, 0, 'without a saved trend the computed one stands');
+});
+
 test('buildData lists every project in slug order and defaults now to the current time', () => {
   seed();
   store.writeProject({ ...store.readProject(SLUG), slug: 'aaa-first', name: 'First', systems: [] });

@@ -495,10 +495,11 @@ test('CLI prints the sheet, appends one project snapshot, and exits 0', () => {
 
   const saved = snapshots();
   assert.equal(saved.length, 1);
-  assert.deepEqual(Object.keys(saved[0]).sort(), ['at', 'grade', 'kind', 'score']);
+  assert.deepEqual(Object.keys(saved[0]).sort(), ['at', 'grade', 'kind', 'score', 'trend']);
   assert.equal(saved[0].kind, 'project');
   assert.equal(saved[0].score, 60.8);
   assert.equal(saved[0].grade, 'C');
+  assert.equal(saved[0].trend, null, 'the first snapshot has no trend');
   assert.ok(Math.abs(Date.now() - Date.parse(saved[0].at)) < 60000);
 });
 
@@ -551,6 +552,7 @@ test('CLI: the trend is against the previous project snapshot, taken before this
   assert.equal(worse.score, 60.8); // db drops 60 -> 48: (80 * 2 + 48 * 3) / 5
   assert.equal(worse.trend, -7.2);
   assert.equal(snapshots().filter((s) => s.kind === 'project').length, 3);
+  assert.equal(snapshots().filter((s) => s.kind === 'project').pop().trend, -7.2, 'I6: the snapshot keeps the trend it was saved with');
 
   const text = cli(SLUG, '--no-save').stdout.split('\n')[0];
   assert.match(text, /\btrend 0\.0\b/);

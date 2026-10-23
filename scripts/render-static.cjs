@@ -51,6 +51,16 @@ function redactDeep(value) {
   return value;
 }
 
+// The score with the trend the user was told. Every job runs score.cjs, which saves a snapshot, and then renders, so a trend
+// computed here against the latest snapshot would always read 0. When the latest project snapshot has this same score, the
+// trend it was saved with is the one to show (null when it was the first); when the score has moved since, the change since
+// that snapshot is (scoreProject's own trend). A snapshot from before snapshots kept their trend has none to offer.
+function withSavedTrend(slug, score) {
+  const latest = store.readScores(slug).filter((s) => s && s.kind === 'project' && Number.isFinite(s.score)).pop();
+  const saved = latest && (latest.trend === null || Number.isFinite(latest.trend));
+  return saved && latest.score === score.score ? { ...score, trend: latest.trend } : score;
+}
+
 // Everything the page shows, for every project in the store, in slug order. Runs are the run.json objects (raw tool
 // output is never read); findings are the stored records. Throws when a project cannot be scored (a bad cadence, a finding
 // the score table does not know), as score.cjs does: a page that quietly left it out would look better than it is.
@@ -61,7 +71,7 @@ function buildData(now = new Date()) {
     const findings = store.readFindings(slug);
     const runs = store.readRuns(slug);
     const dispositions = store.readDispositions(slug);
-    const score = scoreProject(project, findings, runs, now);
+    const score = withSavedTrend(slug, scoreProject(project, findings, runs, now));
     return redactDeep({ project, score, findings, runs, dispositions });
   });
   return { generatedAt: now.toISOString(), machineId: machineId(), projects };
