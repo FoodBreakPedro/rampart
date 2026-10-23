@@ -24,7 +24,11 @@
         "updated": { "type": "integer", "minimum": 0 },
         "unchanged": { "type": "integer", "minimum": 0 },
         "hardening": { "type": "integer", "minimum": 0 },
-        "closed": { "type": "integer", "minimum": 0, "description": "Findings closed because the scan no longer reported them." }
+        "closed": { "type": "integer", "minimum": 0, "description": "Findings closed because the scan no longer reported them." },
+        "candidates": { "type": "integer", "minimum": 0, "description": "Distinct hunt candidates the run produced (verified + rejected + undecided)." },
+        "verified": { "type": "integer", "minimum": 0, "description": "Candidates that met the verification bar and became findings." },
+        "rejected": { "type": "integer", "minimum": 0, "description": "Candidates a majority of verifiers rejected." },
+        "undecided": { "type": "integer", "minimum": 0, "description": "Candidates with a tie, only unsure votes or no votes; kept in the run, never findings." }
       }
     },
     "revision": {

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rampart verifier vote",
+  "description": "One verifier's vote as hunt-io stores it (votes/<hunterKey>__<ref>__<n>.json). The agent writes verdict, optional severity and confidence, and a reason; hunt-io takes the candidate from the file name and derives candidateId and verifier.",
+  "type": "object",
+  "required": ["candidateId", "verifier", "verdict", "reason"],
+  "additionalProperties": false,
+  "properties": {
+    "candidateId": { "type": "string", "pattern": "^[0-9a-f]{12}$" },
+    "verifier": { "type": "string", "pattern": "^verify:.+:[1-9][0-9]*$", "description": "verify:<candidateRef>:<n>; one label is one vote." },
+    "verdict": { "enum": ["confirmed", "rejected", "unsure"] },
+    "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] },
+    "confidence": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+    "reason": { "type": "string" }
+  }
+}

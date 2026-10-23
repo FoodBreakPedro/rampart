@@ -1,0 +1,6 @@
+{
+  "verdict": "confirmed",
+  "severity": "MEDIUM",
+  "confidence": "MEDIUM",
+  "reason": "reachable but needs a session"
+}
