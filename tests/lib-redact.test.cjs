@@ -91,6 +91,24 @@ test('the key=value rule keeps the separator and tolerates quotes', () => {
   assert.equal(redact('{"password": "hunter2hunter2"}'), '{"password": "[REDACTED]"}');
 });
 
+test('the key=value separator does not span a newline', () => {
+  assert.equal(redact('secret:\nconfiguration'), 'secret:\nconfiguration');
+  assert.equal(redact('password=\nhunter2hunter2'), 'password=\nhunter2hunter2');
+});
+
+test('a bearer token is replaced and the scheme is kept', () => {
+  assert.equal(redact('Authorization: Bearer abcDEF123456+/xyz=='), 'Authorization: Bearer [REDACTED]');
+  assert.equal(redact('authorization: bearer abcdefgh1234'), 'authorization: bearer [REDACTED]');
+  assert.equal(
+    redact('curl -H "Authorization: Bearer abc.def-ghi_jkl~mno" https://x.test'),
+    'curl -H "Authorization: Bearer [REDACTED]" https://x.test'
+  );
+});
+
+test('a bearer value shorter than 8 characters is left alone', () => {
+  assert.equal(redact('Authorization: Bearer abc123'), 'Authorization: Bearer abc123');
+});
+
 test('a secret inside a longer variable name keeps its prefix', () => {
   assert.equal(redact('GOTRUE_JWT_SECRET=abcdefgh12345'), 'GOTRUE_JWT_SECRET=[REDACTED]');
 });

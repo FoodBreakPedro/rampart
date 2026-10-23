@@ -10,9 +10,12 @@ const RULES = [
   [/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, REDACTED],
   // Known token formats. AKIA and AIza are fixed length; the rest are a prefix plus the token characters after it.
   [/AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z\-_]{35}|(?:sk_live_|sk_test_|sk-ant-|ghp_|gho_|xox[baprs]-)[A-Za-z0-9_-]+/g, REDACTED],
-  // key=value: keep the key and separator, replace the value. The 8-character minimum also leaves
-  // true, false, null, 0 and 1 (and any other short value) alone.
-  [/((?:password|passwd|secret|token|api[_-]?key|private[_-]?key)["']?\s*[=:]\s*["']?)[^\s"']{8,}/gi, `$1${REDACTED}`],
+  // Bearer token: keep the scheme, replace the token (8+ characters, optional base64 padding).
+  [/(\bbearer[ \t]+)[A-Za-z0-9\-._~+/]{8,}=*/gi, `$1${REDACTED}`],
+  // key=value: keep the key and separator, replace the value. The separator stays on one line, so a key at the
+  // end of a line never swallows the next one. The 8-character minimum also leaves true, false, null, 0 and 1
+  // (and any other short value) alone.
+  [/((?:password|passwd|secret|token|api[_-]?key|private[_-]?key)["']?[ \t]*[=:][ \t]*["']?)[^\s"']{8,}/gi, `$1${REDACTED}`],
 ];
 
 // Returns text with credentials replaced by [REDACTED]. Non-strings are returned unchanged.
