@@ -13,7 +13,8 @@
 // the version, and only an exit code of 0 yields one. A tool that is found but cannot be asked (cut off, exits non-zero, or
 // cannot be started: Node will not start a .cmd or .bat without a shell, and none is used here) is still found, with version null.
 //
-// diagnose() is synchronous and never throws for anything missing, unreadable or malformed. The claude-security plugin counts as
+// diagnose() is synchronous and never throws for anything missing, unreadable or malformed, a home directory that cannot be
+// determined included (store.home is then null and the degraded list says so). The claude-security plugin counts as
 // present when any of three things in the Claude config dir (CLAUDE_CONFIG_DIR, else ~/.claude) says so, tried in this order:
 //   installed    plugins/installed_plugins.json has a "claude-security@..." key under "plugins"
 //   settings     settings.json has an "enabledPlugins" entry with such a key set to true
@@ -38,6 +39,7 @@ const PACK_TEMPLATE = '_template.md';
 const CLAUDE_SECURITY_PREFIX = 'claude-security@';
 const BYTE_ORDER_MARK = 0xfeff; // a UTF-8 BOM at the start of a JSON file does not matter
 const USAGE = 'usage: node scripts/doctor.cjs [--json]';
+const NO_HOME = 'home directory could not be determined: store location unknown';
 
 // In report order. env is the RAMPART_* variable that overrides the PATH lookup (none for the tools no scanner starts through an
 // override). missing is the sentence for the degraded list, in plain words: what does not work without the tool.
@@ -125,8 +127,15 @@ function claudeSecuritySource() {
   return null;
 }
 
+// The store: where it is, whether it is there, how many projects. home is null when it cannot be worked out (RAMPART_HOME unset
+// and os.homedir() throws, as it does with no HOME and no passwd entry).
 function storeInfo() {
-  const home = rampartHome();
+  let home;
+  try {
+    home = rampartHome();
+  } catch {
+    return { home: null, exists: false, projects: 0 };
+  }
   let exists = false;
   try {
     exists = fs.statSync(home).isDirectory();
@@ -167,11 +176,13 @@ function diagnose({ nodeVersion = process.versions.node, timeoutMs = PROBE_TIMEO
   const degraded = [];
   if (!node.ok) degraded.push(`Node ${node.version} is below ${MIN_NODE_MAJOR}`);
   for (const tool of TOOLS) if (!tools[tool.name].found) degraded.push(tool.missing);
+  const store = storeInfo();
+  if (store.home === null) degraded.push(NO_HOME);
   return {
     node,
     tools,
     plugins: { claudeSecurity, claudeSecuritySource: source },
-    store: storeInfo(),
+    store,
     packs: countPacks(PACKS_DIR),
     engines: { l2l3Unattended: 'rampart', l2l3Attended: claudeSecurity ? 'claude-security' : 'rampart' },
     degraded,
@@ -213,7 +224,9 @@ function format(report) {
     ...table,
     '',
     `plugins: claude-security ${CLAUDE_SECURITY_LABEL[plugins.claudeSecuritySource] || 'not installed'}`,
-    `store: ${store.home} (${store.exists ? plural(store.projects, 'project') : 'not created yet'})`,
+    store.home === null
+      ? 'store: unknown (home directory could not be determined)'
+      : `store: ${store.home} (${store.exists ? plural(store.projects, 'project') : 'not created yet'})`,
     `packs: ${packs.dir} (${packs.exists ? plural(packs.count, 'pack') : 'directory not found'})`,
     `engines: L2/L3 unattended runs use ${engines.l2l3Unattended}; attended runs use ${engines.l2l3Attended}`,
     '',

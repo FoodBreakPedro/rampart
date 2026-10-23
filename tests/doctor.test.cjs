@@ -339,9 +339,29 @@ test('RAMPART_TRIVY and RAMPART_GIT are honoured and asked with --version', () =
   assert.deepEqual(calls, [['--version'], ['--version']]);
 });
 
-test('a version printed on stderr only (ssh -V does this) is found too', () => {
+test('a version printed on stderr only is found too', () => {
   process.env.RAMPART_GIT = shim('git', { stderr: 'OpenSSH_9.6p1 Ubuntu-3ubuntu13, OpenSSL 3.0.13 30 Jan 2024\n' });
   assert.equal(diagnose().tools.git.version, '9.6');
+});
+
+// python3, gh and ssh have no override, so they are found on PATH. Stand-ins are shell scripts with the execute bit; Windows cannot
+// start those without a shell, so this runs on POSIX only. Each script appends "<name> <argv>" to $FAKE_ARGV_OUT.
+test('python3, gh and ssh are asked with --version, --version and -V (ssh answers on stderr)', { skip: process.platform === 'win32' && 'needs POSIX shell scripts on PATH' }, () => {
+  const bin = path.join(tmp, 'bin');
+  const argvOut = path.join(tmp, 'argv.txt');
+  fs.mkdirSync(bin);
+  const script = (name, body) => fs.writeFileSync(path.join(bin, name), `#!/bin/sh\necho "${name} $*" >> "$FAKE_ARGV_OUT"\n${body}\n`, { mode: 0o755 });
+  script('python3', 'echo "Python 3.12.1"');
+  script('gh', 'echo "gh version 2.40.1 (2023-12-13)"');
+  script('ssh', 'echo "OpenSSH_9.6p1, OpenSSL 3.0.13 30 Jan 2024" >&2');
+  process.env.PATH = bin;
+  process.env.FAKE_ARGV_OUT = argvOut;
+  const { tools } = diagnose();
+  assert.deepEqual(fs.readFileSync(argvOut, 'utf8').split('\n').filter(Boolean), ['python3 --version', 'gh --version', 'ssh -V']);
+  assert.deepEqual(tools.python3, { found: true, path: path.join(bin, 'python3'), version: '3.12.1' });
+  assert.deepEqual(tools.gh, { found: true, path: path.join(bin, 'gh'), version: '2.40.1' });
+  assert.deepEqual(tools.ssh, { found: true, path: path.join(bin, 'ssh'), version: '9.6' });
+  assert.equal(tools.git.found, false);
 });
 
 test('a tool that runs but prints no version is found with version null', () => {
@@ -403,6 +423,60 @@ test('store: counts the projects in the home', () => {
   store.writeProject(project);
   store.writeProject({ ...project, slug: 'second-app', name: 'Second app' });
   assert.deepEqual(diagnose().store, { home: rampartHome, exists: true, projects: 2 });
+});
+
+// os.homedir() throws when HOME/USERPROFILE are unset and the account has no passwd entry (a bare container user, for one).
+function withoutHomedir(fn) {
+  const real = os.homedir;
+  os.homedir = () => {
+    throw new Error('ENOENT: no home directory');
+  };
+  try {
+    return fn();
+  } finally {
+    os.homedir = real;
+  }
+}
+const NO_HOME = 'home directory could not be determined: store location unknown';
+
+test('store: no way to find the home directory is reported as unknown, not thrown', () => {
+  delete process.env.RAMPART_HOME;
+  const report = withoutHomedir(() => diagnose());
+  assert.deepEqual(report.store, { home: null, exists: false, projects: 0 });
+  assert.ok(report.degraded.includes(NO_HOME));
+  assert.equal(report.degraded.length, TOOLS.length + 1, 'the six missing tools and this');
+  assert.deepEqual(report.plugins, { claudeSecurity: false, claudeSecuritySource: null }, 'the plugin check needs the home too, and says no');
+  assert.deepEqual(Object.keys(report), ['node', 'tools', 'plugins', 'store', 'packs', 'engines', 'degraded']);
+});
+
+test('store: RAMPART_HOME and CLAUDE_CONFIG_DIR need no home directory, so nothing is reported unknown', () => {
+  process.env.CLAUDE_CONFIG_DIR = path.join(tmp, 'config');
+  writeSettings(process.env.CLAUDE_CONFIG_DIR, { enabledPlugins: { 'claude-security@x': true } });
+  const report = withoutHomedir(() => diagnose());
+  assert.deepEqual(report.store, { home: rampartHome, exists: false, projects: 0 });
+  assert.equal(report.degraded.includes(NO_HOME), false);
+  assert.deepEqual(report.plugins, { claudeSecurity: true, claudeSecuritySource: 'settings' });
+});
+
+test('the CLI exits 0 and says the store is unknown when the home directory cannot be determined', () => {
+  const preload = path.join(tmp, 'no-home.cjs');
+  fs.writeFileSync(preload, "require('node:os').homedir = () => { throw new Error('ENOENT: no home directory'); };\n");
+  const env = { ...process.env };
+  delete env.RAMPART_HOME;
+  const run = (args) => spawnSync(process.execPath, ['--require', preload, CLI, ...args], { encoding: 'utf8', env });
+
+  const json = run(['--json']);
+  assert.equal(json.status, 0);
+  assert.equal(json.stderr, '');
+  const report = JSON.parse(json.stdout);
+  assert.deepEqual(report.store, { home: null, exists: false, projects: 0 });
+  assert.ok(report.degraded.includes(NO_HOME));
+
+  const human = run([]);
+  assert.equal(human.status, 0);
+  assert.equal(human.stderr, '');
+  assert.match(human.stdout, /^store: unknown \(home directory could not be determined\)$/m);
+  assert.ok(human.stdout.includes(`- ${NO_HOME}`));
 });
 
 test('store: a home that is a file is not a store and does not throw', () => {
