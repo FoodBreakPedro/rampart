@@ -6,6 +6,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const store = require('../scripts/store.cjs');
 const { diagnose, parseVersion, countPacks } = require('../scripts/doctor.cjs');
+const { listPacks } = require('../scripts/packs.cjs');
 
 const CLI = path.join(__dirname, '..', 'scripts', 'doctor.cjs');
 const REPO_ROOT = path.join(__dirname, '..');
@@ -490,13 +491,14 @@ test('store: without RAMPART_HOME it is ~/.rampart under the (fake) home', () =>
   assert.deepEqual(diagnose().store, { home: path.join(fakeHome, '.rampart'), exists: false, projects: 0 });
 });
 
-test('packs: the directory is packs/ at the plugin root, and a missing one counts zero', () => {
+test('packs: the directory is packs/ at the plugin root and the count is the live pack list', () => {
   const { packs } = diagnose();
   assert.equal(packs.dir, path.join(REPO_ROOT, 'packs'));
   assert.equal(typeof packs.exists, 'boolean');
   assert.equal(Number.isInteger(packs.count) && packs.count >= 0, true);
   assert.equal(packs.exists, fs.existsSync(packs.dir));
   if (!packs.exists) assert.equal(packs.count, 0);
+  assert.equal(packs.count, listPacks().length);
 });
 
 test('countPacks counts *.md files, leaving out _template.md, other files and folders', () => {

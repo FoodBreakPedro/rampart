@@ -245,3 +245,50 @@ test('a code pack with no classes (mistyped heading) and a host pack with no pro
   put('good', noProbes.replace('  - host\n', ''));
   assert.deepEqual(validatePack(readPack('good', tmp)), { ok: true, errors: [] });
 });
+
+// ---- the shipped packs -----------------------------------------------------------------------
+
+// The class ids every code pack carries; the audit workflow fans hunters out by these names.
+const FIXED_CLASSES = [
+  'authz-scoping', 'tenant-isolation', 'bulk-export', 'session-handling', 'search-injection',
+  'sql-injection', 'ssrf', 'secrets-handling', 'deserialization', 'misconfig',
+];
+const PACKS_DIR = path.join(REPO_ROOT, 'packs');
+
+test('every file in packs/ validates; each code pack has at least 8 classes including the ten fixed ids', () => {
+  const names = listPacks();
+  for (const expected of ['web-nextjs', 'node-api', 'mobile-expo', 'cloudflare-workers']) assert.ok(names.includes(expected), expected);
+  for (const name of names) {
+    const pack = readPack(name);
+    assert.deepEqual(validatePack(pack), { ok: true, errors: [] }, name);
+    if (!pack.kinds.includes('code')) continue;
+    assert.ok(pack.classes.length >= 8, `${name} has ${pack.classes.length} classes`);
+    const ids = pack.classes.map((c) => c.id);
+    for (const id of FIXED_CLASSES) assert.ok(ids.includes(id), `${name} has ${id}`);
+    for (const id of ids) assert.match(id, /^[a-z0-9]+(-[a-z0-9]+)*$/, `${name}: ${id} is kebab-case`);
+    assert.ok(pack.baseline.length > 0, `${name} states a baseline`);
+  }
+  const markdown = fs.readdirSync(PACKS_DIR).filter((f) => f.endsWith('.md') && !f.startsWith('_'));
+  assert.deepEqual(markdown.map((f) => f.slice(0, -3)).sort(), names);
+});
+
+test('shipped packs: appliesTo names real system types, sources cite OWASP Top 10 2025 and ASVS 5, nothing secret-shaped', () => {
+  const types = loadSchema('project').properties.systems.items.properties.type.enum;
+  for (const name of listPacks()) {
+    const pack = readPack(name);
+    for (const type of pack.appliesTo) assert.ok(types.includes(type), `${name}: ${type} is a system type`);
+    const urls = pack.sources.map((s) => s.url);
+    assert.ok(urls.some((u) => /owasp\.org\/Top10\/2025/i.test(u)), `${name} cites OWASP Top 10 2025`);
+    assert.ok(urls.some((u) => /ASVS/i.test(u) && /5\.0/.test(u)), `${name} cites ASVS 5.0`);
+    for (const s of pack.sources) assert.ok(s.date <= pack.lastReviewed, `${name}: ${s.url} read by lastReviewed`);
+    const text = fs.readFileSync(path.join(PACKS_DIR, `${name}.md`), 'utf8');
+    assert.doesNotMatch(text, /sk_live|AKIA[0-9A-Z]{4}|BEGIN [A-Z ]*PRIVATE KEY|password\s*[:=]|eyJ[A-Za-z0-9_-]{8,}|[0-9a-f]{32,}/i, name);
+    assert.doesNotMatch(text, /\b(?:10|127)\.\d+\.\d+\.\d+\b|\b192\.168\.\d+\.\d+\b|\b172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b/, `${name} names no private address`);
+  }
+});
+
+test('packsFor picks each shipped code pack for its own system type', () => {
+  for (const type of ['web-nextjs', 'node-api', 'mobile-expo', 'cloudflare-workers']) {
+    assert.ok(packsFor({ type }).map((p) => p.name).includes(type), type);
+  }
+});
