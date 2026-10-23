@@ -88,22 +88,23 @@ test('the report has exactly the documented top-level keys', () => {
 
 // ---- node -----------------------------------------------------------------------------------
 
-test('node reports this version and is ok from major 18', () => {
+test('node reports this version and is ok from major 20 (ruling: 18 is end of life)', () => {
   const { node, degraded } = diagnose();
   assert.equal(node.version, process.versions.node);
-  assert.equal(node.ok, Number.parseInt(process.versions.node, 10) >= 18);
+  assert.equal(node.ok, Number.parseInt(process.versions.node, 10) >= 20);
   assert.equal(degraded.some((line) => line.startsWith('Node ')), !node.ok);
 
-  assert.deepEqual(diagnose({ nodeVersion: '18.0.0' }).node, { version: '18.0.0', ok: true });
+  assert.deepEqual(diagnose({ nodeVersion: '20.0.0' }).node, { version: '20.0.0', ok: true });
   assert.deepEqual(diagnose({ nodeVersion: '22.4.1' }).node, { version: '22.4.1', ok: true });
 });
 
-test('a node below 18 is not ok and is the first degraded line', () => {
-  const report = diagnose({ nodeVersion: '16.20.2' });
-  assert.deepEqual(report.node, { version: '16.20.2', ok: false });
-  assert.equal(report.degraded[0], 'Node 16.20.2 is below 18');
+test('a node below 20 is not ok and is the first degraded line', () => {
+  const report = diagnose({ nodeVersion: '18.20.4' });
+  assert.deepEqual(report.node, { version: '18.20.4', ok: false });
+  assert.equal(report.degraded[0], 'Node 18.20.4 is below 20');
   assert.equal(report.degraded.length, TOOLS.length + 1);
-  assert.equal(diagnose({ nodeVersion: '17.9.1' }).node.ok, false);
+  assert.equal(diagnose({ nodeVersion: '19.9.0' }).node.ok, false);
+  assert.equal(diagnose({ nodeVersion: '16.20.2' }).node.ok, false);
 });
 
 // ---- the claude-security plugin -------------------------------------------------------------

@@ -31,7 +31,7 @@ const { rampartHome } = require('./lib/paths.cjs');
 const { redact } = require('./lib/redact.cjs');
 const { listProjects } = require('./store.cjs');
 
-const MIN_NODE_MAJOR = 18;
+const MIN_NODE_MAJOR = 20; // package.json engines.node; 18 is past end of life
 const PROBE_TIMEOUT_MS = 5000;
 const VERSION_RE = /\d+\.\d+(?:\.\d+)?/;
 const PACKS_DIR = path.join(__dirname, '..', 'packs');

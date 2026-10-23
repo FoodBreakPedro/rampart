@@ -1,0 +1,14 @@
+{
+  "name": "rampart",
+  "description": "Rampart: layered security and vulnerability reviews across all your systems, as a Claude Code plugin",
+  "owner": {
+    "name": "Pedro Zabala"
+  },
+  "plugins": [
+    {
+      "name": "rampart",
+      "source": "./",
+      "description": "Layered security and vulnerability reviews across all your systems: inventory, L1/L2/L3 and infra audits with independent verification, a per-user record, and a scored dashboard."
+    }
+  ]
+}

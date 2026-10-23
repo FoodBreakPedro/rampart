@@ -19,6 +19,27 @@ test('plugin manifest is valid JSON with name rampart', () => {
   assert.match(m.version, /^\d+\.\d+\.\d+/);
 });
 
+test('T1: plugin.json and package.json carry the same version, and the Node floor is 20 everywhere it is stated', () => {
+  const plugin = JSON.parse(read('.claude-plugin', 'plugin.json'));
+  const pkg = JSON.parse(read('package.json'));
+  assert.equal(plugin.version, pkg.version);
+  assert.equal(pkg.engines.node, '>=20');
+  assert.match(read('scripts', 'doctor.cjs'), /const MIN_NODE_MAJOR = 20;/);
+  assert.match(read('README.md'), /Node 20 or newer/);
+});
+
+test('I7: the repository is its own marketplace, listing the rampart plugin at its root, and validate checks both manifests', () => {
+  const market = JSON.parse(read('.claude-plugin', 'marketplace.json'));
+  assert.equal(market.name, 'rampart');
+  assert.deepEqual(market.owner, { name: 'Pedro Zabala' });
+  assert.deepEqual(market.plugins.map(({ name, source }) => ({ name, source })), [{ name: 'rampart', source: './' }]);
+  assert.ok(!/@|\/Users\/|\\Users\\/.test(JSON.stringify(market)), 'no e-mail address or machine path');
+  const validate = JSON.parse(read('package.json')).scripts.validate;
+  assert.match(validate, /claude plugin validate \.claude-plugin\/plugin\.json --strict/);
+  assert.match(validate, /claude plugin validate \.claude-plugin\/marketplace\.json --strict/);
+  assert.match(read('README.md'), /\/plugin marketplace add <owner>\/rampart\n\/plugin install rampart@rampart/);
+});
+
 test('I5: the skill pre-approves only the narrow git commands, and no recipe runs git in another form', () => {
   const tools = frontMatter(read('skills', 'rampart', 'SKILL.md'), 'allowed-tools');
   const git = tools.filter((t) => /^Bash\(git\b/.test(t));

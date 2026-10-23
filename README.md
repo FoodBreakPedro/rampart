@@ -24,7 +24,7 @@ The rest of v0.1 arrives in three more plans:
 ## Requirements
 
 - Claude Code.
-- Node 18 or newer for the scripts, which have no npm dependencies. Running the test suite (`npm test`) on Windows needs Node 21 or newer.
+- Node 20 or newer for the scripts, which have no npm dependencies (Node 18 is past its end of life). Running the test suite (`npm test`) on Windows needs Node 21 or newer.
 - Optional tools, detected at run time; `/rampart doctor` says what each one changes:
   - `gitleaks`: the secrets history check. Without it, that check is skipped.
   - `trivy`: the dependency check. Without it, Rampart falls back to the npm or pnpm audit, and yarn projects are skipped.
@@ -34,7 +34,7 @@ The rest of v0.1 arrives in three more plans:
 
 ## Install
 
-`<owner>` is a placeholder until the repository's public home is settled. Add the repository as a marketplace, then install the plugin from it:
+`<owner>` is a placeholder until the repository's public home is settled. The repository is its own marketplace (`.claude-plugin/marketplace.json`, named `rampart`, with the one `rampart` plugin at its root). Add it as a marketplace, then install the plugin from it:
 
 ```
 /plugin marketplace add <owner>/rampart
@@ -52,6 +52,8 @@ For development, load a local checkout for one session instead of installing it:
 ```
 claude --plugin-dir "<path to your rampart checkout>"
 ```
+
+To check both manifests the way a release does, run `npm run validate`. It validates `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` by their paths with `claude plugin validate --strict`; a bare `claude plugin validate .` checks only the marketplace once that file exists.
 
 ## Quick start
 
