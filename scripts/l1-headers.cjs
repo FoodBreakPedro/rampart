@@ -4,10 +4,14 @@
 //   node scripts/l1-headers.cjs --project <slug> --system <id> [--url <url>] [--json]
 // --url overrides the live URL recorded for the system (live.url); one of the two is needed, and only http: and https: URLs are
 // accepted. Redirects are followed and the final response is the one graded: the run records both URLs.
+// The final URL is kept as origin and path only (no query, no fragment): that is what findings, the score and the raw copy
+// name, so a redirect to /login?state=<random> neither stores a token nor gives every run new finding ids.
 // Exit 0: the run is done. Exit 2: the run was skipped (timeout, connection refused, DNS or TLS failure, ...) or the arguments
 // were bad. Exit 1: anything unexpected.
 //
 // A response with an error status (404, 500) is graded all the same, because its headers are real; the run's reason says so.
+// A finished check also closes the system's earlier headers findings that this response no longer shows (store.closeMissing):
+// they become fixed, with a record in dispositions.json, and counts.closed says how many. A skipped check closes nothing.
 // Only the headers are read: the body is dropped unread. Cookie values are scrubbed from the response as soon as it arrives,
 // so they are not graded, stored, printed or passed on; the raw copy keeps each cookie's name and attributes.
 // Nothing from the response except counts, the grade, the URLs and file paths is ever printed.
@@ -60,6 +64,13 @@ function resolveTarget({ project, system, url, timeoutMs }) {
   return { url: resolveUrl(resolved.system, url) };
 }
 
+// The page a response came from as findings and scores name it: origin and path, without query or fragment (a redirect target
+// can carry a one-time token there) and without credentials.
+function pageOf(responseUrl) {
+  const { origin, pathname } = new URL(responseUrl);
+  return `${origin}${pathname}`;
+}
+
 // One Set-Cookie line with its value replaced: the name and the attributes stay, so the raw copy still shows which cookie
 // lacks Secure or HttpOnly. A line without a name=value pair is replaced whole.
 function scrubCookie(line) {
@@ -110,7 +121,7 @@ async function fetchFinal(url, timeoutMs) {
       if (controller.signal.aborted || (err && err.name === 'AbortError')) return { skip: `headers check timed out after ${timeoutMs} ms` };
       return { skip: `headers check failed: ${firstLine(String(failureDetail(err)))}` };
     }
-    const seen = { finalUrl: res.url || url, status: res.status, headers: plainHeaders(res.headers) };
+    const seen = { finalUrl: pageOf(res.url || url), status: res.status, headers: plainHeaders(res.headers) };
     // Only the headers matter: drop the body unread so the connection is released.
     try {
       if (res.body) await res.body.cancel();
@@ -126,8 +137,8 @@ async function fetchFinal(url, timeoutMs) {
 // ---- check --------------------------------------------------------------------------------
 
 // Check one system's live URL and record the outcome as a run. Returns {run, counts, grade, finalUrl, status}: the finished run,
-// the findings upsert counts plus hardening (the number of failed checks), the grade ({score, grade, failed}) and the final
-// response's URL and status. For a skipped run the counts are all zero and there is no grade. Throws RangeError for a project,
+// the findings upsert counts plus hardening (the number of failed checks) and closed (earlier findings no longer shown), the
+// grade ({score, grade, failed}) and the final response's URL (origin and path) and status. For a skipped run the counts are all zero and there is no grade. Throws RangeError for a project,
 // system, URL or timeout that does not resolve (no run is created). Anything else that goes wrong after the run exists marks it
 // failed and is rethrown.
 async function check({ project, system, url, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
@@ -141,7 +152,9 @@ async function check({ project, system, url, timeoutMs = DEFAULT_TIMEOUT_MS } = 
     const grade = gradeHeaders(headers);
     store.writeRaw(project, run.runId, RAW_NAME, JSON.stringify({ url: target.url, finalUrl, status, headers, grade }, null, 2));
     const findings = fromHeaders({ url: finalUrl, status, headers }, { project, system, runId: run.runId });
-    const counts = { ...store.upsertFindings(project, findings, run.runId), hardening: findings.length };
+    const upserted = store.upsertFindings(project, findings, run.runId);
+    const { closed } = store.closeMissing(project, { system, source: 'headers', runId: run.runId, seenIds: findings.map((f) => f.id) });
+    const counts = { ...upserted, closed, hardening: findings.length };
     store.appendScore(project, { kind: 'headers', system, url: finalUrl, score: grade.score, grade: grade.grade });
 
     const patch = { status: 'done', counts, tool: { name: 'headers' } };
@@ -185,11 +198,11 @@ function parse(argv) {
 
 // The lines under the head of a done run.
 function details({ run, counts, grade, finalUrl, status }) {
-  const { added, updated, unchanged, regressed, hardening } = counts;
+  const { added, updated, unchanged, regressed, closed, hardening } = counts;
   const lines = [
     `url: ${redact(finalUrl)} (status ${status})`,
     `grade: ${grade.grade} (score ${grade.score})`,
-    `${hardening} hardening ${hardening === 1 ? 'finding' : 'findings'}: ${added} new, ${updated} updated, ${unchanged} unchanged, ${regressed} regressed`,
+    `${hardening} hardening ${hardening === 1 ? 'finding' : 'findings'}: ${added} new, ${updated} updated, ${unchanged} unchanged, ${regressed} regressed, ${closed} closed`,
     `raw response: ${path.join(runDir(run.project, run.runId), 'raw', RAW_NAME)}`,
   ];
   if (run.reason) lines.push(`note: ${run.reason}`);

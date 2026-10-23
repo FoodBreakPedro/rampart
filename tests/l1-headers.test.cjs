@@ -21,6 +21,7 @@ const COOKIE_B1 = 'COOKIEVALUEbbbb2222';
 const COOKIE_B2 = 'COOKIEVALUEbbbb3333';
 const COOKIE_C = 'COOKIEVALUEcccc4444';
 const COOKIE_VALUES = [COOKIE_A, COOKIE_B1, COOKIE_B2, COOKIE_C];
+const STATE_TOKEN = 'secrettoken123'; // in the query of a redirect target; it must not be stored either
 
 // A response that passes every check, with a cookie that has Secure and HttpOnly.
 const FULL = {
@@ -167,8 +168,8 @@ test('(a) full-marks headers: no findings, grade A, a done run with hardening 0 
   assert.equal(run.executor, 'local');
   assert.deepEqual(run.tool, { name: 'headers' });
   assert.ok(run.finishedAt);
-  assert.deepEqual(counts, { added: 0, updated: 0, unchanged: 0, regressed: 0, hardening: 0 });
-  assert.deepEqual(run.counts, { added: 0, updated: 0, unchanged: 0, hardening: 0, regressed: 0 });
+  assert.deepEqual(counts, { added: 0, updated: 0, unchanged: 0, regressed: 0, closed: 0, hardening: 0 });
+  assert.deepEqual(run.counts, { added: 0, updated: 0, unchanged: 0, hardening: 0, regressed: 0, closed: 0 });
   assert.deepEqual(readRun(run), run, 'run.json on disk is the returned run');
   assert.deepEqual(grade, { score: 100, grade: 'A', failed: [] });
   assert.deepEqual(store.readFindings(SLUG), []);
@@ -224,13 +225,39 @@ test('(c) a 302 to the full-marks server is graded on the final response, and fi
   assert.deepEqual(requests.map((r) => r.method), ['GET', 'GET']);
 });
 
-test('(c) findings from a redirected check point at the final URL', async () => {
+test('(c) the query string of a redirect target is not kept: findings, raw copy and score name origin and path only', async () => {
   const target = await serveBare();
-  setLiveUrl(await serveRedirect(`${target}landing?x=1`));
+  const start = await serveRedirect(`${target}path?state=${STATE_TOKEN}`);
+  setLiveUrl(start);
   const { run } = await checkHeaders({ project: SLUG, system: SYSTEM });
+
   assert.equal(run.status, 'done');
-  assert.ok(store.readFindings(SLUG).every((f) => f.location.url === `${target}landing?x=1`));
-  assert.equal(readRaw(run).finalUrl, `${target}landing?x=1`);
+  assert.ok(requests.some((r) => r.url === `/path?state=${STATE_TOKEN}`), 'the redirect was followed with its query');
+  const findings = store.readFindings(SLUG);
+  assert.equal(findings.length, 8);
+  assert.ok(findings.every((f) => f.location.url === `${target}path` && f.location.url.endsWith('/path')));
+  assert.equal(readRaw(run).finalUrl, `${target}path`);
+  assert.equal(readRaw(run).url, start, 'what was asked for is recorded as it was');
+  assert.equal(scoreLines()[0].url, `${target}path`);
+  for (const [file, text] of everyStoredText()) assert.ok(!text.includes(STATE_TOKEN), `${file} holds the redirect token`);
+});
+
+test('(c) the same page reached through a different query is the same findings, not new ones', async () => {
+  const target = await serveBare();
+  setLiveUrl(await serveRedirect(`${target}path?state=one`));
+  const first = await checkHeaders({ project: SLUG, system: SYSTEM });
+  setLiveUrl(await serveRedirect(`${target}path?state=two`));
+  const second = await checkHeaders({ project: SLUG, system: SYSTEM });
+  assert.equal(first.counts.added, 8);
+  assert.deepEqual(second.counts, { added: 0, updated: 0, unchanged: 8, regressed: 0, closed: 0, hardening: 8 });
+});
+
+test('a query or fragment on the URL asked for does not reach the final URL either', async () => {
+  const url = await serveBare();
+  const { run } = await checkHeaders({ project: SLUG, system: SYSTEM, url: `${url}page?x=1#section` });
+  assert.equal(readRaw(run).finalUrl, `${url}page`);
+  assert.equal(readRaw(run).url, `${url}page?x=1#section`);
+  assert.ok(store.readFindings(SLUG).every((f) => f.location.url === `${url}page`));
 });
 
 test('(d) a port nothing listens on is a skipped run naming ECONNREFUSED, never a crash', async () => {
@@ -372,9 +399,89 @@ test('a run is created for every checked URL, and a second check of the same pag
   const before = store.readFindings(SLUG);
   const { run, counts } = await checkHeaders({ project: SLUG, system: SYSTEM });
   assert.notEqual(run.runId, first.run.runId);
-  assert.deepEqual(counts, { added: 0, updated: 0, unchanged: 8, regressed: 0, hardening: 8 });
+  assert.deepEqual(counts, { added: 0, updated: 0, unchanged: 8, regressed: 0, closed: 0, hardening: 8 });
   assert.deepEqual(store.readFindings(SLUG).map((f) => f.id), before.map((f) => f.id));
   assert.equal(scoreLines().length, 2, 'every finished check adds a score line');
+});
+
+// ---- findings that no longer reproduce ----------------------------------------------------
+
+test('(e) a site checked bare and then fixed: the earlier findings are fixed, with a record naming the run, and counted as closed', async () => {
+  setLiveUrl(await serveBare());
+  const first = await checkHeaders({ project: SLUG, system: SYSTEM });
+  const earlier = store.readFindings(SLUG);
+  assert.equal(earlier.length, 8);
+
+  setLiveUrl(await serveFull()); // the same system, now answering with full marks (another port, so another page)
+  const { run, counts, grade } = await checkHeaders({ project: SLUG, system: SYSTEM });
+  assert.equal(grade.grade, 'A');
+  assert.equal(counts.closed, 8);
+  assert.equal(counts.hardening, 0);
+  assert.equal(counts.added, 0);
+  assert.equal(run.counts.closed, 8);
+  assert.deepEqual(readRun(run), run);
+
+  const now = store.readFindings(SLUG);
+  assert.deepEqual(now.map((f) => f.id), earlier.map((f) => f.id), 'nothing is deleted');
+  assert.ok(now.every((f) => f.status === 'fixed'));
+  const dispositions = store.readDispositions(SLUG);
+  assert.deepEqual(Object.keys(dispositions).sort(), earlier.map((f) => f.id).sort());
+  for (const { id } of earlier) {
+    const { at, ...record } = dispositions[id];
+    assert.deepEqual(record, { status: 'fixed', reason: `not reproduced in run ${run.runId}`, by: 'rampart' });
+    assert.ok(at);
+  }
+  assert.notEqual(run.runId, first.run.runId);
+  assert.equal(scoreLines().length, 2);
+});
+
+test('(e) the same page fixed step by step closes what each step fixes, and a header that goes missing again is a regression', async () => {
+  const CSP = { 'Content-Security-Policy': "default-src 'self'; frame-ancestors 'none'" };
+  const modes = { bare: BARE, partial: { ...BARE, ...CSP }, full: FULL };
+  let mode = 'bare';
+  setLiveUrl(await serve((req, res) => respond(200, modes[mode])(req, res)));
+  const check = async (next) => {
+    mode = next;
+    const { run, counts } = await checkHeaders({ project: SLUG, system: SYSTEM });
+    assert.equal(run.status, 'done');
+    return counts;
+  };
+  const statuses = () => store.readFindings(SLUG).map((f) => f.status);
+
+  assert.deepEqual(await check('bare'), { added: 8, updated: 0, unchanged: 0, regressed: 0, closed: 0, hardening: 8 });
+  // A CSP with frame-ancestors answers both the csp and the frame check.
+  assert.deepEqual(await check('partial'), { added: 0, updated: 0, unchanged: 6, regressed: 0, closed: 2, hardening: 6 });
+  assert.equal(statuses().filter((s) => s === 'fixed').length, 2);
+  assert.deepEqual(await check('full'), { added: 0, updated: 0, unchanged: 0, regressed: 0, closed: 6, hardening: 0 });
+  assert.ok(statuses().every((s) => s === 'fixed'));
+  assert.deepEqual(await check('bare'), { added: 0, updated: 0, unchanged: 0, regressed: 8, closed: 0, hardening: 8 });
+  assert.ok(statuses().every((s) => s === 'regressed'));
+  assert.ok(Object.values(store.readDispositions(SLUG)).every((d) => d.status === 'regressed' && d.by === 'rampart'));
+});
+
+test('(e) a skipped check closes nothing: it says nothing about what is gone', async () => {
+  setLiveUrl(await serveBare());
+  await checkHeaders({ project: SLUG, system: SYSTEM });
+  setLiveUrl(await closedUrl());
+  const { run } = await checkHeaders({ project: SLUG, system: SYSTEM });
+  assert.equal(run.status, 'skipped');
+  assert.equal(run.counts.closed, undefined);
+  assert.ok(store.readFindings(SLUG).every((f) => f.status === 'open'));
+  assert.deepEqual(store.readDispositions(SLUG), {});
+});
+
+test('(e) findings that a person triaged are not closed when the header gets fixed', async () => {
+  setLiveUrl(await serveBare());
+  await checkHeaders({ project: SLUG, system: SYSTEM });
+  const [first, second] = store.readFindings(SLUG);
+  store.setDisposition(SLUG, first.id, { status: 'accepted_risk', reason: 'behind a CDN', by: 'pedro' });
+  store.setDisposition(SLUG, second.id, { status: 'false_positive', reason: 'scanner quirk', by: 'pedro' });
+  setLiveUrl(await serveFull());
+  const { counts } = await checkHeaders({ project: SLUG, system: SYSTEM });
+  assert.equal(counts.closed, 6);
+  const byId = Object.fromEntries(store.readFindings(SLUG).map((f) => [f.id, f.status]));
+  assert.equal(byId[first.id], 'accepted_risk');
+  assert.equal(byId[second.id], 'false_positive');
 });
 
 // ---- arguments that do not resolve ---------------------------------------------------------
@@ -420,6 +527,7 @@ test('cli: a finished check exits 0 and prints the grade, the final URL, the fin
   assert.ok(r.stdout.includes(`url: ${target}`), 'the final URL is printed');
   assert.match(r.stdout, /grade: A \(score 100\)/);
   assert.match(r.stdout, /0 hardening findings/);
+  assert.match(r.stdout, /0 closed/);
   assert.match(r.stdout, /raw[\\/]headers\.json/);
   assert.equal(r.stderr, '');
   assert.equal(scoreLines().length, 1);
