@@ -9,7 +9,7 @@ const path = require('node:path');
 // Messages name types and constraints, never the offending value, so a bad credential cannot leak through one.
 
 const SPECS_DIR = path.join(__dirname, '..', '..', 'skills', 'rampart', 'specs');
-const SCHEMA_NAMES = ['project', 'finding', 'run', 'job'];
+const SCHEMA_NAMES = ['project', 'finding', 'run', 'job', 'pack'];
 
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key) && obj[key] !== undefined;
 const join = (parent, key) => (parent === '$' ? key : `${parent}.${key}`);
@@ -93,7 +93,7 @@ function validate(schema, value) {
 
 const cache = new Map();
 
-// loadSchema('project'|'finding'|'run'|'job') -> parsed schema, read from the repo (not from the cwd) and cached.
+// loadSchema('project'|'finding'|'run'|'job'|'pack') -> parsed schema, read from the repo (not from the cwd) and cached.
 function loadSchema(name) {
   if (!SCHEMA_NAMES.includes(name)) {
     throw new Error(`loadSchema: unknown schema ${JSON.stringify(name)} (expected one of ${SCHEMA_NAMES.join(', ')})`);

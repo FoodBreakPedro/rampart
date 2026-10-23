@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rampart pack",
+  "description": "A hunt pack as returned by readPack (scripts/packs.cjs): parsed front-matter plus the Hunt classes, Baseline and Probes sections.",
+  "type": "object",
+  "required": ["name", "version", "appliesTo", "kinds", "sources", "lastReviewed", "classes", "baseline", "probes"],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "pattern": "^_?[a-z0-9][a-z0-9-]*$", "description": "Equals the file name without .md." },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$" },
+    "appliesTo": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "System types the pack covers." },
+    "kinds": { "type": "array", "items": { "enum": ["code", "host"] } },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["url", "date"],
+        "additionalProperties": false,
+        "properties": {
+          "url": { "type": "string", "pattern": "^https?://\\S+$" },
+          "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" }
+        }
+      }
+    },
+    "lastReviewed": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "classes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "lookFor", "confirmBy", "disproveBy", "severity", "cwe"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+          "title": { "type": "string", "minLength": 1 },
+          "lookFor": { "type": "string", "minLength": 1 },
+          "confirmBy": { "type": "string", "minLength": 1 },
+          "disproveBy": { "type": "string", "minLength": 1 },
+          "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] },
+          "cwe": { "type": "array", "items": { "type": "string", "pattern": "^CWE-\\d+$" } }
+        }
+      }
+    },
+    "baseline": { "type": "string" },
+    "probes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "via", "argv", "expect", "scrub"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
+          "title": { "type": "string", "minLength": 1 },
+          "via": { "enum": ["ssh", "http", "local"] },
+          "argv": { "type": "array", "items": { "type": "string" }, "description": "Non-empty (checked by validatePack)." },
+          "expect": { "type": "string", "minLength": 1 },
+          "scrub": { "enum": ["env", "none"] },
+          "path": { "type": "string", "minLength": 1, "description": "http probes: path under the system's live URL." }
+        }
+      }
+    }
+  }
+}
