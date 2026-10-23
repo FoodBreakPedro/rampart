@@ -235,6 +235,82 @@ test('CLAUDE_CONFIG_DIR, when set, replaces ~/.claude for settings.json too', ()
   assert.deepEqual(diagnose().plugins, { claudeSecurity: true, claudeSecuritySource: 'settings' });
 });
 
+// ---- the claude-security plugin present as a marketplace clone ------------------------------
+
+// <configDir>/plugins/marketplaces/<marketplace>/plugins/claude-security/.claude-plugin/plugin.json
+function writeMarketplacePlugin(configDir, marketplace = 'some-market', plugin = 'claude-security') {
+  const dir = path.join(configDir, 'plugins', 'marketplaces', marketplace, 'plugins', plugin, '.claude-plugin');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'plugin.json'), JSON.stringify({ name: plugin }));
+  return path.join(dir, 'plugin.json');
+}
+
+test('claudeSecurity is true, source "marketplace", when a marketplace clone has the claude-security plugin', () => {
+  writeMarketplacePlugin(path.join(fakeHome, '.claude'));
+  const report = diagnose();
+  assert.deepEqual(report.plugins, { claudeSecurity: true, claudeSecuritySource: 'marketplace' });
+  assert.deepEqual(report.engines, { l2l3Unattended: 'rampart', l2l3Attended: 'claude-security' });
+});
+
+test('any marketplace folder counts, and a clone without the plugin does not hide one that has it', () => {
+  const configDir = path.join(fakeHome, '.claude');
+  writeMarketplacePlugin(configDir, 'a-market', 'other-plugin');
+  assert.equal(diagnose().plugins.claudeSecurity, false, 'a marketplace without claude-security');
+  writeMarketplacePlugin(configDir, 'z-market');
+  assert.deepEqual(diagnose().plugins, { claudeSecurity: true, claudeSecuritySource: 'marketplace' });
+  writeMarketplacePlugin(configDir, 'claude-plugins-official..clone');
+  assert.equal(diagnose().plugins.claudeSecuritySource, 'marketplace', 'folder names with dots are fine');
+});
+
+test('the marketplace clone must have plugin.json at the exact path, as a file', () => {
+  const configDir = path.join(fakeHome, '.claude');
+  const markets = path.join(configDir, 'plugins', 'marketplaces');
+  fs.mkdirSync(path.join(markets, 'm1', 'plugins', 'claude-security', '.claude-plugin'), { recursive: true }); // no plugin.json
+  fs.mkdirSync(path.join(markets, 'm2', 'plugins', 'claude-security', '.claude-plugin', 'plugin.json'), { recursive: true }); // a folder
+  fs.mkdirSync(path.join(markets, 'm3', 'claude-security', '.claude-plugin'), { recursive: true }); // one level too shallow
+  fs.writeFileSync(path.join(markets, 'm3', 'claude-security', '.claude-plugin', 'plugin.json'), '{}');
+  fs.mkdirSync(path.join(markets, 'm4', 'plugins', 'claude-security-extra', '.claude-plugin'), { recursive: true }); // another plugin
+  fs.writeFileSync(path.join(markets, 'm4', 'plugins', 'claude-security-extra', '.claude-plugin', 'plugin.json'), '{}');
+  fs.writeFileSync(path.join(markets, 'a-file'), 'not a marketplace');
+  assert.deepEqual(diagnose().plugins, { claudeSecurity: false, claudeSecuritySource: null });
+  fs.mkdirSync(path.join(configDir, 'plugins', 'marketplaces', 'empty'), { recursive: true });
+  assert.equal(diagnose().plugins.claudeSecurity, false, 'an empty marketplace folder');
+});
+
+test('a marketplaces path that is a file, or no plugins folder at all, is false and does not throw', () => {
+  const configDir = path.join(fakeHome, '.claude');
+  assert.equal(diagnose().plugins.claudeSecurity, false, 'no config dir');
+  fs.mkdirSync(path.join(configDir, 'plugins'), { recursive: true });
+  assert.equal(diagnose().plugins.claudeSecurity, false, 'no marketplaces folder');
+  fs.writeFileSync(path.join(configDir, 'plugins', 'marketplaces'), 'a file');
+  assert.equal(diagnose().plugins.claudeSecurity, false, 'marketplaces is a file');
+});
+
+test('the sources are tried in order: installed, then settings, then marketplace', () => {
+  const dir = path.join(fakeHome, '.claude');
+  writeMarketplacePlugin(dir);
+  assert.equal(diagnose().plugins.claudeSecuritySource, 'marketplace');
+
+  writeSettings(dir, { enabledPlugins: { 'claude-security@x': true } });
+  assert.equal(diagnose().plugins.claudeSecuritySource, 'settings', 'settings beats the marketplace clone');
+
+  writeSettings(dir, { enabledPlugins: { 'claude-security@x': false } });
+  assert.equal(diagnose().plugins.claudeSecuritySource, 'marketplace', 'a settings entry set to false falls through to the clone');
+
+  writeSettings(dir, { enabledPlugins: { 'claude-security@x': true } });
+  writeInstalledPlugins(dir, { 'claude-security@x': entry });
+  assert.equal(diagnose().plugins.claudeSecuritySource, 'installed', 'installed beats both');
+});
+
+test('CLAUDE_CONFIG_DIR, when set, replaces ~/.claude for the marketplace clones too', () => {
+  const elsewhere = path.join(tmp, 'elsewhere');
+  writeMarketplacePlugin(path.join(fakeHome, '.claude'));
+  process.env.CLAUDE_CONFIG_DIR = elsewhere;
+  assert.equal(diagnose().plugins.claudeSecurity, false, '~/.claude marketplaces are ignored once CLAUDE_CONFIG_DIR is set');
+  writeMarketplacePlugin(elsewhere);
+  assert.deepEqual(diagnose().plugins, { claudeSecurity: true, claudeSecuritySource: 'marketplace' });
+});
+
 // ---- tool overrides and versions ------------------------------------------------------------
 
 test('RAMPART_GITLEAKS is honoured: found, its path, and the version it prints', () => {
@@ -415,6 +491,11 @@ test('the human output says where claude-security was found, or that it was not'
   writeSettings(path.join(fakeHome, '.claude'), { enabledPlugins: { 'claude-security@claude-plugins-official': true } });
   assert.match(cli([]).stdout, /^plugins: claude-security enabled \(settings\.json\)$/m);
   assert.deepEqual(JSON.parse(cli(['--json']).stdout).plugins, { claudeSecurity: true, claudeSecuritySource: 'settings' });
+
+  fs.rmSync(path.join(fakeHome, '.claude', 'settings.json'));
+  writeMarketplacePlugin(path.join(fakeHome, '.claude'));
+  assert.match(cli([]).stdout, /^plugins: claude-security available \(marketplace clone\)$/m);
+  assert.deepEqual(JSON.parse(cli(['--json']).stdout).plugins, { claudeSecurity: true, claudeSecuritySource: 'marketplace' });
 });
 
 test('when nothing is degraded the output says so', () => {

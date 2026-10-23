@@ -14,10 +14,12 @@
 // cannot be started: Node will not start a .cmd or .bat without a shell, and none is used here) is still found, with version null.
 //
 // diagnose() is synchronous and never throws for anything missing, unreadable or malformed. The claude-security plugin counts as
-// present when either file in the Claude config dir (CLAUDE_CONFIG_DIR, else ~/.claude) says so: plugins/installed_plugins.json
-// has a "claude-security@..." key under "plugins", or settings.json has an "enabledPlugins" entry with such a key set to true
-// (how a plugin switched on by the host shows up). claudeSecuritySource says which one answered, installed_plugins.json first.
-// Nothing else in either file is read.
+// present when any of three things in the Claude config dir (CLAUDE_CONFIG_DIR, else ~/.claude) says so, tried in this order:
+//   installed    plugins/installed_plugins.json has a "claude-security@..." key under "plugins"
+//   settings     settings.json has an "enabledPlugins" entry with such a key set to true
+//   marketplace  a marketplace clone holds it: plugins/marketplaces/<any>/plugins/claude-security/.claude-plugin/plugin.json
+//                (how the desktop app can offer its skills with no entry in either JSON file)
+// claudeSecuritySource says which one answered. Nothing else in these files or folders is read.
 
 const fs = require('node:fs');
 const os = require('node:os');
@@ -81,12 +83,13 @@ function probe({ name, env, versionArgs }, timeoutMs) {
 
 // ---- plugins, store, packs ------------------------------------------------------------------
 
+const claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+
 // The object under `field` of a JSON file in the Claude config dir, or null when the file is missing, unreadable, not JSON, or
 // has anything but an object there. Never throws.
 function readClaudeConfig(relativeFile, field) {
   try {
-    const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-    const text = fs.readFileSync(path.join(configDir, ...relativeFile), 'utf8');
+    const text = fs.readFileSync(path.join(claudeConfigDir(), ...relativeFile), 'utf8');
     const value = JSON.parse(text.charCodeAt(0) === BYTE_ORDER_MARK ? text.slice(1) : text)[field];
     return isObject(value) ? value : null;
   } catch {
@@ -96,11 +99,29 @@ function readClaudeConfig(relativeFile, field) {
 
 const hasClaudeSecurityKey = (map, accept) => map !== null && Object.keys(map).some((key) => key.startsWith(CLAUDE_SECURITY_PREFIX) && accept(map[key]));
 
+// True when some marketplace clone under plugins/marketplaces has the claude-security plugin (its plugin.json, as a file).
+function marketplaceHasClaudeSecurity() {
+  try {
+    const root = path.join(claudeConfigDir(), 'plugins', 'marketplaces');
+    return fs.readdirSync(root).some((name) => {
+      try {
+        return fs.statSync(path.join(root, name, 'plugins', 'claude-security', '.claude-plugin', 'plugin.json')).isFile();
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return false;
+  }
+}
+
 // Where the claude-security plugin was found: 'installed' (the plugin registry lists it, from any marketplace), 'settings'
-// (settings.json enables it, the value being true: false and anything else means off), or null.
+// (settings.json enables it, the value being true: false and anything else means off), 'marketplace' (a marketplace clone
+// holds it, which is availability, not a sign it is switched on), or null.
 function claudeSecuritySource() {
   if (hasClaudeSecurityKey(readClaudeConfig(['plugins', 'installed_plugins.json'], 'plugins'), () => true)) return 'installed';
   if (hasClaudeSecurityKey(readClaudeConfig(['settings.json'], 'enabledPlugins'), (enabled) => enabled === true)) return 'settings';
+  if (marketplaceHasClaudeSecurity()) return 'marketplace';
   return null;
 }
 
@@ -170,7 +191,11 @@ function parseCli(argv) {
 }
 
 // How the plugins line names where claude-security was found.
-const CLAUDE_SECURITY_LABEL = { installed: 'installed (installed_plugins.json)', settings: 'enabled (settings.json)' };
+const CLAUDE_SECURITY_LABEL = {
+  installed: 'installed (installed_plugins.json)',
+  settings: 'enabled (settings.json)',
+  marketplace: 'available (marketplace clone)',
+};
 
 function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
