@@ -292,3 +292,76 @@ test('packsFor picks each shipped code pack for its own system type', () => {
     assert.ok(packsFor({ type }).map((p) => p.name).includes(type), type);
   }
 });
+
+// ---- host packs ------------------------------------------------------------------------------
+
+const HOST_PACKS = ['supabase', 'n8n', 'docker-host', 'wordpress-hostinger'];
+// Ruling R15: whole argv tokens, compared case-insensitively, against commands that change state; and no element may carry
+// shell redirection or a pipe (the runner single-quotes each element, so shell syntax would not work anyway).
+const WRITE_TOKENS = ['rm', 'restart', 'stop', 'kill', 'down', 'exec', 'apply', 'write'];
+const readOnlyViolations = (argv) =>
+  argv.filter((t) => WRITE_TOKENS.includes(t.toLowerCase()) || t.includes('>') || t.includes('|'));
+// A probe whose command mentions any of these could print environment or configuration values.
+const MAY_ECHO_VALUES = /env|inspect|config|printenv|wp-config|\.env\b/i;
+
+test('the read-only gate flags state-changing tokens and shell syntax and passes look-alikes', () => {
+  assert.deepEqual(readOnlyViolations(['docker', 'restart', 'x']), ['restart']);
+  assert.deepEqual(readOnlyViolations(['docker', 'compose', 'DOWN']), ['DOWN']);
+  assert.deepEqual(readOnlyViolations(['docker', 'ps', '--format', '{{.Names}} | x']), ['{{.Names}} | x']);
+  assert.deepEqual(readOnlyViolations(['cat', 'a', '>', 'b']), ['>']);
+  assert.deepEqual(readOnlyViolations(['echo', 'x>y']), ['x>y']);
+  // Whole-token comparison: -exec, write-ahead and is-enabled are not the forbidden commands.
+  assert.deepEqual(readOnlyViolations(['find', '.', '-exec', 'grep', 'write-ahead', '{}', '+']), []);
+  assert.deepEqual(readOnlyViolations(['systemctl', 'is-enabled', 'unattended-upgrades.service']), []);
+});
+
+test('each host pack has at least 5 classes and 6 probes, a baseline, and kebab-case ids', () => {
+  const names = listPacks();
+  for (const name of HOST_PACKS) {
+    assert.ok(names.includes(name), name);
+    assert.ok(readPack(name).kinds.includes('host'), `${name} is a host pack`);
+  }
+  const hostPacks = names.map((n) => readPack(n)).filter((p) => p.kinds.includes('host'));
+  assert.ok(hostPacks.length >= HOST_PACKS.length);
+  for (const pack of hostPacks) {
+    assert.ok(pack.classes.length >= 5, `${pack.name} has ${pack.classes.length} classes`);
+    assert.ok(pack.probes.length >= 6, `${pack.name} has ${pack.probes.length} probes`);
+    assert.ok(pack.baseline.length > 0, `${pack.name} states a baseline`);
+    for (const id of [...pack.classes, ...pack.probes].map((x) => x.id)) assert.match(id, /^[a-z0-9]+(-[a-z0-9]+)*$/, `${pack.name}: ${id}`);
+  }
+});
+
+test('every host probe is read-only: no state-changing token, no redirection or pipe, no shell', () => {
+  for (const pack of listPacks().map((n) => readPack(n)).filter((p) => p.kinds.includes('host'))) {
+    for (const probe of pack.probes) {
+      const where = `${pack.name}/${probe.id}`;
+      assert.deepEqual(readOnlyViolations(probe.argv), [], where);
+      assert.ok(!['sh', 'bash', 'zsh', 'dash', 'sudo', 'su'].includes(probe.argv[0]), `${where} runs no shell or privilege change`);
+      for (const t of probe.argv) {
+        assert.ok(!['&&', '||', ';'].includes(t), `${where}: no command chaining`);
+        assert.ok(!t.includes('$(') && !t.includes('`'), `${where}: no subshell`);
+      }
+      if (probe.via === 'http') {
+        assert.ok(['GET', 'HEAD'].includes(probe.argv[0]) && probe.argv.length === 1, `${where}: http probes are a bare GET or HEAD`);
+        assert.match(probe.path || '/', /^\//, `${where}: path starts with /`);
+      }
+    }
+  }
+});
+
+test('probes that could echo environment or config values are scrub: env', () => {
+  let checked = 0;
+  for (const pack of listPacks().map((n) => readPack(n)).filter((p) => p.kinds.includes('host'))) {
+    for (const probe of pack.probes) {
+      if (!MAY_ECHO_VALUES.test(probe.argv.join(' '))) continue;
+      checked += 1;
+      assert.equal(probe.scrub, 'env', `${pack.name}/${probe.id} must be scrub: env`);
+    }
+  }
+  assert.ok(checked >= 8, `the rule applied to ${checked} probes`);
+});
+
+test('packsFor picks each host pack for its system type, and docker-host for supabase and n8n too', () => {
+  for (const type of HOST_PACKS) assert.ok(packsFor({ type }).map((p) => p.name).includes(type), type);
+  for (const type of ['supabase', 'n8n']) assert.ok(packsFor({ type }).map((p) => p.name).includes('docker-host'), type);
+});

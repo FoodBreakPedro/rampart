@@ -499,6 +499,9 @@ test('packs: the directory is packs/ at the plugin root and the count is the liv
   assert.equal(packs.exists, fs.existsSync(packs.dir));
   if (!packs.exists) assert.equal(packs.count, 0);
   assert.equal(packs.count, listPacks().length);
+  // Task 3 landed the host packs: four code packs (web-nextjs, node-api, mobile-expo, cloudflare-workers) and four host packs.
+  assert.equal(listPacks().length, 8);
+  assert.equal(packs.count, 8);
 });
 
 test('countPacks counts *.md files, leaving out _template.md, other files and folders', () => {
