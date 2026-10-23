@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rampart project",
+  "description": "Inventory for one project (project.json). created and updated are stamped by the store.",
+  "type": "object",
+  "required": ["slug", "name", "criticality", "ownerAttestation", "defaultExecutor", "cloudAllowed", "systems"],
+  "additionalProperties": false,
+  "properties": {
+    "slug": { "type": "string", "pattern": "^[a-z0-9-]{2,40}$" },
+    "name": { "type": "string" },
+    "criticality": { "enum": ["low", "medium", "high"] },
+    "ownerAttestation": {
+      "type": "object",
+      "required": ["statement", "by", "at"],
+      "properties": {
+        "statement": { "type": "string", "minLength": 1 },
+        "by": { "type": "string" },
+        "at": { "type": "string" }
+      }
+    },
+    "defaultExecutor": { "enum": ["local", "cloud"] },
+    "cloudAllowed": { "type": "boolean" },
+    "systems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "name", "packs", "executor", "layers"],
+        "properties": {
+          "id": { "type": "string" },
+          "type": {
+            "enum": [
+              "web-nextjs", "node-api", "mobile-expo", "supabase", "n8n", "docker-host",
+              "cloudflare-workers", "wordpress-hostinger", "static-site", "other"
+            ]
+          },
+          "name": { "type": "string" },
+          "packs": { "type": "array", "items": { "type": "string" } },
+          "criticality": { "enum": ["auth", "billing", "data", "public", "internal"] },
+          "executor": { "enum": ["local", "cloud", "either"] },
+          "source": { "type": "string", "description": "'inferred' until the user confirms the entry." },
+          "repo": {
+            "type": "object",
+            "required": ["paths"],
+            "properties": {
+              "remote": { "type": "string", "description": "The repo's identity across machines." },
+              "defaultBranch": { "type": "string" },
+              "paths": { "type": "object", "description": "Machine id to local checkout path." }
+            }
+          },
+          "live": {
+            "type": "object",
+            "required": ["url"],
+            "properties": { "url": { "type": "string" } }
+          },
+          "host": {
+            "type": "object",
+            "required": ["ssh"],
+            "properties": {
+              "ssh": { "type": "string" },
+              "composeProject": { "type": "string" },
+              "configPath": { "type": "string" }
+            }
+          },
+          "layers": {
+            "type": "object",
+            "description": "Layer name (L1, L2, L3, INFRA) to its cadence.",
+            "properties": {
+              "L1": { "type": "object", "required": ["cadenceDays"], "properties": { "cadenceDays": { "type": "integer", "minimum": 1 }, "scope": { "type": "string" } } },
+              "L2": { "type": "object", "required": ["cadenceDays"], "properties": { "cadenceDays": { "type": "integer", "minimum": 1 }, "scope": { "type": "string" } } },
+              "L3": { "type": "object", "required": ["cadenceDays"], "properties": { "cadenceDays": { "type": "integer", "minimum": 1 }, "scope": { "type": "string" } } },
+              "INFRA": { "type": "object", "required": ["cadenceDays"], "properties": { "cadenceDays": { "type": "integer", "minimum": 1 }, "scope": { "type": "string" } } }
+            }
+          }
+        }
+      }
+    },
+    "created": { "type": "string" },
+    "updated": { "type": "string" }
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rampart job",
+  "description": "A queued unit of work (jobs/<id> in the dashboard DB). createdBy, confirmedAt and costShown record the owner's confirmation.",
+  "type": "object",
+  "required": ["id", "type", "project", "executor", "status", "createdBy", "confirmedAt", "costShown"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string" },
+    "type": { "enum": ["inventory", "audit", "verify", "fix", "apply", "dashboard", "doctor", "import"] },
+    "project": { "type": "string" },
+    "system": { "type": "string" },
+    "layer": { "enum": ["L1", "L2", "L3", "INFRA"] },
+    "findingId": { "type": "string", "pattern": "^[0-9a-f]{12}$" },
+    "params": { "type": "object" },
+    "executor": { "enum": ["local", "cloud"] },
+    "status": { "enum": ["queued", "claimed", "running", "done", "failed"] },
+    "createdBy": { "type": "string" },
+    "confirmedAt": { "type": "string" },
+    "costShown": { "type": ["string", "number"], "description": "The cost estimate the page showed before the job was queued." },
+    "claimedBy": { "type": "string" },
+    "startedAt": { "type": "string" },
+    "finishedAt": { "type": "string" },
+    "resultSummary": { "type": "string" },
+    "runId": { "type": "string" }
+  }
+}

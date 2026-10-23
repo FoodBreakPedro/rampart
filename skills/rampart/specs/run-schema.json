@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rampart run",
+  "description": "Summary of one job execution (run.json in the run directory).",
+  "type": "object",
+  "required": ["runId", "project", "job", "layers", "systems", "executor", "status", "startedAt", "counts"],
+  "additionalProperties": false,
+  "properties": {
+    "runId": { "type": "string" },
+    "project": { "type": "string" },
+    "job": { "enum": ["inventory", "audit", "verify", "fix", "apply", "dashboard", "doctor", "import"] },
+    "layers": { "type": "array", "items": { "enum": ["L1", "L2", "L3", "INFRA"] } },
+    "systems": { "type": "array", "items": { "type": "string" } },
+    "executor": { "enum": ["local", "cloud"] },
+    "status": { "enum": ["running", "done", "skipped", "failed"] },
+    "reason": { "type": "string", "description": "Why the run was skipped or failed." },
+    "startedAt": { "type": "string" },
+    "finishedAt": { "type": "string" },
+    "counts": {
+      "type": "object",
+      "required": ["added", "updated", "unchanged", "hardening"],
+      "properties": {
+        "added": { "type": "integer", "minimum": 0 },
+        "updated": { "type": "integer", "minimum": 0 },
+        "unchanged": { "type": "integer", "minimum": 0 },
+        "hardening": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "revision": {
+      "type": "object",
+      "properties": {
+        "commit": { "type": "string" },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "string" }
+      }
+    }
+  }
+}

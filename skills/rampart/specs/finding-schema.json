@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rampart finding",
+  "description": "One finding. The store stamps firstSeen and lastSeen; id is the first 12 hex of sha256 over project|system|ruleId|normalizedLocation.",
+  "type": "object",
+  "required": ["id", "project", "system", "layer", "source", "ruleId", "title", "severity", "confidence", "class", "location", "evidence", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "pattern": "^[0-9a-f]{12}$" },
+    "project": { "type": "string" },
+    "system": { "type": "string" },
+    "layer": { "enum": ["L1", "L2", "L3", "INFRA"] },
+    "source": {
+      "enum": ["gitleaks", "trivy", "npm-audit", "pnpm-audit", "headers", "claude-security", "rampart-hunter", "rampart-lite", "infra-probe", "manual"]
+    },
+    "pack": { "type": ["string", "null"], "description": "Pack name and version, for example supabase@1.2.0." },
+    "ruleId": { "type": "string" },
+    "title": { "type": "string" },
+    "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] },
+    "confidence": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+    "cwe": { "type": "array", "items": { "type": "string" } },
+    "class": {
+      "enum": ["verified", "tool", "hardening"],
+      "description": "verified: survived the verifier panel or triage; tool: deterministic L1 result not yet triaged; hardening: defense-in-depth gap, never deducted from the findings score."
+    },
+    "location": {
+      "description": "Exactly one of four shapes, chosen by its required key: path (code), host, url or package.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["path"],
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string" },
+            "symbol": { "type": ["string", "null"] },
+            "line": { "type": "integer" },
+            "commit": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["host"],
+          "additionalProperties": false,
+          "properties": {
+            "host": { "type": "string" },
+            "service": { "type": "string" },
+            "setting": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["url"],
+          "additionalProperties": false,
+          "properties": {
+            "url": { "type": "string" },
+            "header": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["package"],
+          "additionalProperties": false,
+          "properties": {
+            "package": { "type": "string" },
+            "ecosystem": { "type": "string" },
+            "path": { "type": "string", "description": "The manifest or lockfile the package was found in." }
+          }
+        }
+      ]
+    },
+    "evidence": { "type": "string" },
+    "exploitScenario": { "type": "string" },
+    "preconditions": { "type": "string" },
+    "recommendation": { "type": "string" },
+    "verification": {
+      "type": "object",
+      "required": ["verifiers", "confirmed", "run"],
+      "properties": {
+        "verifiers": { "type": "integer", "minimum": 0 },
+        "confirmed": { "type": "integer", "minimum": 0 },
+        "run": { "type": "string" }
+      }
+    },
+    "status": { "enum": ["open", "fixed", "false_positive", "accepted_risk", "regressed"] },
+    "firstSeen": { "type": "string" },
+    "lastSeen": { "type": "string" },
+    "fixedIn": { "type": ["string", "null"] },
+    "externalIds": {
+      "type": "object",
+      "properties": {
+        "claudeSecurityPluginFindingId": { "type": ["string", "null"] },
+        "cve": { "type": ["array", "null"], "items": { "type": "string" } }
+      }
+    }
+  }
+}
