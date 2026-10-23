@@ -123,6 +123,24 @@ const canon = (value) =>
 // changes on every scan: it is stored (see upsertFindings) but is not a change by itself.
 const comparable = (key, value) => (key === 'verification' && isObject(value) ? { ...value, run: undefined } : value);
 
+// ---- coverage ledger (scripts/coverage.cjs) -----------------------------------------------
+
+// The ledger of units covered per system and layer; an empty one when nothing was saved yet.
+const readCoverage = (slug) => readJson(projectFile(slug, 'coverage.json'), { project: checkSlug(slug), units: {} });
+
+// Validates the ledger (its project must be this slug, each entry must match the schema's unitEntry) and saves it atomically.
+function writeCoverage(slug, ledger) {
+  checkSlug(slug);
+  assertValid('coverage', ledger, 'coverage');
+  if (ledger.project !== slug) throw new Error('coverage project does not match the slug');
+  const entrySchema = loadSchema('coverage').$defs.unitEntry;
+  for (const [key, value] of Object.entries(ledger.units)) {
+    const { ok, errors } = validate(entrySchema, value);
+    if (!ok) throw new Error(`coverage entry ${key} is invalid: ${errors.join('; ')}`);
+  }
+  writeAtomic(projectFile(slug, 'coverage.json'), toJson(ledger));
+}
+
 // ---- projects -----------------------------------------------------------------------------
 
 function listProjects() {
@@ -613,5 +631,5 @@ module.exports = {
   listProjects, readProject, writeProject,
   readFindings, upsertFindings, closeMissing, readDispositions, setDisposition, setClass,
   createRun, finishRun, readRuns, writeRaw,
-  readConfig, writeConfig, appendScore, readScores,
+  readConfig, writeConfig, appendScore, readScores, readCoverage, writeCoverage,
 };
