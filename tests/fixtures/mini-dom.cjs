@@ -6,6 +6,8 @@
 // Removing a node that holds the focus moves the focus to <body>, as a browser does, so a test can tell a node patched in
 // place (focus kept) from one replaced (focus lost).
 
+const { inspect } = require('node:util');
+
 const VOID = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
 const RAW = new Set(['script', 'style']);
 
@@ -63,6 +65,14 @@ class Node {
     this.parentNode = null;
     this.childNodes = [];
     this._listeners = {};
+  }
+
+  // A short form for assertion messages: the default inspection walks the whole (cyclic) tree and takes minutes.
+  [inspect.custom]() {
+    if (this.nodeType === 3) return `#text ${JSON.stringify(this.nodeValue)}`;
+    if (this.nodeType === 9) return '#document';
+    const attrs = this.attributes.filter((a) => ['id', 'class', 'data-key'].includes(a.name)).map((a) => ` ${a.name}="${a.value}"`).join('');
+    return `<${this.tagName.toLowerCase()}${attrs}>`;
   }
 
   get firstChild() { return this.childNodes[0] || null; }

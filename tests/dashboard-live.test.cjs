@@ -37,16 +37,20 @@ function fixtureDocs() {
 
 // A db stub with the shape of db.d.ts: collection(c).onSnapshot(next, error) delivers the collection soon after it is
 // registered and again on every push; doc(path).get/set/update/delete. Snapshots and bodies are frozen, like the real ones.
-function stubDb(seed, { failOn = {} } = {}) {
+// Options: failOn {c: code} ends c's subscription with that error instead of delivering; pending [c] delivers nothing for
+// c until release(c); cachedFirst {c: 'empty' | 'full'} first delivers a fromCache snapshot (no documents, or the seed's),
+// and the definitive one only on release(c).
+function stubDb(seed, { failOn = {}, pending = [], cachedFirst = {} } = {}) {
   const docs = {};
   const subs = [];
   const writes = [];
   const meta = Object.freeze({ fromCache: false, hasPendingWrites: false });
+  const cachedMeta = Object.freeze({ fromCache: true, hasPendingWrites: false });
   for (const c of Object.keys(seed)) docs[c] = new Map(Object.entries(seed[c]).map(([id, b]) => [id, deepFreeze(clone(b))]));
   const docSnap = (id, body) => Object.freeze({ id, exists: body !== undefined, data: () => body, metadata: meta });
 
-  function snapshotFor(sub) {
-    const map = docs[sub.collection] || new Map();
+  function snapshotFor(sub, { cached = null } = {}) {
+    const map = cached === 'empty' ? new Map() : docs[sub.collection] || new Map();
     const ids = Array.from(map.keys()).sort();
     const list = ids.map((id) => docSnap(id, map.get(id)));
     const changes = [];
@@ -58,7 +62,7 @@ function stubDb(seed, { failOn = {} } = {}) {
       if (!map.has(id)) changes.push({ type: 'removed', doc: docSnap(id, body), oldIndex: 0, newIndex: -1 });
     }
     sub.seen = new Map(map);
-    return Object.freeze({ docs: list, size: list.length, empty: list.length === 0, docChanges: () => changes, metadata: meta });
+    return Object.freeze({ docs: list, size: list.length, empty: list.length === 0, docChanges: () => changes, metadata: cached ? cachedMeta : meta });
   }
   const deliver = (c) => subs.filter((s) => s.collection === c && s.active).forEach((s) => s.next(snapshotFor(s)));
   const put = (c, id, body) => {
@@ -104,7 +108,8 @@ function stubDb(seed, { failOn = {} } = {}) {
           if (failOn[c]) {
             sub.active = false;
             error({ code: failOn[c], message: failOn[c] });
-          } else next(snapshotFor(sub));
+          } else if (cachedFirst[c]) next(snapshotFor(sub, { cached: cachedFirst[c] }));
+          else if (!pending.includes(c)) next(snapshotFor(sub));
         });
         return () => { sub.active = false; };
       },
@@ -116,6 +121,7 @@ function stubDb(seed, { failOn = {} } = {}) {
     writes,
     push(c, id, body) { put(c, id, body); deliver(c); },
     remove(c, id) { put(c, id, undefined); deliver(c); },
+    release: (c) => deliver(c),
     fail(c, code) { subs.filter((s) => s.collection === c && s.active).forEach((s) => { s.active = false; s.error({ code, message: code }); }); },
   };
 }
@@ -154,14 +160,18 @@ function bootPage({ inline = '', claude, hash = '' } = {}) {
   const setHash = (url) => { location.hash = String(url).replace(/^[^#]*/, ''); };
   const intervals = [];
   const errors = [];
+  const deferred = [];
   const win = {
     document,
     location,
     history: { pushState: (s, t, url) => setHash(url), replaceState: (s, t, url) => setHash(url) },
     navigator: { platform: 'test' },
     console: { ...console, error: (...args) => errors.push(args), warn: (...args) => errors.push(args) },
-    setTimeout,
-    clearTimeout,
+    // Short timers (the toast, animation frames) run; long ones are held until the test calls fireDeferred().
+    setTimeout: (fn, ms, ...args) => (ms >= 5000 ? deferred.push({ fn, ms, live: true }) : setTimeout(fn, ms, ...args)),
+    clearTimeout: (id) => {
+      if (typeof id === 'number') { if (deferred[id - 1]) deferred[id - 1].live = false; } else clearTimeout(id);
+    },
     setInterval: (fn, ms) => intervals.push({ fn, ms }),
     clearInterval: () => {},
     requestAnimationFrame: (fn) => setTimeout(fn, 0),
@@ -176,7 +186,8 @@ function bootPage({ inline = '', claude, hash = '' } = {}) {
   win.window = win;
   vm.createContext(win);
   const api = vm.runInContext(`${script}\n;RampartDashboard`, win, { filename: 'dashboard/index.html' });
-  return { api, document, window: win, intervals, errors, $: (id) => document.getElementById(id) };
+  const fireDeferred = () => deferred.filter((t) => t.live).forEach((t) => { t.live = false; t.fn(); });
+  return { api, document, window: win, intervals, errors, deferred, fireDeferred, $: (id) => document.getElementById(id) };
 }
 
 // Let the stub's setImmediate deliveries and the page's promise chains run.
@@ -184,6 +195,8 @@ async function settle() {
   for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
 }
 
+// Node identity. assert.equal on two DOM nodes that differ builds a diff of the whole cyclic tree, which takes minutes.
+const same = (actual, expected, message = 'not the same node') => assert.ok(actual === expected, message);
 const visible = (el) => {
   for (let n = el; n && n.nodeType === 1; n = n.parentNode) if (n.hidden) return false;
   return true;
@@ -196,8 +209,8 @@ const withHeartbeat = (seed, at) => {
   return out;
 };
 
-async function bootLive({ seed = withHeartbeat(fixtureDocs(), new Date().toISOString()), user = stubUser(), hash = '' } = {}) {
-  const store = stubDb(seed);
+async function bootLive({ seed = withHeartbeat(fixtureDocs(), new Date().toISOString()), user = stubUser(), hash = '', options } = {}) {
+  const store = stubDb(seed, options);
   const claude = stubClaude({ db: store.db, user });
   const page = bootPage({ claude, hash });
   await settle();
@@ -280,12 +293,12 @@ test('live mode: an onSnapshot update changes one tile score in place, without r
   store.push('projects', 'example-app', { ...seed.projects['example-app'], score: { ...seed.projects['example-app'].score, score: 71.4, grade: 'B' } });
   await settle();
   assert.equal(scoreText(document, 'example-app'), '71.4');
-  assert.equal(tile(document, 'example-app'), before, 'same <li>');
-  assert.equal(before.querySelector('.card'), card, 'same card');
-  assert.equal(before.querySelector('.score-value'), value, 'same score node, text patched');
+  same(tile(document, 'example-app'), before, 'same <li>');
+  same(before.querySelector('.card'), card, 'same card');
+  same(before.querySelector('.score-value'), value, 'same score node, text patched');
   assert.equal(before.querySelector('.grade').textContent, 'B');
   assert.match(before.querySelector('.grade').className, /grade-B/, 'class patched');
-  assert.equal(tile(document, 'example-site'), other, 'the other tile is untouched');
+  same(tile(document, 'example-site'), other, 'the other tile is untouched');
   assert.equal(store.subs.length, COLLECTIONS.length, 'no new subscription on update');
   assert.equal($('carousel').children.length, 2);
 });
@@ -296,11 +309,11 @@ test('live mode: a project doc added or removed adds or removes its tile; the re
   store.push('projects', 'example-new', { slug: 'example-new', name: 'Example New', systems: [], score: { score: 50, grade: 'D', systems: {} } });
   await settle();
   assert.ok(tile(document, 'example-new'));
-  assert.equal(tile(document, 'example-app'), app);
+  same(tile(document, 'example-app'), app);
   store.remove('projects', 'example-site');
   await settle();
-  assert.equal(tile(document, 'example-site'), null);
-  assert.equal(tile(document, 'example-app'), app);
+  same(tile(document, 'example-site'), null);
+  same(tile(document, 'example-app'), app);
 });
 
 test('live mode: a snapshot change for one finding leaves the focus and an open <details> untouched', async () => {
@@ -313,17 +326,17 @@ test('live mode: a snapshot change for one finding leaves the focus and an open 
   details.open = true;
   const summary = details.querySelector('summary');
   summary.focus();
-  assert.equal(document.activeElement, summary);
+  same(document.activeElement, summary);
   const seed = fixtureDocs();
   store.push('findings', 'b71e04c9d2a8', {
     ...seed.findings.b71e04c9d2a8, status: 'false_positive',
     disposition: { status: 'false_positive', reason: 'Not reachable', by: OWNER_ID, at: '2026-10-23T19:10:00Z' },
   });
   await settle();
-  assert.equal(document.activeElement, summary, 'focus stays where it was');
+  same(document.activeElement, summary, 'focus stays where it was');
   assert.equal(details.open, true, 'the open details stays open');
-  assert.equal(document.querySelector('tr[data-key="a3f9c21be0d4"]'), rowA, 'the untouched row is the same node');
-  assert.equal(document.querySelector('tr[data-key="b71e04c9d2a8"]'), rowB, 'the changed row is patched in place');
+  same(document.querySelector('tr[data-key="a3f9c21be0d4"]'), rowA, 'the untouched row is the same node');
+  same(document.querySelector('tr[data-key="b71e04c9d2a8"]'), rowB, 'the changed row is patched in place');
   assert.equal(rowB.querySelector('.status').textContent, 'False positive');
   assert.match(rowB.className, /is-closed/);
   assert.match(rowB.querySelector('.finding-details').textContent, /False positive: Not reachable/, 'the decision comes from the disposition field');
@@ -343,10 +356,10 @@ test('live mode: a focused filter select keeps the focus and its value through a
   store.push('projects', 'example-app', { ...seed.projects['example-app'], score: { ...seed.projects['example-app'].score, score: 70 } });
   store.push('jobs', 'job-0001', { ...seed.jobs['job-0001'], status: 'running' });
   await settle();
-  assert.equal(document.activeElement, select);
+  same(document.activeElement, select);
   assert.equal(select.value, 'HIGH');
-  assert.equal(document.querySelector('tr[data-key="mobile"]'), sheetRow);
-  assert.equal(document.querySelector('tr[data-key="job-0001"]'), jobRow);
+  same(document.querySelector('tr[data-key="mobile"]'), sheetRow);
+  same(document.querySelector('tr[data-key="job-0001"]'), jobRow);
   assert.match(jobRow.textContent, /Running/);
   assert.equal(document.querySelector('.detail-head').querySelector('.score-value').textContent, '70.0');
 });
@@ -374,7 +387,7 @@ test('live mode: an empty DB shows the empty state, not the loading state, with 
   assert.match($('mode-badge').textContent, /^Live/);
 });
 
-test('live mode: until every collection has answered the page shows the loading state, not "No data yet"', () => {
+test('live mode: while the host has not answered use("db") the page shows the loading state, not "No data yet"', () => {
   const claude = { use: () => new Promise(() => {}) };
   const { $ } = bootPage({ claude });
   assert.ok(visible($('loading-view')));
@@ -433,14 +446,28 @@ test('no DB: claude.use rejecting is the same as null', async () => {
   assert.deepEqual(errors, []);
 });
 
-test('live mode: a terminal subscription error before the first data falls back to the empty state', async () => {
+test('live mode: a terminal subscription error (revoked) before the first data shows the live message, not a static hint', async () => {
   const store = stubDb({}, { failOn: { projects: 'revoked' } });
   const claude = stubClaude({ db: store.db, user: stubUser() });
   const { $, errors } = bootPage({ claude });
   await settle();
   assert.deepEqual(errors, []);
   assert.ok(!visible($('loading-view')));
-  assert.ok(visible($('empty-view')));
+  assert.ok(!visible($('empty-view')), 'not "No data yet" or "run /rampart dashboard again"');
+  assert.ok(visible($('unavailable-view')));
+  assert.doesNotMatch($('unavailable-view').textContent, /rampart dashboard/);
+  assert.match($('mode-badge').textContent, /^Live · updates stopped/);
+});
+
+test('live mode: a terminal subscription error after the data keeps the view and marks the badge as stale', async () => {
+  const { document, store, $ } = await bootLive();
+  const app = tile(document, 'example-app');
+  store.fail('findings', 'revoked');
+  await settle();
+  assert.ok(visible($('tiles-view')));
+  same(tile(document, 'example-app'), app);
+  assert.match($('mode-badge').textContent, /^Live · updates stopped/);
+  assert.doesNotMatch($('mode-badge').textContent, /executor online/, 'an executor state it can no longer see is not claimed');
 });
 
 // ---- who may write (R6) and the owner record (R8) -------------------------------------------
@@ -495,4 +522,124 @@ test('owner record: nothing is written when meta/owner exists, for a non-owner, 
     const { store } = await bootLive({ seed: s, user });
     assert.deepEqual(store.writes, []);
   }
+});
+
+// ---- fix round 1 ------------------------------------------------------------------------------
+
+test('patching: a row that leaves the default filter does not take the focus from a row below it', async () => {
+  const { document, store } = await bootLive({ hash: '#p-example-app' });
+  const rowA = document.querySelector('tr[data-key="a3f9c21be0d4"]');
+  const rowB = document.querySelector('tr[data-key="b71e04c9d2a8"]');
+  const body = rowA.parentNode;
+  assert.deepEqual(body.children.map((r) => r.getAttribute('data-key')), ['a3f9c21be0d4', 'b71e04c9d2a8'], 'A (high) above B (medium)');
+  const summary = rowB.querySelector('summary');
+  summary.focus();
+  const seed = fixtureDocs();
+  store.push('findings', 'a3f9c21be0d4', { ...seed.findings.a3f9c21be0d4, status: 'fixed' });
+  await settle();
+  same(document.querySelector('tr[data-key="a3f9c21be0d4"]'), null, 'A left the open-and-regressed filter');
+  same(document.querySelector('tr[data-key="b71e04c9d2a8"]'), rowB, 'B is the same node');
+  same(document.activeElement, summary, 'and keeps the focus');
+});
+
+test('patching: keyed [A, B, C] to [B, C] with the focus in C moves nothing and keeps the focus', async () => {
+  const seed = withHeartbeat(fixtureDocs(), new Date().toISOString());
+  seed.projects['example-aaa'] = { slug: 'example-aaa', name: 'Example AAA', systems: [], score: { score: 10, grade: 'F', systems: {} } };
+  const { document, store } = await bootLive({ seed });
+  const carousel = document.getElementById('carousel');
+  assert.deepEqual(carousel.children.map((li) => li.getAttribute('data-key')), ['example-aaa', 'example-app', 'example-site']);
+  const link = tile(document, 'example-site').querySelector('.card-link');
+  link.focus();
+  store.remove('projects', 'example-aaa');
+  await settle();
+  assert.deepEqual(carousel.children.map((li) => li.getAttribute('data-key')), ['example-app', 'example-site']);
+  same(document.activeElement, link);
+});
+
+test('user errors: a user capability whose isOwner() rejects leaves the live view showing, read-only', async () => {
+  // It rejects after the data has arrived and the tiles are showing.
+  const user = Object.freeze({
+    isOwner: () => new Promise((resolve, reject) => setTimeout(() => reject(new Error('bridge gone')), 30)),
+    can: async () => true,
+    id: async () => OWNER_ID,
+  });
+  const { $, store, errors } = await bootLive({ user });
+  assert.ok(visible($('tiles-view')));
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  await settle();
+  assert.ok(visible($('tiles-view')));
+  assert.ok(!visible($('empty-view')));
+  assert.equal($('main').getAttribute('data-access'), 'read');
+  assert.deepEqual(store.writes, []);
+  assert.deepEqual(errors, []);
+});
+
+test('user errors: can() or id() rejecting is read-only or no owner record, never a blank page', async () => {
+  const canFails = Object.freeze({ isOwner: async () => true, can: async () => { throw new Error('x'); }, id: async () => OWNER_ID });
+  const idFails = Object.freeze({ isOwner: async () => true, can: async () => true, id: async () => { throw new Error('x'); } });
+  let page = await bootLive({ user: canFails });
+  assert.ok(visible(page.$('tiles-view')));
+  assert.equal(page.$('main').getAttribute('data-access'), 'read');
+  assert.deepEqual(page.errors, [], 'never routed into the render-failure path');
+  page = await bootLive({ user: idFails });
+  assert.ok(visible(page.$('tiles-view')));
+  assert.deepEqual(page.store.writes, []);
+  assert.deepEqual(page.errors, []);
+});
+
+test('answers: the db resolved but one collection not yet delivered is still loading; its delivery draws the page', async () => {
+  const { $, store } = await bootLive({ options: { pending: ['runs'] } });
+  assert.ok(visible($('loading-view')));
+  assert.ok(!visible($('empty-view')));
+  store.release('runs');
+  await settle();
+  assert.ok(visible($('tiles-view')));
+});
+
+test('answers: an empty fromCache first snapshot is not an answer; the definitive one is', async () => {
+  const { $, store, document } = await bootLive({ options: { cachedFirst: { projects: 'empty' } } });
+  assert.ok(visible($('loading-view')), 'an empty cached page could be a cold cache, not an empty store');
+  assert.ok(!visible($('empty-view')));
+  store.release('projects');
+  await settle();
+  assert.ok(visible($('tiles-view')));
+  assert.ok(tile(document, 'example-app'));
+});
+
+test('answers: a non-empty fromCache snapshot counts as an answer', async () => {
+  const { $, document } = await bootLive({ options: { cachedFirst: { projects: 'full' } } });
+  assert.ok(visible($('tiles-view')));
+  assert.ok(tile(document, 'example-app'));
+});
+
+test('answers: when a collection never gives a definitive answer the page stops waiting after the timeout', async () => {
+  const { $, fireDeferred } = await bootLive({ options: { cachedFirst: { projects: 'empty' } } });
+  assert.ok(visible($('loading-view')));
+  fireDeferred();
+  await settle();
+  assert.ok(!visible($('loading-view')), 'the view never hangs on loading');
+  assert.ok(visible($('empty-view')));
+});
+
+// Every text and attribute value in the document.
+function allText(node) {
+  if (node.nodeType === 3) return node.nodeValue;
+  return [...node.attributes.map((a) => a.value), ...node.childNodes.map(allText)].join('\n');
+}
+
+test('people: a decision\'s author shows as Rampart, owner or a viewer, never as a raw user id', async () => {
+  const seed = withHeartbeat(fixtureDocs(), new Date().toISOString());
+  seed.meta.owner = { ownerId: '<owner-user-id>', at: '2026-10-23T00:00:00Z' };
+  const by = (who) => ({ status: 'accepted_risk', reason: 'Tracked', by: who, at: '2026-10-23T19:00:00Z' });
+  seed.findings.a3f9c21be0d4 = { ...seed.findings.a3f9c21be0d4, status: 'accepted_risk', disposition: by('u_someone_else') };
+  seed.findings.b71e04c9d2a8 = { ...seed.findings.b71e04c9d2a8, status: 'fixed', disposition: { ...by('rampart'), status: 'fixed' } };
+  let page = await bootLive({ seed, hash: '#p-example-app~status.all' });
+  const details = (id) => page.document.querySelector(`tr[data-key="${id}"]`).querySelector('.finding-details').textContent;
+  assert.match(details('a3f9c21be0d4'), /Accepted risk: Tracked \(a viewer, /);
+  assert.match(details('b71e04c9d2a8'), /Fixed: Tracked \(Rampart, /);
+  assert.ok(!allText(page.document.documentElement).includes('u_someone_else'));
+  page = await bootLive({ seed, hash: '#p-example-site~status.all' });
+  assert.match(page.document.querySelector('tr[data-key="c0ffee123456"]').querySelector('.finding-details').textContent,
+    /Accepted risk: Static brochure site, no scripts \(owner, /);
+  assert.ok(!allText(page.document.documentElement).includes('<owner-user-id>'));
 });

@@ -471,6 +471,11 @@ tr.is-closed td { color: var(--muted); }
     <p class="empty-hint">Reading projects, findings and runs from this dashboard's data. When there is none, this page shows how to fill it.</p>
   </section>
 
+  <section id="unavailable-view" class="empty" aria-labelledby="unavailable-heading" hidden>
+    <h1 id="unavailable-heading" class="empty-title">Live data is not available right now</h1>
+    <p class="empty-hint">This dashboard stopped receiving its data before any arrived. Reload the page to try again.</p>
+  </section>
+
   <section id="empty-view" class="empty" aria-labelledby="empty-heading">
     <h1 id="empty-heading" class="empty-title">No data yet — run <code>/rampart inventory</code>, then <code>/rampart audit L1</code></h1>
     <p class="empty-hint">This page shows the projects, grades and findings in your Rampart store once the dashboard job fills it in.</p>
@@ -539,6 +544,8 @@ const RampartDashboard = (function () {
   const COLLECTIONS = Object.freeze(['projects', 'findings', 'runs', 'jobs', 'executors', 'meta']);
   const EXECUTOR_ONLINE_MS = 5 * 60 * 1000;
   const BADGE_REFRESH_MS = 60 * 1000;
+  // How long the page waits for every collection's first definitive answer before drawing what it has.
+  const ANSWER_TIMEOUT_MS = 10 * 1000;
   const FRESHNESS_LABELS = { fresh: 'Fresh', aging: 'Aging', stale: 'Stale', never: 'Never run', absent: 'Not declared' };
   const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -781,7 +788,11 @@ const RampartDashboard = (function () {
     return {
       generatedAt: sync.at,
       machineId: sync.machineId,
-      live: { syncedAt: sync.at, executors: bodies('executors') },
+      live: {
+        syncedAt: sync.at,
+        executors: bodies('executors'),
+        ownerId: isObject(meta.get('owner')) && typeof meta.get('owner').ownerId === 'string' ? meta.get('owner').ownerId : null,
+      },
       projects,
     };
   }
@@ -842,8 +853,9 @@ const RampartDashboard = (function () {
     if (from.tagName === 'SELECT' && from.value !== to.value) from.value = to.value;
   }
 
-  // Make parent's children match next (detached nodes), reusing parent's own where they match. A kept node moves only when
-  // it is out of place, so an unchanged order moves nothing (moving a node would drop its focus).
+  // Make parent's children match next (detached nodes), reusing parent's own where they match. Children that will not be
+  // reused are removed first, so the kept ones close up in their old order and only a real reorder moves one (moving a
+  // node drops its focus). New nodes are inserted around them.
   function morphChildren(parent, next) {
     const keyed = new Map();
     const unkeyed = [];
@@ -853,19 +865,21 @@ const RampartDashboard = (function () {
       else if (!keyed.has(key)) keyed.set(key, child);
     }
     let u = 0;
-    next.forEach((want, i) => {
+    const pairs = next.map((want) => {
       const key = keyOf(want);
       const old = key === null ? unkeyed[u++] : keyed.get(key);
-      let node = want;
-      if (old && sameKind(old, want)) {
-        if (key !== null) keyed.delete(key);
-        morph(old, want);
-        node = old;
-      }
+      if (!old || !sameKind(old, want)) return [null, want];
+      if (key !== null) keyed.delete(key);
+      return [old, want];
+    });
+    const kept = new Set(pairs.map(([old]) => old).filter(Boolean));
+    for (const child of Array.from(parent.childNodes)) if (!kept.has(child)) parent.removeChild(child);
+    pairs.forEach(([old, want], i) => {
+      if (old) morph(old, want);
+      const node = old || want;
       const at = parent.childNodes[i] || null;
       if (at !== node) parent.insertBefore(node, at);
     });
-    while (parent.childNodes.length > next.length) parent.removeChild(parent.lastChild);
   }
 
   // ---- view state --------------------------------------------------------------------------
@@ -880,6 +894,7 @@ const RampartDashboard = (function () {
   function show(view) {
     state.view = view;
     $('loading-view').hidden = view !== 'loading';
+    $('unavailable-view').hidden = view !== 'unavailable';
     $('empty-view').hidden = view !== 'empty';
     $('tiles-view').hidden = view !== 'tiles';
     $('detail-view').hidden = view !== 'detail';
@@ -1207,10 +1222,19 @@ const RampartDashboard = (function () {
     return h('div', { class: 'filter' }, h('label', { class: 'label', for: id }, label), select);
   }
 
+  // Who made a decision. A page decision's `by` is an opaque user id, which is never shown: in live mode it reads "owner"
+  // when it is meta/owner's id and "a viewer" otherwise. Static mode shows the local store's `by` (an OS user name).
+  function author(by) {
+    if (by === 'rampart') return 'Rampart';
+    if (!state.live || !by) return by;
+    const live = state.data && isObject(state.data.live) ? state.data.live : {};
+    return live.ownerId && by === live.ownerId ? 'owner' : 'a viewer';
+  }
+
   function dispositionText(d) {
     if (!isObject(d)) return '';
     const what = STATUS_LABELS[d.status] || String(d.status || '');
-    const who = [d.by, d.at ? day(d.at) : null].filter(Boolean).join(', ');
+    const who = [author(d.by), d.at ? day(d.at) : null].filter(Boolean).join(', ');
     return `${what}${d.reason ? `: ${d.reason}` : ''}${who ? ` (${who})` : ''}`;
   }
 
@@ -1459,6 +1483,10 @@ const RampartDashboard = (function () {
     const at = (iso) => h('time', { datetime: iso, title: iso }, stamp(iso));
     if (!state.live) return h('span', { class: 'mode-badge', id: 'mode-badge' }, h('span', { class: 'mode' }, 'Static snapshot'), ' ', at(data.generatedAt));
     const live = isObject(data.live) ? data.live : {};
+    if (state.live.failed()) {
+      return h('span', { class: 'mode-badge', id: 'mode-badge' },
+        h('span', { class: 'mode' }, 'Live'), ' · updates stopped · last synced ', live.syncedAt ? at(live.syncedAt) : 'never');
+    }
     const online = executorOnline(live.executors, Date.now());
     return h('span', { class: 'mode-badge', id: 'mode-badge' },
       h('span', { class: 'mode' }, 'Live'),
@@ -1567,35 +1595,58 @@ const RampartDashboard = (function () {
     }
   }
 
-  // A live source over the dashboard DB: one onSnapshot per collection, held for the life of the page. ready() turns true
-  // once every collection has answered (with documents or a terminal error); current() is the page data from the latest
-  // snapshots; onChange(fn) runs fn after each delivery. A terminal error keeps the documents last seen.
+  // A live source over the dashboard DB: one onSnapshot per collection, held for the life of the page. A collection has
+  // answered once it delivers a definitive snapshot or a non-empty one (an empty page from cache may be a cold cache, not
+  // an empty collection) or ends with a terminal error; ready() turns true when all have, or after ANSWER_TIMEOUT_MS so
+  // the view never hangs. current() is the page data from the latest snapshots; onChange(fn) runs fn after each delivery;
+  // failed() is the code of the first terminal error (the documents last seen stay), or null.
   function liveSource(db) {
     const docs = {};
     const answered = new Set();
     const listeners = [];
+    let failed = null;
+    let timer = null;
     const notify = () => listeners.slice().forEach((fn) => fn());
+    const answer = (name) => {
+      answered.add(name);
+      if (answered.size === COLLECTIONS.length && timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+    timer = setTimeout(() => {
+      timer = null;
+      COLLECTIONS.forEach((name) => answered.add(name));
+      notify();
+    }, ANSWER_TIMEOUT_MS);
     const unsubscribe = COLLECTIONS.map((name) => {
-      const done = () => {
-        answered.add(name);
+      const stopped = (err) => {
+        failed = failed || (isObject(err) && typeof err.code === 'string' ? err.code : 'unavailable');
+        answer(name);
         notify();
       };
       try {
         return db.collection(name).onSnapshot((snap) => {
-          docs[name] = list(snap && snap.docs).filter((d) => d && d.exists).map((d) => ({ id: d.id, data: d.data() }));
-          done();
-        }, done);
+          const page = list(snap && snap.docs).filter((d) => d && d.exists).map((d) => ({ id: d.id, data: d.data() }));
+          docs[name] = page;
+          if (page.length || !(snap && isObject(snap.metadata) && snap.metadata.fromCache)) answer(name);
+          notify();
+        }, stopped);
       } catch (err) {
-        done();
+        stopped(err);
         return () => {};
       }
     });
     return {
       db,
       ready: () => answered.size === COLLECTIONS.length,
+      failed: () => failed,
       current: () => pageDataFromDocs(docs),
       onChange: (fn) => listeners.push(fn),
-      close: () => unsubscribe.forEach((stop) => stop()),
+      close: () => {
+        if (timer !== null) clearTimeout(timer);
+        unsubscribe.forEach((stop) => stop());
+      },
     };
   }
 
@@ -1648,22 +1699,42 @@ const RampartDashboard = (function () {
     }
   }
 
+  // Who is viewing. Any failure here (a call that rejects) leaves the page read-only; it never blanks the view.
   async function connectUser(db) {
     const user = await capability('user');
     if (!user) return;
-    const owner = (await user.isOwner()) === true;
-    const writable = owner && (await user.can('data.write')) !== false;
+    let owner = false;
+    let writable = false;
+    try {
+      owner = (await user.isOwner()) === true;
+      writable = owner && (await user.can('data.write')) !== false;
+    } catch (err) {
+      owner = false;
+      writable = false;
+    }
     setAccess(writable ? 'write' : 'read');
-    if (state.data) render(state.data);
+    if (state.view === 'tiles' || state.view === 'detail') render(state.data);
     if (owner) await recordOwner(db, user);
   }
 
   // Live mode: draw once every collection has answered, then patch on each delivery; the badge re-checks the executor
   // heartbeat every minute, since an executor going quiet sends no snapshot.
+  // Before any data has shown, a terminal error with no projects to show is the unavailable view (a live message, not the
+  // static mode's hints); after, the view stays and the badge says updates stopped.
   function startLive(source) {
     state.live = source;
     const draw = () => {
-      if (source.ready()) render(source.current());
+      if (!source.ready()) return;
+      const data = source.current();
+      const showing = state.view === 'tiles' || state.view === 'detail';
+      if (source.failed() && !showing && !hasProjects(data)) {
+        state.data = data;
+        state.entries = [];
+        renderMasthead();
+        show('unavailable');
+        return;
+      }
+      render(data);
     };
     source.onChange(draw);
     draw();
@@ -1672,7 +1743,7 @@ const RampartDashboard = (function () {
         if (state.data) renderMasthead();
       }, BADGE_REFRESH_MS);
     }
-    return connectUser(source.db);
+    connectUser(source.db).catch(() => setAccess('read'));
   }
 
   function boot() {
