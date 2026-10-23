@@ -297,10 +297,16 @@ test('packsFor picks each shipped code pack for its own system type', () => {
 
 const HOST_PACKS = ['supabase', 'n8n', 'docker-host', 'wordpress-hostinger'];
 // Ruling R15: whole argv tokens, compared case-insensitively, against commands that change state; and no element may carry
-// shell redirection or a pipe (the runner single-quotes each element, so shell syntax would not work anyway).
+// shell redirection or a pipe (the runner single-quotes each element, so shell syntax would not work anyway). Ruling R19: the
+// placeholder <sitePath>, which the runner replaces with system.host.sitePath, is the one place a > may appear; it is removed
+// before the check, so any other <...> text still fails.
 const WRITE_TOKENS = ['rm', 'restart', 'stop', 'kill', 'down', 'exec', 'apply', 'write'];
+const PLACEHOLDERS = /<sitePath>/g;
 const readOnlyViolations = (argv) =>
-  argv.filter((t) => WRITE_TOKENS.includes(t.toLowerCase()) || t.includes('>') || t.includes('|'));
+  argv.filter((t) => {
+    const bare = t.replace(PLACEHOLDERS, '');
+    return WRITE_TOKENS.includes(t.toLowerCase()) || bare.includes('>') || bare.includes('|');
+  });
 // A probe whose command mentions any of these could print environment or configuration values.
 const MAY_ECHO_VALUES = /env|inspect|config|printenv|wp-config|\.env\b/i;
 
@@ -313,6 +319,10 @@ test('the read-only gate flags state-changing tokens and shell syntax and passes
   // Whole-token comparison: -exec, write-ahead and is-enabled are not the forbidden commands.
   assert.deepEqual(readOnlyViolations(['find', '.', '-exec', 'grep', 'write-ahead', '{}', '+']), []);
   assert.deepEqual(readOnlyViolations(['systemctl', 'is-enabled', 'unattended-upgrades.service']), []);
+  // The site-path placeholder passes, alone or inside an element; any other angle-bracket text is still a redirection.
+  assert.deepEqual(readOnlyViolations(['wp', '--path=<sitePath>', 'stat', '<sitePath>/../wp-config.php', '<sitePath>']), []);
+  assert.deepEqual(readOnlyViolations(['cat', '<other>/x']), ['<other>/x']);
+  assert.deepEqual(readOnlyViolations(['cat', '<sitePath>/x>y']), ['<sitePath>/x>y']);
 });
 
 test('each host pack has at least 5 classes and 6 probes, a baseline, and kebab-case ids', () => {
@@ -364,4 +374,31 @@ test('probes that could echo environment or config values are scrub: env', () =>
 test('packsFor picks each host pack for its system type, and docker-host for supabase and n8n too', () => {
   for (const type of HOST_PACKS) assert.ok(packsFor({ type }).map((p) => p.name).includes(type), type);
   for (const type of ['supabase', 'n8n']) assert.ok(packsFor({ type }).map((p) => p.name).includes('docker-host'), type);
+});
+
+test('env templates write NAME=[set] on the host and never print a whole env entry', () => {
+  let templates = 0;
+  for (const pack of listPacks().map((n) => readPack(n)).filter((p) => p.kinds.includes('host'))) {
+    for (const probe of pack.probes) {
+      for (const el of probe.argv.filter((a) => a.includes('.Config.Env'))) {
+        const where = `${pack.name}/${probe.id}`;
+        // {{.}} or {{println .}} inside the range would emit NAME=value, value included, for names not on the allowlist.
+        assert.doesNotMatch(el, /\{\{\s*(?:println\s+|print\s+|printf\s+"[^"]*"\s+)?\.\s*\}\}/, `${where} prints a whole env entry`);
+        // A value is printed only inside an allowlist branch: every {{index $kv 1}} follows an "if eq $k" test.
+        if (el.includes('{{index $kv 1}}')) assert.match(el, /\{\{if eq \$k "/, `${where} prints values only for allowlisted names`);
+        if (el.includes('{{else}}')) assert.ok(el.includes('{{else}}{{$k}}=[set]{{end}}'), `${where}: the fallback branch prints NAME=[set]`);
+        templates += 1;
+      }
+    }
+  }
+  assert.ok(templates >= 4, `checked ${templates} env templates`);
+});
+
+test('wordpress SSH probes name the site through <sitePath>, never a fixed public_html', () => {
+  const ssh = readPack('wordpress-hostinger').probes.filter((p) => p.via === 'ssh');
+  assert.ok(ssh.length >= 6);
+  for (const probe of ssh) {
+    assert.ok(probe.argv.some((a) => a.includes('<sitePath>')), `${probe.id} uses <sitePath>`);
+    assert.ok(!probe.argv.some((a) => a.includes('public_html')), `${probe.id} has no literal public_html`);
+  }
 });
