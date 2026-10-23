@@ -221,7 +221,7 @@ function upsertFindings(slug, findings, runId) {
   for (const incoming of new Map(findings.map((f) => [f.id, redactText(f)])).values()) {
     const cur = byId.get(incoming.id);
     if (!cur) {
-      byId.set(incoming.id, { ...incoming, status: 'open', firstSeen: stamp, lastSeen: stamp });
+      byId.set(incoming.id, { ...incoming, status: 'open', firstSeen: stamp, lastSeen: stamp, updatedAt: stamp });
       counts.added++;
     } else if (cur.status === 'false_positive' || cur.status === 'accepted_risk' || isRotatedHistoryLeak(cur)) {
       cur.lastSeen = stamp;
@@ -237,6 +237,7 @@ function upsertFindings(slug, findings, runId) {
       for (const k of changed) cur[k] = incoming[k];
       if (incoming.verification !== undefined) cur.verification = incoming.verification;
       cur.lastSeen = stamp;
+      if (changed.length || cur.status === 'fixed') cur.updatedAt = stamp; // the sync planner pushes on updatedAt
       if (cur.status === 'fixed') {
         cur.status = 'regressed';
         regressed.push(cur.id);
@@ -289,6 +290,7 @@ function closeMissing(slug, { system, source, runId, seenIds, filter } = {}) {
   const dispositions = readDispositions(slug);
   for (const f of closing) {
     f.status = 'fixed';
+    f.updatedAt = stamp;
     dispositions[f.id] = { status: 'fixed', reason: `not reproduced in run ${runId}`, by: 'rampart', at: stamp };
   }
   // Records first, as upsertFindings does: a crash in between leaves a record that findings.jsonl does not yet agree with,
@@ -308,14 +310,17 @@ function loadFinding(slug, id) {
 const readDispositions = (slug) => readJson(projectFile(slug, 'dispositions.json'), {});
 
 // Record the decision in dispositions.json and set the finding's status to match.
-function setDisposition(slug, id, { status, reason, by } = {}) {
+function setDisposition(slug, id, { status, reason, by, at } = {}) {
   checkSlug(slug);
   if (!DISPOSITIONS.includes(status)) throw new Error(`status must be one of ${DISPOSITIONS.join(', ')}`);
   const { findings, finding } = loadFinding(slug, id);
   const dispositions = readDispositions(slug);
-  dispositions[id] = { status, reason: redact(String(reason ?? '')), by: String(by ?? ''), at: now() };
+  // A pulled page decision keeps the time it was made (at); anything unparseable falls back to now.
+  const when = typeof at === 'string' && Number.isFinite(Date.parse(at)) ? at : now();
+  dispositions[id] = { status, reason: redact(String(reason ?? '')), by: String(by ?? ''), at: when };
   writeAtomic(projectFile(slug, 'dispositions.json'), toJson(dispositions));
   finding.status = status;
+  finding.updatedAt = when;
   writeFindings(slug, findings);
   return finding;
 }
@@ -326,6 +331,7 @@ function setClass(slug, id, cls, note) {
   if (!CLASSES.includes(cls)) throw new Error(`class must be one of ${CLASSES.join(', ')}`);
   const { findings, finding } = loadFinding(slug, id);
   finding.class = cls;
+  finding.updatedAt = now();
   if (note) finding.evidence = `${finding.evidence}; ${redact(String(note))}`;
   writeFindings(slug, findings);
   return finding;
@@ -364,7 +370,7 @@ function finishRun(slug, runId, patch = {}) {
   const run = readJson(file, null);
   if (!run) throw new Error(`no run ${runId} in project ${slug}`);
   const counts = isObject(patch.counts) ? { ...run.counts, ...patch.counts } : patch.counts ?? run.counts;
-  const merged = { ...run, ...patch, runId: run.runId, project: run.project, counts };
+  const merged = { ...run, ...patch, runId: run.runId, project: run.project, counts, updatedAt: patch.updatedAt || now() };
   if (FINAL_RUN_STATUSES.includes(patch.status)) merged.finishedAt = patch.finishedAt || now();
   assertValid('run', merged, 'run');
   writeAtomic(file, toJson(merged));
@@ -437,6 +443,41 @@ function appendScore(slug, snapshot) {
 }
 
 const readScores = (slug) => readJsonl(projectFile(slug, 'scores.jsonl'), { tornTail: true });
+
+// ---- jobs (mirrored from the dashboard DB for the watch loop) -----------------------------
+
+const JOB_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const jobsDir = () => path.join(rampartHome(), 'jobs');
+
+function jobFile(id) {
+  if (typeof id !== 'string' || !JOB_ID_RE.test(id)) throw new RangeError('job id must be 1 to 64 characters of letters, digits, "-" and "_"');
+  return path.join(jobsDir(), `${id}.json`);
+}
+
+// Validates against job-schema.json and writes ~/.rampart/jobs/<id>.json. The job keeps its own updatedAt (the page's).
+function writeJob(job) {
+  assertValid('job', job, 'job');
+  writeAtomic(jobFile(job.id), toJson(job));
+  return job;
+}
+
+const readJob = (id) => readJson(jobFile(id), null);
+
+// Every mirrored job, oldest first by updatedAt; only those of one project when slug is given.
+function readJobs(slug) {
+  let names;
+  try {
+    names = fs.readdirSync(jobsDir());
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const jobs = names
+    .filter((n) => n.endsWith('.json') && JOB_ID_RE.test(n.slice(0, -5)))
+    .map((n) => readJson(path.join(jobsDir(), n), null))
+    .filter((j) => isObject(j) && (slug === undefined || j.project === slug));
+  return jobs.sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0));
+}
 
 // ---- CLI ----------------------------------------------------------------------------------
 
@@ -614,4 +655,5 @@ module.exports = {
   readFindings, upsertFindings, closeMissing, readDispositions, setDisposition, setClass,
   createRun, finishRun, readRuns, writeRaw,
   readConfig, writeConfig, appendScore, readScores,
+  writeJob, readJob, readJobs,
 };

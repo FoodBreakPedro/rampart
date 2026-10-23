@@ -677,8 +677,9 @@ test('closeMissing: only the open or regressed findings of that system and sourc
   assert.equal(after[ID_G].status, 'open', 'another system');
   assert.equal(after[ID_H].status, 'open', 'another source');
   for (const [id, row] of Object.entries(after)) {
-    assert.deepEqual({ ...row, status: undefined }, { ...before[id], status: undefined }, `${id}: only the status changes (lastSeen too)`);
+    assert.deepEqual({ ...row, status: undefined, updatedAt: undefined }, { ...before[id], status: undefined, updatedAt: undefined }, `${id}: only the status changes (and updatedAt, which the sync planner reads)`);
   }
+  for (const id of [ID_B, ID_C]) assert.ok(after[id].updatedAt > (before[id].updatedAt || ''), `${id}: updatedAt moved when it was closed`);
 
   const disp = store.readDispositions(SLUG);
   for (const id of [ID_B, ID_C]) {

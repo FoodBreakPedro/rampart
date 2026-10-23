@@ -8,7 +8,7 @@ const { spawnSync } = require('node:child_process');
 const store = require('../scripts/store.cjs');
 const { scoreProject } = require('../scripts/score.cjs');
 const { machineId } = require('../scripts/lib/paths.cjs');
-const { buildData, renderStatic } = require('../scripts/render-static.cjs');
+const { buildData, buildPage, publicProject, renderStatic } = require('../scripts/render-static.cjs');
 
 const RENDER = path.join(__dirname, '..', 'scripts', 'render-static.cjs');
 const TEMPLATE = path.join(__dirname, '..', 'dashboard', 'index.html');
@@ -150,7 +150,8 @@ test('buildData returns everything the detail view needs: project, score, findin
   assert.equal(data.projects.length, 1);
   const entry = data.projects[0];
   assert.deepEqual(Object.keys(entry).sort(), ['dispositions', 'findings', 'project', 'runs', 'score']);
-  assert.deepEqual(entry.project, store.readProject(SLUG));
+  assert.deepEqual(entry.project, publicProject(store.readProject(SLUG)), 'the project as publicProject leaves it');
+  assert.equal(buildData, buildPage, 'buildData is the old name of buildPage');
   const findings = store.readFindings(SLUG);
   assert.deepEqual(entry.score, scoreProject(store.readProject(SLUG), findings, store.readRuns(SLUG), NOW));
   assert.deepEqual(entry.runs, [run], 'the run.json objects');
