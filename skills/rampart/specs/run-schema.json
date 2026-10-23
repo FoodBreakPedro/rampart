@@ -28,7 +28,8 @@
         "candidates": { "type": "integer", "minimum": 0, "description": "Distinct hunt candidates the run produced (verified + rejected + undecided)." },
         "verified": { "type": "integer", "minimum": 0, "description": "Candidates that met the verification bar and became findings." },
         "rejected": { "type": "integer", "minimum": 0, "description": "Candidates a majority of verifiers rejected." },
-        "undecided": { "type": "integer", "minimum": 0, "description": "Candidates with a tie, only unsure votes or no votes; kept in the run, never findings." }
+        "undecided": { "type": "integer", "minimum": 0, "description": "Candidates with a tie, only unsure votes or no votes; kept in the run, never findings." },
+        "invalid": { "type": "integer", "minimum": 0, "description": "Agent candidate or vote entries hunt-io could not use and dropped." }
       }
     },
     "revision": {

@@ -46,7 +46,7 @@ const RUN_ID_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$/;
 const REF_RE = /^c([1-9]|10)$/;
 const VOTE_FILE_RE = /^(.+)__(c(?:[1-9]|10))__([1-9][0-9]*)\.json$/;
 const JWT_RE = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/;
-const TOKEN_RE = /[A-Za-z0-9+/=_-]{20,}/g;
+const TOKEN_RE = /[A-Za-z0-9+=_-]{20,}/g; // no '/' or '.': paths and dotted identifiers are not tokens
 const MIN_ENTROPY = 3.5; // bits per character
 const EVIDENCE_REPLACED = `${REDACTED} (value-like text removed by rampart)`;
 const INJECTION_RE = /\b(ignore (all|any|previous|prior)|disregard (the|all|previous)|you are (now )?(an?|the) |as an ai|system prompt|mark (this|it) as (safe|clean|fixed)|do not (report|flag)|report (no|nothing)|this (file|code) is (safe|secure))/i;
@@ -122,12 +122,15 @@ function entropy(s) {
   return h;
 }
 
-const hasSecretToken = (s) => (s.match(TOKEN_RE) || []).some((t) => entropy(t) >= MIN_ENTROPY);
+// A value-like token: 20+ token characters with at least two digits and a letter and entropy of 3.5 bits per character or more.
+const isSecretToken = (t) => (t.match(/[0-9]/g) || []).length >= 2 && /[A-Za-z]/.test(t) && entropy(t) >= MIN_ENTROPY;
+const hasSecretToken = (s) => (s.match(TOKEN_RE) || []).some(isSecretToken);
+const maskTokens = (s) => s.replace(TOKEN_RE, (t) => (isSecretToken(t) ? REDACTED : t));
 const cut = (s, max) => (s.length > max ? `${s.slice(0, max)}...` : s);
 
 // Free text: redact(), then any high-entropy token goes inline.
 function cleanText(value, max = MAX_TEXT) {
-  const out = redact(typeof value === 'string' ? value : '').replace(TOKEN_RE, (t) => (entropy(t) >= MIN_ENTROPY ? REDACTED : t));
+  const out = maskTokens(redact(typeof value === 'string' ? value : ''));
   return cut(out, max);
 }
 
@@ -136,6 +139,14 @@ function cleanEvidence(value) {
   const raw = typeof value === 'string' ? value : '';
   if (redact(raw) !== raw || JWT_RE.test(raw) || hasSecretToken(raw)) return EVIDENCE_REPLACED;
   return cut(raw, MAX_TEXT);
+}
+
+// An agent file ingest cannot use is overwritten, so what the agent wrote (possibly a credential) does not stay in the run directory.
+// Reading one back reports the reason it holds.
+const stubReason = (r) => (isObject(r.value) && typeof r.value.invalid === 'string' ? r.value.invalid : null);
+function stub(file, reason) {
+  const text = toJson({ invalid: reason });
+  if (readText(file) !== text) writeAtomic(file, text);
 }
 
 // ---- candidates ---------------------------------------------------------------------------
@@ -147,8 +158,9 @@ function cleanPath(p) {
   if (posix.startsWith('/') || /^[A-Za-z]:/.test(posix)) return null;
   const segments = posix.split('/');
   if (segments.includes('..')) return null;
-  const clean = segments.filter((s) => s !== '' && s !== '.').join('/');
-  return clean !== '' && redact(clean) === clean ? clean : null;
+  const joined = segments.filter((s) => s !== '' && s !== '.').join('/');
+  if (joined === '' || redact(joined) !== joined) return null;
+  return maskTokens(joined);
 }
 
 function cleanLocation(raw, infra) {
@@ -223,24 +235,21 @@ function ingestCandidates(slug, runId, doc) {
     const file = path.join(dir, name);
     const hunter = (doc.hunters || []).find((h) => h.key === key);
     const r = readJsonFile(file);
-    if (!hunter) {
-      invalid.push({ file: `candidates/${name}`, reason: 'no hunter with this key was planned' });
-      continue;
-    }
-    if (r.bad || !Array.isArray(r.value)) {
-      invalid.push({ file: `candidates/${name}`, reason: r.bad ? 'not valid JSON' : 'not a JSON array' });
-      if (r.text !== undefined && redact(r.text) !== r.text) writeAtomic(file, redact(r.text));
+    const reason = !hunter ? 'no hunter with this key was planned' : r.bad ? 'not valid JSON' : !Array.isArray(r.value) ? 'not a JSON array' : null;
+    if (reason !== null) {
+      invalid.push({ file: `candidates/${name}`, reason: stubReason(r) || reason, whole: true });
+      stub(file, stubReason(r) || reason);
       continue;
     }
     const seen = new Set();
     const mine = [];
     for (const item of r.value) {
       const n = normalizeCandidate(item, hunter, doc, slug);
-      if (n.candidate && seen.has(n.candidate.ref)) invalid.push({ file: `candidates/${name}`, reason: `${n.candidate.ref}: duplicate ref` });
+      if (n.candidate && seen.has(n.candidate.ref)) invalid.push({ file: `candidates/${name}`, key, reason: `${n.candidate.ref}: duplicate ref` });
       else if (n.candidate) {
         seen.add(n.candidate.ref);
         mine.push(n.candidate);
-      } else invalid.push({ file: `candidates/${name}`, reason: n.reason });
+      } else invalid.push({ file: `candidates/${name}`, key, reason: n.reason });
     }
     if (toJson(mine) !== r.text) writeAtomic(file, toJson(mine));
     stored.push(...mine);
@@ -275,14 +284,11 @@ function ingestVotes(slug, runId, candidates) {
   for (const name of jsonFiles(dir)) {
     const file = path.join(dir, name);
     const r = readJsonFile(file);
-    if (r.bad) {
-      invalid.push({ file: `votes/${name}`, reason: 'not valid JSON' });
-      if (redact(r.text) !== r.text) writeAtomic(file, redact(r.text));
-      continue;
-    }
-    const n = normalizeVote(r.value, name, candidates);
+    const n = r.bad ? { reason: 'not valid JSON' } : normalizeVote(r.value, name, candidates);
     if (!n.vote) {
-      invalid.push({ file: `votes/${name}`, reason: n.reason });
+      const reason = stubReason(r) || n.reason;
+      invalid.push({ file: `votes/${name}`, reason, whole: true });
+      stub(file, reason);
       continue;
     }
     if (toJson(n.vote) !== r.text) writeAtomic(file, toJson(n.vote));
@@ -295,7 +301,15 @@ function ingest(slug, runId) {
   const doc = readUnits(slug, runId);
   const c = ingestCandidates(slug, runId, doc);
   const v = ingestVotes(slug, runId, c.candidates);
-  return { candidates: c.candidates, votes: v.votes, invalid: [...c.invalid, ...v.invalid] };
+  // Invalid entries are dropped from the rewritten files, so they are kept in invalid.json for assemble (and later passes).
+  const file = path.join(dirOf(slug, runId), 'invalid.json');
+  const before = readJsonFile(file);
+  const known = Array.isArray(before.value) ? before.value : [];
+  const seen = new Set(known.map((i) => JSON.stringify(i)));
+  const merged = [...known];
+  for (const i of [...c.invalid, ...v.invalid]) if (!seen.has(JSON.stringify(i))) { seen.add(JSON.stringify(i)); merged.push(i); }
+  if (merged.length !== known.length) writeAtomic(file, toJson(merged));
+  return { candidates: c.candidates, votes: v.votes, invalid: merged };
 }
 
 // One agent file, written and normalized. They return what ingest returns, for the files they touched.
@@ -307,6 +321,9 @@ function writeCandidate(slug, runId, key, rawArray) {
 }
 
 function writeVote(slug, runId, fileName, rawVote) {
+  if (typeof fileName !== 'string' || !VOTE_FILE_RE.test(fileName) || fileName.includes('/') || fileName.includes('\\')) {
+    throw new RangeError('vote file name must be <hunterKey>__<ref>__<n>.json');
+  }
   ensureRunDirs(slug, runId);
   writeAtomic(path.join(dirOf(slug, runId), 'votes', fileName), toJson(rawVote));
   const all = ingest(slug, runId);
@@ -320,7 +337,10 @@ function readStored(slug, runId, kind, schemaName) {
   return jsonFiles(dir)
     .flatMap((name) => {
       const r = readJsonFile(path.join(dir, name));
-      return r.bad || r.missing ? [] : kind === 'candidates' ? (Array.isArray(r.value) ? r.value : []) : [r.value];
+      if (r.bad || r.missing) return [];
+      if (kind === 'candidates') return Array.isArray(r.value) ? r.value : [];
+      const m = VOTE_FILE_RE.exec(name);
+      return m && isObject(r.value) && r.value.verifier === `verify:${m[1]}#${m[2]}:${m[3]}` ? [r.value] : [];
     })
     .filter((entry) => validate(schema, entry).ok);
 }
@@ -485,9 +505,19 @@ function judgeUnits(doc, dir) {
 function assemble(slug, runId) {
   const doc = readUnits(slug, runId);
   const dir = dirOf(slug, runId);
-  const { candidates, votes } = ingest(slug, runId);
-  const units = judgeUnits(doc, dir);
+  const status = (readJsonFile(path.join(dir, 'run.json')).value || {}).status;
+  if (['done', 'failed', 'skipped'].includes(status)) throw new RangeError(`run ${runId} is already ${status}; assemble runs once`);
+  const { candidates, votes, invalid } = ingest(slug, runId);
+  // A unit whose hunter file had invalid entries is still covered, but an entry that never made it in may have been the finding
+  // that is "missing", so nothing in that unit is closed.
+  const invalidIn = new Map();
+  for (const i of invalid) {
+    const h = i.key ? (doc.hunters || []).find((x) => x.key === i.key) : null;
+    for (const id of h ? (h.units || [h.unit]) : []) invalidIn.set(id, (invalidIn.get(id) || 0) + 1);
+  }
+  const units = judgeUnits(doc, dir).map((u) => (invalidIn.has(u.id) ? { ...u, invalid: invalidIn.get(u.id) } : u));
   const covered = units.filter((u) => u.status === 'covered');
+  const closable = covered.filter((u) => !u.invalid);
   const t = tally(candidates, votes);
 
   const now = new Date().toISOString();
@@ -499,8 +529,8 @@ function assemble(slug, runId) {
   const infra = doc.layer === 'INFRA';
   let closed = 0;
   if (covered.length) {
-    const allCovered = covered.length === units.length;
-    const inCovered = (f) => f.location && typeof f.location.path === 'string' && covered.some((u) => coverage.unitContains(u.id, f.location.path));
+    const allCovered = covered.length === units.length && closable.length === units.length;
+    const inCovered = (f) => f.location && typeof f.location.path === 'string' && closable.some((u) => coverage.unitContains(u.id, f.location.path));
     closed = store.closeMissing(slug, {
       system: doc.system,
       source: infra ? 'infra-probe' : 'rampart-hunter',
@@ -526,10 +556,11 @@ function assemble(slug, runId) {
     closed,
     candidates: t.verified.length + t.rejected.length + t.undecided.length,
     verified: t.verified.length, rejected: t.rejected.length, undecided: t.undecided.length,
+    invalid: invalid.length,
   };
   const failed = covered.length === 0;
   store.finishRun(slug, runId, failed ? { status: 'failed', reason: 'no unit was covered', counts } : { status: 'done', counts });
-  return { counts, findings: findings.map((f) => f.id), skipped: units.filter((u) => u.status === 'failed' || u.status === 'skipped') };
+  return { counts, invalid, findings: findings.map((f) => f.id), skipped: units.filter((u) => u.status === 'failed' || u.status === 'skipped') };
 }
 
 // For the INFRA verify-only workflow: the candidates a prober wrote, after ingesting.

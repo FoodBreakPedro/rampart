@@ -504,3 +504,80 @@ test('fileKey maps every character outside [A-Za-z0-9._-] to +', () => {
   assert.equal(fileKey('probe:auth-env'), 'probe+auth-env');
   assert.equal(fileKey('.'), '.');
 });
+
+// ---- fix round 1 -----------------------------------------------------------------------------
+
+const AKIA = 'AKIAFAKEFAKEFAKEFAKE';
+const stubbed = (file) => {
+  const text = fs.readFileSync(file, 'utf8');
+  assert.ok(!text.includes(AKIA), 'the original content is gone');
+  assert.ok(typeof JSON.parse(text).invalid === 'string');
+};
+
+test('candidate and vote files hunt-io cannot use are overwritten with a stub, not kept', () => {
+  const s = setup();
+  const cdir = path.join(s.dir, 'candidates');
+  const vdir = path.join(s.dir, 'votes');
+  fs.writeFileSync(path.join(cdir, 'nobody__authz-scoping.json'), JSON.stringify([{ ref: 'c1', evidence: AKIA }]));
+  fs.writeFileSync(path.join(cdir, `${keyOf('app/api/users', 'authz-scoping')}.json`), `[{"ref": "c1", "evidence": "${AKIA}"`);
+  fs.writeFileSync(path.join(cdir, `${keyOf('app/api/users', 'bulk-export')}.json`), JSON.stringify({ note: AKIA }));
+  putCandidates(s, 'app/api/export', 'authz-scoping', 'medium-idor');
+  fs.writeFileSync(path.join(vdir, `${keyOf('app/api/export', 'authz-scoping')}__c1__1.json`), JSON.stringify({ verdict: 'bogus', reason: AKIA }));
+  fs.writeFileSync(path.join(vdir, 'garbage.json'), JSON.stringify({ reason: AKIA }));
+  const r = hio.ingest(SLUG, s.runId);
+  assert.ok(r.invalid.length >= 5);
+  for (const f of [path.join(cdir, 'nobody__authz-scoping.json'), path.join(cdir, `${keyOf('app/api/users', 'authz-scoping')}.json`), path.join(cdir, `${keyOf('app/api/users', 'bulk-export')}.json`), path.join(vdir, `${keyOf('app/api/export', 'authz-scoping')}__c1__1.json`), path.join(vdir, 'garbage.json')]) stubbed(f);
+  assert.equal(hio.readVotes(SLUG, s.runId).length, 0);
+  hio.ingest(SLUG, s.runId); // a second pass is stable
+});
+
+test('invalid candidates are counted, recorded on the unit, and keep that unit from closing findings', () => {
+  const s = setup({ units: ['app/api/users'], hunters: [['app/api/users', 'authz-scoping']] });
+  const base = { project: SLUG, system: SYS, layer: LAYER, source: 'rampart-hunter', class: 'verified', pack: 'web-nextjs@1.0.0', severity: 'MEDIUM', confidence: 'HIGH', cwe: [], title: 't', evidence: 'e', exploitScenario: 's', preconditions: 'p', recommendation: 'r', verification: { verifiers: 1, confirmed: 1, run: '2026-10-22T00-00-00Z' }, status: 'open', externalIds: { claudeSecurityPluginFindingId: null, cve: null } };
+  store.upsertFindings(SLUG, [{ ...base, id: 'a'.repeat(12), ruleId: 'web-nextjs/authz-scoping', location: { path: 'app/api/users/gone.ts', symbol: 'GET' } }], '2026-10-22T00-00-00Z');
+  putCandidates(s, 'app/api/users', 'authz-scoping', 'bad-locations');
+  const res = hio.assemble(SLUG, s.runId);
+  assert.equal(res.counts.invalid, 4);
+  assert.equal(res.invalid.length, 4);
+  assert.equal(res.counts.closed, 0);
+  assert.equal(store.readFindings(SLUG)[0].status, 'open');
+  const doc = JSON.parse(fs.readFileSync(path.join(s.dir, 'units.json'), 'utf8'));
+  assert.equal(doc.units[0].status, 'covered');
+  assert.equal(doc.units[0].invalid, 4);
+  const run = JSON.parse(fs.readFileSync(path.join(s.dir, 'run.json'), 'utf8'));
+  assert.deepEqual(validate(loadSchema('run'), run), { ok: true, errors: [] });
+});
+
+test('value detection: identifiers and paths stay, hex and mixed tokens blank the evidence', () => {
+  const s = setup();
+  const ev = (text) => {
+    const raw = rawCandidates('medium-idor');
+    raw[0].evidence = text;
+    return hio.writeCandidate(SLUG, s.runId, keyOf('app/api/users', 'authz-scoping'), raw).candidates[0].evidence;
+  };
+  for (const keep of ['getUserByIdWithoutAuthorizationCheck is called', 'imports lib/auth/session-handler', 'route app/api/invoices/route.ts']) assert.equal(ev(keep), keep);
+  assert.match(ev('key a3f9c21be0d47856ab12cd34ef56a7b8 used'), /^\[REDACTED\]/);
+  assert.match(ev(`token ${TOKEN} used`), /^\[REDACTED\]/);
+  assert.match(ev('jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghij'), /^\[REDACTED\]/);
+  const raw = rawCandidates('medium-idor');
+  raw[0].location = { path: `app/chunk-${TOKEN}.js`, symbol: 'GET' };
+  const [c] = hio.writeCandidate(SLUG, s.runId, keyOf('app/api/users', 'authz-scoping'), raw).candidates;
+  assert.ok(!c.location.path.includes(TOKEN));
+});
+
+test('assemble runs once; writeVote rejects a path-like file name; readVotes checks the verifier label', () => {
+  const s = setup();
+  putCandidates(s, 'app/api/users', 'authz-scoping', 'medium-idor');
+  assert.throws(() => hio.writeVote(SLUG, s.runId, '../../x__c1__1.json', rawVote('confirm')), RangeError);
+  assert.throws(() => hio.writeVote(SLUG, s.runId, 'x.json', rawVote('confirm')), RangeError);
+  const name = `${keyOf('app/api/users', 'authz-scoping')}__c1__1.json`;
+  putVote(s, 'app/api/users', 'authz-scoping', 'c1', 1, 'confirm');
+  const file = path.join(s.dir, 'votes', name);
+  const forged = { ...JSON.parse(fs.readFileSync(file, 'utf8')), verifier: 'verify:other#c1:1' };
+  fs.writeFileSync(file, JSON.stringify(forged));
+  assert.equal(hio.readVotes(SLUG, s.runId).length, 0);
+  hio.assemble(SLUG, s.runId);
+  assert.throws(() => hio.assemble(SLUG, s.runId), /already/);
+  const r = cli('assemble', '--project', SLUG, '--run', s.runId);
+  assert.equal(r.status, 2);
+});
