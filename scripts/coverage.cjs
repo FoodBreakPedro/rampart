@@ -8,13 +8,18 @@
 //                                        is unit '.'. Pure; accepts / or \ and returns POSIX ids. Task 5 (diff scope) reuses it.
 //   isIgnored(relPath, ignore)           true when a path is excluded: a plain entry matches any path segment, an entry with *
 //                                        matches file basenames (*.lock, *.min.js). Pure; same separators rule.
+//   unitContains(unitId, relPath, maxDepth) bucket membership: unitOf(relPath, maxDepth) === unitId, never a prefix test; unit '.'
+//                                        owns only root-level files. Pure.
+//   packVersionsFor(system, layer)       {name: version} of the system's packs of the layer's kind (host for INFRA, else code).
+//                                        The `packs` given to markCovered and gaps must be this layer-scoped set.
 //   unitsForRepo(repoPath, opts)         [{id, kind: 'dir', files, reachable}] sorted by id; ignored paths produce no units.
 //                                        reachable is false for tests|test|__tests__|fixtures|docs|scripts roots (background only).
 //   unitsForHost(system, pack)           one {id: 'probe:<probeId>', kind: 'probe', reachable: true} per pack probe.
 //   markCovered(ledger, {...})           the ledger with the given units stamped (pure; the input is not changed).
 //   gaps(ledger, {...})                  the units that still need a hunt: never covered, status failed, or covered against an
 //                                        older or different version of any pack in `packs`.
-// CLI: node scripts/coverage.cjs units|gaps|show --project <slug> --system <id> [--repo <path>] [--layer L1|L2|L3|INFRA] [--json]
+// CLI: node scripts/coverage.cjs units|gaps|show --project <slug> --system <id> [--repo <path>] [--layer L1|L2|L3|INFRA] [--reachable] [--json]
+//   --reachable keeps only reachable units (the background ones - docs, scripts, tests - are listed with reachable false otherwise).
 // (--layer defaults to L2). Exit 0 ok, 2 for a usage error or a project, system or repo that does not resolve, 1 for anything else.
 
 const fs = require('node:fs');
@@ -50,6 +55,15 @@ function isIgnored(relPath, ignore = DEFAULT_IGNORE) {
     const re = new RegExp(`^${entry.split('*').map((p) => p.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*')}$`);
     return base !== undefined && re.test(base);
   });
+}
+
+const unitContains = (unitId, relPath, maxDepth = DEFAULT_MAX_DEPTH) => unitOf(relPath, maxDepth) === unitId;
+
+// The versions of the packs that apply to this layer of the system: host packs for INFRA, code packs otherwise, so a bump of
+// one kind never reopens the units of the other.
+function packVersionsFor(system, layer) {
+  const kind = layer === 'INFRA' ? 'host' : 'code';
+  return Object.fromEntries(packsFor(system).filter((p) => (p.kinds || []).includes(kind)).map((p) => [p.name, p.version]));
 }
 
 // ---- units --------------------------------------------------------------------------------
@@ -101,7 +115,7 @@ function gaps(ledger, { system, layer, units, packs }) {
 
 // ---- the command line ---------------------------------------------------------------------
 
-const USAGE = 'usage: node scripts/coverage.cjs units|gaps|show --project <slug> --system <id> [--repo <path>] [--layer L1|L2|L3|INFRA] [--json]';
+const USAGE = 'usage: node scripts/coverage.cjs units|gaps|show --project <slug> --system <id> [--repo <path>] [--layer L1|L2|L3|INFRA] [--reachable] [--json]';
 
 class UsageError extends Error {}
 
@@ -112,7 +126,7 @@ function parse(argv) {
   try {
     ({ values } = util.parseArgs({
       args: rest,
-      options: { project: { type: 'string' }, system: { type: 'string' }, repo: { type: 'string' }, layer: { type: 'string' }, json: { type: 'boolean' } },
+      options: { project: { type: 'string' }, system: { type: 'string' }, repo: { type: 'string' }, layer: { type: 'string' }, reachable: { type: 'boolean' }, json: { type: 'boolean' } },
       strict: true,
       allowPositionals: false,
     }));
@@ -142,8 +156,9 @@ function main(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
       result = { project: ledger.project, units: Object.fromEntries(mine) };
     } else {
       const units = unitsFor(ctx, opts);
-      const packs = Object.fromEntries(packsFor(ctx.system).map((p) => [p.name, p.version]));
+      const packs = packVersionsFor(ctx.system, opts.layer);
       result = opts.command === 'units' ? units : gaps(ledger, { system: opts.system, layer: opts.layer, units, packs });
+      if (opts.reachable) result = result.filter((u) => u.reachable);
     }
     stdout.write(`${opts.json ? JSON.stringify(result, null, 2) : render(opts.command, result)}\n`);
     return 0;
@@ -165,4 +180,4 @@ function render(command, result) {
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
-module.exports = { unitOf, isIgnored, unitsForRepo, unitsForHost, markCovered, gaps, main, DEFAULT_IGNORE };
+module.exports = { unitOf, unitContains, packVersionsFor, isIgnored, unitsForRepo, unitsForHost, markCovered, gaps, main, DEFAULT_IGNORE };

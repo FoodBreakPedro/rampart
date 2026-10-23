@@ -54,6 +54,14 @@ test('isIgnored matches plain names on any segment and globs on the basename', (
   assert.equal(cov.isIgnored('x.ts', ['x.ts']), true);
 });
 
+test('unitContains is bucket membership, never a prefix', () => {
+  assert.equal(cov.unitContains('.', 'middleware.ts'), true);
+  assert.equal(cov.unitContains('.', 'app/api/users/route.ts'), false);
+  assert.equal(cov.unitContains('app/api/users', 'app/api/users/route.ts'), true);
+  assert.equal(cov.unitContains('app', 'app/api/users/route.ts'), false);
+  assert.equal(cov.unitContains('app', 'app/api/users/route.ts', 0), true);
+});
+
 // ---- unitsForRepo on the fixture ----------------------------------------------------------
 
 test('unitsForRepo lists the fixture directories and leaves ignored ones out', () => {
@@ -206,4 +214,34 @@ test('CLI exits 2 on usage errors', () => {
   assert.equal(run(['units', '--project', SLUG]).status, 2);
   assert.equal(run(['units', '--project', SLUG, '--system', 'x']).status, 2); // no such project
   assert.equal(run(['units', '--project', SLUG, '--system', 'x', '--layer', 'L9']).status, 2);
+});
+
+test('packVersionsFor scopes pack versions to the layer kind', () => {
+  const system = { id: 'web', type: 'web-nextjs', packs: ['web-nextjs', 'docker-host'] };
+  assert.deepEqual(cov.packVersionsFor(system, 'L3'), { 'web-nextjs': readPack('web-nextjs').version });
+  assert.deepEqual(cov.packVersionsFor(system, 'L2'), cov.packVersionsFor(system, 'L3'));
+  assert.deepEqual(cov.packVersionsFor(system, 'INFRA'), { 'docker-host': readPack('docker-host').version });
+  // a host pack bump leaves covered code units alone
+  const units = cov.unitsForRepo(TARGET);
+  const led = cov.markCovered(base(), { system: 'web', layer: 'L3', units, runId: 'R1', packs: cov.packVersionsFor(system, 'L3') });
+  assert.deepEqual(cov.gaps(led, { system: 'web', layer: 'L3', units, packs: cov.packVersionsFor(system, 'L3') }), []);
+});
+
+test('CLI --reachable filters background units out of units and gaps', () => {
+  const p = seedProject();
+  store.writeProject(p);
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'rampart repo '));
+  try {
+    for (const f of ['docs/a.md', 'src/c.ts']) {
+      fs.mkdirSync(path.dirname(path.join(repo, f)), { recursive: true });
+      fs.writeFileSync(path.join(repo, f), 'x');
+    }
+    const args = ['--project', p.slug, '--system', p.systems[0].id, '--repo', repo, '--json'];
+    for (const cmd of ['units', 'gaps']) {
+      assert.deepEqual(JSON.parse(run([cmd, ...args]).stdout).map((u) => [u.id, u.reachable]), [['docs', false], ['src', true]]);
+      assert.deepEqual(JSON.parse(run([cmd, ...args, '--reachable']).stdout).map((u) => u.id), ['src']);
+    }
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
 });
