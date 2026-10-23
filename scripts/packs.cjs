@@ -23,7 +23,7 @@ const { redact } = require('./lib/redact.cjs');
 
 const PACKS_DIR = path.join(__dirname, '..', 'packs');
 const USAGE = 'usage: node scripts/packs.cjs list | show <name> | validate [<name>] [--json]';
-const NAME_RE = /^_?[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const NAME_RE = /^_?[a-z0-9][a-z0-9-]*$/; // the same shape the pack schema allows for name
 const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 
 const CLASS_LABELS = {
@@ -206,6 +206,7 @@ function validatePack(pack) {
   if (pack !== null && typeof pack === 'object') {
     const seen = new Set();
     (Array.isArray(pack.classes) ? pack.classes : []).forEach((c, i) => {
+      if (c && Array.isArray(c.cwe) && c.cwe.length === 0) errors.push({ path: `classes[${i}].cwe`, message: 'expected a non-empty array' });
       if (c && typeof c.id === 'string') {
         if (seen.has(c.id)) errors.push({ path: `classes[${i}].id`, message: 'duplicate class id' });
         seen.add(c.id);
@@ -220,6 +221,13 @@ function validatePack(pack) {
       }
       if (Array.isArray(p.argv) && p.argv.length === 0) errors.push({ path: `probes[${i}].argv`, message: 'expected a non-empty array' });
     });
+    // A kind promises content: code packs need hunt classes, host packs need probes (a mistyped heading parses as none).
+    if (Array.isArray(pack.kinds) && pack.kinds.includes('code') && Array.isArray(pack.classes) && pack.classes.length === 0) {
+      errors.push({ path: 'classes', message: 'expected at least one class for a code pack' });
+    }
+    if (Array.isArray(pack.kinds) && pack.kinds.includes('host') && Array.isArray(pack.probes) && pack.probes.length === 0) {
+      errors.push({ path: 'probes', message: 'expected at least one probe for a host pack' });
+    }
     for (const key of ['appliesTo', 'kinds', 'sources']) {
       if (Array.isArray(pack[key]) && pack[key].length === 0) errors.push({ path: key, message: 'expected a non-empty array' });
     }

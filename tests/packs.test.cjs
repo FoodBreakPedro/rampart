@@ -230,3 +230,18 @@ test('main reports a pack whose name differs from its file as invalid instead of
   assert.equal(main(['validate'], io), 1);
   assert.match(out.join(''), /INVALID other/);
 });
+
+test('a class with no CWE line fails at classes[i].cwe', () => {
+  put('good', fixture('good').replace(/\*\*CWE:\*\* CWE-601\n/, ''));
+  assert.deepEqual(validatePack(readPack('good', tmp)).errors.map((e) => e.path), ['classes[1].cwe']);
+});
+
+test('a code pack with no classes (mistyped heading) and a host pack with no probes fail', () => {
+  put('good', fixture('good').replace('## Hunt classes', '## Hunt clases'));
+  assert.deepEqual(validatePack(readPack('good', tmp)).errors.map((e) => e.path), ['classes']);
+  const noProbes = fixture('good').replace(/## Probes[\s\S]*?(?=## Sources)/, '');
+  put('good', noProbes);
+  assert.deepEqual(validatePack(readPack('good', tmp)).errors.map((e) => e.path), ['probes']);
+  put('good', noProbes.replace('  - host\n', ''));
+  assert.deepEqual(validatePack(readPack('good', tmp)), { ok: true, errors: [] });
+});
