@@ -1,0 +1,1362 @@
+<title>Rampart Dashboard</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: a masthead band, then one view at a time (project tiles in a snap-scrolling row, one project's score sheet, or the
+   empty state), content capped at 1240px inside 16px+ gutters. Tiles stack into a single column at phone width. */
+:root {
+  /* Palette: cool limestone ground, white tiles, slate ink, iron-blue accent for anything you can press. */
+  --bg: #ECEFF1;
+  --surface: #FFFFFF;
+  --sunk: #F3F5F7;
+  --ink: #15212B;
+  --muted: #56636F;
+  --faint: #7E8B97;
+  --line: #D5DCE2;
+  --line-strong: #B4BFC8;
+  --accent: #2B5E90;
+  --accent-soft: #E2EBF4;
+  --shadow-tint: rgba(21, 33, 43, 0.07);
+
+  /* Grades: fill and the text on it. */
+  --grade-a: #1D7A4C; --grade-a-ink: #FFFFFF;
+  --grade-b: #12737A; --grade-b-ink: #FFFFFF;
+  --grade-c: #E9B44C; --grade-c-ink: #3A2600;
+  --grade-d: #C8561A; --grade-d-ink: #FFFFFF;
+  --grade-f: #B3243A; --grade-f-ink: #FFFFFF;
+  --grade-none: #DCE2E7; --grade-none-ink: #56636F;
+
+  /* Severity and hardening: text on tint. */
+  --sev-critical: #9B1C3C; --sev-critical-bg: #FBE3EA;
+  --sev-high: #A63A12; --sev-high-bg: #FCE7DD;
+  --sev-medium: #835500; --sev-medium-bg: #FAEED0;
+  --sev-low: #3E5A74; --sev-low-bg: #E3EBF2;
+  --hardening: #574A8C; --hardening-bg: #ECE8F7;
+
+  /* Layer freshness. */
+  --fresh: #2F8A57;
+  --aging: #C68A14;
+  --stale: #C23B32;
+  --absent: #98A4AF;
+
+  /* Status pills. */
+  --ok: #1D7A4C; --ok-bg: #DDF1E5;
+  --bad: #B3243A; --bad-bg: #FBE3E6;
+  --warn: #835500; --warn-bg: #FAEED0;
+  --neutral: #56636F; --neutral-bg: #E6EAEE;
+  --info: #2B5E90; --info-bg: #E2EBF4;
+
+  /* Type: the system face for reading, the system monospace for ids, commands, dates and locations. */
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0E141A;
+    --surface: #172029;
+    --sunk: #111920;
+    --ink: #E4EBF1;
+    --muted: #9CA9B5;
+    --faint: #73818E;
+    --line: #27333E;
+    --line-strong: #3B4956;
+    --accent: #8DB9E6;
+    --accent-soft: #1C2C3D;
+    --shadow-tint: rgba(0, 0, 0, 0.32);
+    --grade-a: #62CC92; --grade-a-ink: #04261A;
+    --grade-b: #5EC2C8; --grade-b-ink: #03282B;
+    --grade-c: #EFC261; --grade-c-ink: #2E1E00;
+    --grade-d: #F19459; --grade-d-ink: #2E1000;
+    --grade-f: #F27D8C; --grade-f-ink: #33060E;
+    --grade-none: #2A3642; --grade-none-ink: #9CA9B5;
+    --sev-critical: #FF9EB5; --sev-critical-bg: #45182A;
+    --sev-high: #FFAB86; --sev-high-bg: #44200F;
+    --sev-medium: #F1C96A; --sev-medium-bg: #3B2E0D;
+    --sev-low: #AFC6DB; --sev-low-bg: #1E2D3A;
+    --hardening: #C6B9F2; --hardening-bg: #2A2446;
+    --fresh: #5CC98C;
+    --aging: #E9B648;
+    --stale: #F0776E;
+    --absent: #4D5C69;
+    --ok: #62CC92; --ok-bg: #143323;
+    --bad: #F27D8C; --bad-bg: #3E1820;
+    --warn: #F1C96A; --warn-bg: #3B2E0D;
+    --neutral: #9CA9B5; --neutral-bg: #222D37;
+    --info: #8DB9E6; --info-bg: #1C2C3D;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0E141A;
+  --surface: #172029;
+  --sunk: #111920;
+  --ink: #E4EBF1;
+  --muted: #9CA9B5;
+  --faint: #73818E;
+  --line: #27333E;
+  --line-strong: #3B4956;
+  --accent: #8DB9E6;
+  --accent-soft: #1C2C3D;
+  --shadow-tint: rgba(0, 0, 0, 0.32);
+  --grade-a: #62CC92; --grade-a-ink: #04261A;
+  --grade-b: #5EC2C8; --grade-b-ink: #03282B;
+  --grade-c: #EFC261; --grade-c-ink: #2E1E00;
+  --grade-d: #F19459; --grade-d-ink: #2E1000;
+  --grade-f: #F27D8C; --grade-f-ink: #33060E;
+  --grade-none: #2A3642; --grade-none-ink: #9CA9B5;
+  --sev-critical: #FF9EB5; --sev-critical-bg: #45182A;
+  --sev-high: #FFAB86; --sev-high-bg: #44200F;
+  --sev-medium: #F1C96A; --sev-medium-bg: #3B2E0D;
+  --sev-low: #AFC6DB; --sev-low-bg: #1E2D3A;
+  --hardening: #C6B9F2; --hardening-bg: #2A2446;
+  --fresh: #5CC98C;
+  --aging: #E9B648;
+  --stale: #F0776E;
+  --absent: #4D5C69;
+  --ok: #62CC92; --ok-bg: #143323;
+  --bad: #F27D8C; --bad-bg: #3E1820;
+  --warn: #F1C96A; --warn-bg: #3B2E0D;
+  --neutral: #9CA9B5; --neutral-bg: #222D37;
+  --info: #8DB9E6; --info-bg: #1C2C3D;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-text-size-adjust: 100%;
+}
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+p { margin: 0; }
+a { color: var(--accent); }
+button, select { font: inherit; }
+code, .mono { font-family: var(--font-mono); }
+code { font-size: 0.92em; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.muted { color: var(--muted); }
+.label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted);
+}
+
+.wrap {
+  max-width: 1240px;
+  margin-inline: auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+
+/* ---- masthead ---- */
+.masthead { background: var(--surface); border-bottom: 1px solid var(--line); }
+.masthead-inner {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap;
+  padding-block: 14px;
+}
+.brand { display: flex; align-items: center; gap: 9px; }
+.brand-mark { width: 22px; height: 22px; color: var(--accent); flex: none; }
+.brand-name { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; }
+.masthead-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.mode {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--accent); background: var(--accent-soft); padding: 3px 9px; border-radius: 999px;
+}
+
+main { padding-block: 28px 56px; }
+
+/* ---- shared pieces ---- */
+.view-head {
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 12px 16px; flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.view-title { font-size: 24px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.2; }
+.view-sub { margin-top: 4px; color: var(--muted); max-width: 65ch; }
+
+.score { display: flex; align-items: center; gap: 12px; flex: none; }
+.score-figures { display: grid; justify-items: end; gap: 3px; }
+.score-line { display: flex; align-items: baseline; gap: 3px; }
+.score-value { font-size: 26px; font-weight: 700; line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.score-scale { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* position: relative keeps the hidden label inside the tile, so a tile scrolled out of the row cannot widen the page. */
+.trend { position: relative; display: inline-flex; align-items: center; gap: 3px; font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.trend-up { color: var(--ok); }
+.trend-down { color: var(--bad); }
+.trend-flat { color: var(--muted); }
+
+.grade {
+  display: inline-grid; place-items: center; flex: none;
+  width: 48px; height: 48px; border-radius: 10px;
+  font-size: 28px; font-weight: 800; line-height: 1; letter-spacing: -0.02em;
+}
+.grade-sm { width: 28px; height: 28px; border-radius: 6px; font-size: 15px; }
+.grade-A { background: var(--grade-a); color: var(--grade-a-ink); }
+.grade-B { background: var(--grade-b); color: var(--grade-b-ink); }
+.grade-C { background: var(--grade-c); color: var(--grade-c-ink); }
+.grade-D { background: var(--grade-d); color: var(--grade-d-ink); }
+.grade-F { background: var(--grade-f); color: var(--grade-f-ink); }
+.grade-none { background: var(--grade-none); color: var(--grade-none-ink); }
+
+/* Open findings by severity, with the hardening count beside the heading. */
+.findings-block { display: grid; gap: 8px; }
+.block-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hardening-pill {
+  font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+  color: var(--hardening); background: var(--hardening-bg); padding: 2px 9px; border-radius: 999px;
+}
+.hardening-pill.is-zero { color: var(--muted); background: var(--sunk); }
+.counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 0; }
+.count {
+  display: flex; flex-direction: column-reverse; gap: 2px; min-width: 0;
+  padding: 8px; border-radius: 8px; background: var(--sunk);
+}
+.count dt {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.count dd { margin: 0; font-size: 20px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--faint); }
+.count.has.count-critical { background: var(--sev-critical-bg); }
+.count.has.count-high { background: var(--sev-high-bg); }
+.count.has.count-medium { background: var(--sev-medium-bg); }
+.count.has.count-low { background: var(--sev-low-bg); }
+.count.has.count-critical dt, .count.has.count-critical dd { color: var(--sev-critical); }
+.count.has.count-high dt, .count.has.count-high dd { color: var(--sev-high); }
+.count.has.count-medium dt, .count.has.count-medium dd { color: var(--sev-medium); }
+.count.has.count-low dt, .count.has.count-low dd { color: var(--sev-low); }
+
+/* Freshness strip: one segment per layer. Fresh is solid, aging striped, stale or never run hollow, not declared dashed. */
+.strip { display: inline-grid; grid-template-columns: repeat(4, 32px); gap: 3px; flex: none; }
+.seg { display: grid; gap: 3px; justify-items: center; }
+.seg-bar { display: block; width: 100%; height: 8px; border-radius: 2px; }
+.seg-label { font-family: var(--font-mono); font-size: 9.5px; line-height: 1; color: var(--muted); }
+.seg-fresh .seg-bar { background: var(--fresh); }
+.seg-aging .seg-bar {
+  background: repeating-linear-gradient(135deg, var(--aging) 0 3px, transparent 3px 5px);
+  box-shadow: inset 0 0 0 1px var(--aging);
+}
+.seg-stale .seg-bar, .seg-never .seg-bar { box-shadow: inset 0 0 0 2px var(--stale); }
+.seg-absent .seg-bar { border: 1px dashed var(--absent); }
+.seg-absent .seg-label { color: var(--faint); }
+
+/* Copy-command buttons: drawn as unavailable (static mode cannot queue a job), still clickable to copy. */
+.actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.action {
+  font-size: 12px; line-height: 1.3; padding: 3px 9px; border-radius: 6px;
+  border: 1px dashed var(--line-strong); background: transparent; color: var(--muted); cursor: copy;
+}
+.action:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---- tiles ---- */
+.carousel-nav { display: flex; gap: 8px; }
+.nav-btn {
+  display: grid; place-items: center; width: 36px; height: 36px; padding: 0;
+  border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--ink);
+  font-size: 20px; line-height: 1; cursor: pointer;
+}
+.nav-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.nav-btn:disabled { opacity: 0.4; cursor: default; }
+
+.carousel {
+  list-style: none; margin: 0;
+  display: grid; grid-auto-flow: column; grid-auto-columns: 340px; gap: 16px;
+  overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x mandatory; scroll-padding-inline: 4px;
+  padding: 4px 4px 14px;
+  scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent;
+}
+.carousel > li { display: flex; min-width: 0; scroll-snap-align: start; }
+
+.card {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 16px;
+  padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+  box-shadow: 0 1px 2px var(--shadow-tint), 0 6px 18px var(--shadow-tint);
+  cursor: pointer; transition: border-color 0.15s ease;
+}
+.card:hover { border-color: var(--line-strong); }
+.card:focus-within { border-color: var(--accent); }
+.card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.card-title { min-width: 0; }
+.card-name { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.25; }
+.card-link { color: inherit; text-decoration: none; border-radius: 3px; }
+.card-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.card-slug { margin-top: 3px; font-family: var(--font-mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+
+.systems-block { display: grid; gap: 8px; }
+.systems { list-style: none; margin: 0; padding: 0; display: grid; }
+.system { display: grid; gap: 7px; padding-block: 10px; border-top: 1px solid var(--line); }
+.system:last-child { padding-bottom: 0; }
+.system-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.system-name { min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.system-id { margin-left: 6px; font-family: var(--font-mono); font-size: 12px; font-weight: 400; color: var(--muted); }
+
+.card-meta { margin-top: auto; display: grid; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.card-reviewed time { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.card-foot { padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; color: var(--faint); overflow-wrap: anywhere; }
+
+.legend {
+  list-style: none; margin: 14px 0 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 12px; color: var(--muted);
+}
+.legend li { display: flex; align-items: center; gap: 7px; }
+.legend .seg { width: 24px; }
+
+/* ---- project detail ---- */
+.detail-bar { margin-bottom: 18px; }
+.back {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px 6px 9px;
+  border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--ink);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.back:hover { border-color: var(--accent); color: var(--accent); }
+.detail-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  padding-bottom: 20px; border-bottom: 1px solid var(--line);
+}
+.detail-title { min-width: 0; }
+.detail-title h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
+.detail-title h1:focus { outline: none; }
+.detail-meta { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--muted); }
+.detail-summary { margin-top: 20px; max-width: 520px; }
+
+.block { margin-top: 36px; display: grid; gap: 12px; min-width: 0; }
+.block-head { display: grid; gap: 4px; }
+.block-title { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+.block-sub { color: var(--muted); max-width: 72ch; }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th {
+  padding: 9px 12px; text-align: left; white-space: nowrap; vertical-align: bottom;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+  background: var(--sunk); border-bottom: 1px solid var(--line);
+}
+tbody th, tbody td { padding: 10px 12px; text-align: left; vertical-align: top; border-top: 1px solid var(--line); }
+tbody tr:first-child th, tbody tr:first-child td { border-top: 0; }
+tbody th { font-weight: 400; }
+th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.nowrap { white-space: nowrap; }
+.of { color: var(--muted); font-size: 12px; }
+
+.sys-cell { min-width: 170px; }
+/* The system column stays put while the sheet scrolls sideways on a narrow screen. */
+.sheet thead th:first-child, .sheet tbody th { position: sticky; left: 0; z-index: 1; box-shadow: inset -1px 0 0 var(--line); }
+.sheet thead th:first-child { background: var(--sunk); }
+.sheet tbody th { background: var(--surface); }
+.sys-name { display: block; font-weight: 600; }
+.sys-sub { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
+
+.layer-cell { display: grid; gap: 3px; min-width: 124px; }
+.layer-top { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
+.layer-cell .seg-bar { width: 28px; flex: none; }
+.layer-state { font-size: 12px; font-weight: 600; }
+.layer-state .of { font-weight: 400; }
+.layer-dates { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.layer-dates.overdue { color: var(--bad); }
+.layer-action { margin-top: 4px; }
+
+.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px 12px; }
+.filter { display: grid; gap: 5px; min-width: 0; }
+.filter select {
+  width: 100%; min-width: 0; padding: 7px 10px; font-size: 13px;
+  border: 1px solid var(--line-strong); border-radius: 8px; background-color: var(--surface); color: var(--ink);
+}
+.filter-tools { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.link-btn {
+  padding: 0; border: 0; background: none; color: var(--accent); cursor: pointer;
+  text-decoration: underline; text-underline-offset: 3px;
+}
+
+.id { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+.sev { display: inline-block; padding: 2px 7px; border-radius: 5px; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
+.sev-critical { color: var(--sev-critical); background: var(--sev-critical-bg); }
+.sev-high { color: var(--sev-high); background: var(--sev-high-bg); }
+.sev-medium { color: var(--sev-medium); background: var(--sev-medium-bg); }
+.sev-low { color: var(--sev-low); background: var(--sev-low-bg); }
+.sev-unknown { color: var(--neutral); background: var(--neutral-bg); }
+.cls { font-size: 12px; white-space: nowrap; }
+.cls-verified { font-weight: 600; }
+.cls-tool { color: var(--muted); }
+.cls-hardening { color: var(--hardening); font-weight: 600; }
+.status { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.status-open, .status-failed { color: var(--bad); background: var(--bad-bg); }
+.status-regressed { color: var(--bad); background: var(--bad-bg); box-shadow: inset 0 0 0 1px var(--bad); }
+.status-fixed, .status-done { color: var(--ok); background: var(--ok-bg); }
+.status-accepted_risk { color: var(--warn); background: var(--warn-bg); }
+.status-false_positive, .status-skipped, .status-unknown { color: var(--neutral); background: var(--neutral-bg); }
+.status-running { color: var(--info); background: var(--info-bg); }
+tr.is-closed td { color: var(--muted); }
+
+.title-cell { min-width: 260px; max-width: 460px; }
+.title-cell summary { cursor: pointer; font-weight: 600; color: var(--ink); }
+.title-cell summary:hover { color: var(--accent); }
+.finding-details {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 5px 12px;
+  margin: 10px 0 2px; font-size: 12.5px;
+}
+.finding-details dt { color: var(--muted); }
+.finding-details dd { margin: 0; overflow-wrap: anywhere; color: var(--ink); }
+.loc { min-width: 180px; max-width: 320px; font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
+.empty-row td { padding: 24px 12px; text-align: center; color: var(--muted); }
+.run-reason { display: block; margin-top: 4px; max-width: 280px; font-size: 12px; color: var(--muted); }
+.run-counts { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ---- empty state ---- */
+.empty {
+  max-width: 640px; margin: 40px auto 0; display: grid; gap: 12px;
+  padding: 28px; border: 1px dashed var(--line-strong); border-radius: 14px; background: var(--surface);
+}
+.empty-title { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.3; }
+.empty code, .empty-hint code { padding: 1px 6px; border-radius: 6px; background: var(--sunk); }
+.empty-hint { color: var(--muted); max-width: 65ch; }
+
+/* ---- toast and the copy fallback ---- */
+.toast {
+  position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); z-index: 20;
+  width: max-content;
+  max-width: calc(100% - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+  padding: 10px 14px; border-radius: 8px; background: var(--ink); color: var(--surface);
+  font-size: 13px; overflow-wrap: anywhere; box-shadow: 0 8px 24px var(--shadow-tint);
+  opacity: 0; transform: translate(-50%, 8px); pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.toast.is-on { opacity: 1; transform: translate(-50%, 0); }
+.toast code { margin-left: 4px; }
+.copy-fallback {
+  position: fixed; top: 0; left: 0; width: 1px; height: 1px; padding: 0; border: 0;
+  opacity: 0; pointer-events: none;
+}
+
+@media (max-width: 640px) {
+  main { padding-block: 20px 48px; }
+  .view-title { font-size: 21px; }
+  .detail-title h1 { font-size: 23px; }
+  .carousel {
+    grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: minmax(0, 1fr);
+    overflow-x: visible; scroll-snap-type: none; padding: 0;
+  }
+  .carousel-nav { display: none; }
+  .card { padding: 16px; }
+  .empty { padding: 22px; margin-top: 16px; }
+  .empty-title { font-size: 19px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
+}
+</style>
+
+<header class="masthead">
+  <div class="wrap masthead-inner">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" d="M2 21V4h4v3h3V4h6v3h3V4h4v17h-7v-4a3 3 0 0 0-6 0v4z"/></svg>
+      <span class="brand-name">Rampart</span>
+    </div>
+    <p class="masthead-meta" id="masthead-meta" hidden></p>
+  </div>
+</header>
+
+<main class="wrap">
+  <section id="empty-view" class="empty" aria-labelledby="empty-heading">
+    <h1 id="empty-heading" class="empty-title">No data yet — run <code>/rampart dashboard</code></h1>
+    <p class="empty-hint">This page shows the projects, grades and findings in your Rampart store once the dashboard job fills it in.</p>
+    <p class="empty-hint" id="empty-hint-store" hidden>The store has no projects yet. Add one with <code>/rampart inventory</code>, then run <code>/rampart dashboard</code> again.</p>
+    <p class="empty-hint" id="empty-hint-error" hidden>This snapshot could not be shown. Run <code>/rampart dashboard</code> to render it again.</p>
+  </section>
+
+  <section id="tiles-view" aria-labelledby="tiles-heading" hidden>
+    <div class="view-head">
+      <div>
+        <h1 id="tiles-heading" class="view-title">Projects</h1>
+        <p class="view-sub">Grade, open findings and audit freshness for each project. Open a tile for its score sheet.</p>
+      </div>
+      <div class="carousel-nav" id="carousel-nav">
+        <button type="button" class="nav-btn" id="carousel-prev" aria-label="Previous project" aria-controls="carousel">‹</button>
+        <button type="button" class="nav-btn" id="carousel-next" aria-label="Next project" aria-controls="carousel">›</button>
+      </div>
+    </div>
+    <ul class="carousel" id="carousel" aria-label="Projects"></ul>
+    <ul class="legend" aria-label="Layer freshness">
+      <li><span class="seg seg-fresh" aria-hidden="true"><span class="seg-bar"></span></span>Fresh: audited within its cadence</li>
+      <li><span class="seg seg-aging" aria-hidden="true"><span class="seg-bar"></span></span>Aging: within two cadences</li>
+      <li><span class="seg seg-stale" aria-hidden="true"><span class="seg-bar"></span></span>Stale or never run</li>
+      <li><span class="seg seg-absent" aria-hidden="true"><span class="seg-bar"></span></span>Not declared for the system</li>
+    </ul>
+  </section>
+
+  <section id="detail-view" hidden></section>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<input id="copy-fallback" class="copy-fallback" type="text" readonly tabindex="-1" aria-hidden="true">
+
+<script id="rampart-data" type="application/json"></script>
+<script>
+// Rampart dashboard. loadData() reads the inline #rampart-data slot (static mode, filled by scripts/render-static.cjs);
+// render(data) draws whatever it is given. Live mode (Plan 3) replaces loadData and calls render again on each update.
+// Every element is built from nodes and text, never from markup strings, so nothing in the data is parsed as HTML.
+const RampartDashboard = (function () {
+  'use strict';
+
+  const LAYERS = ['L1', 'L2', 'L3', 'INFRA'];
+  const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+  const CLASSES = ['verified', 'tool', 'hardening'];
+  const STATUSES = ['open', 'regressed', 'fixed', 'false_positive', 'accepted_risk'];
+  const RUN_STATUSES = ['running', 'done', 'skipped', 'failed'];
+  const ACTIVE = ['open', 'regressed'];
+  const GRADES = ['A', 'B', 'C', 'D', 'F'];
+  const ACTION_LABELS = Object.freeze({ L1: 'Run L1', L2: 'Run L2', L3: 'Run L3', INFRA: 'Probe infra' });
+  const DEFAULT_FILTERS = Object.freeze({ system: 'all', severity: 'all', status: 'active', class: 'all' });
+  const SEVERITY_LABELS = { CRITICAL: 'Critical', HIGH: 'High', MEDIUM: 'Medium', LOW: 'Low' };
+  const CLASS_LABELS = { verified: 'Verified', tool: 'Tool', hardening: 'Hardening' };
+  const STATUS_LABELS = {
+    open: 'Open', regressed: 'Regressed', fixed: 'Fixed', false_positive: 'False positive', accepted_risk: 'Accepted risk',
+  };
+  const RUN_STATUS_LABELS = { running: 'Running', done: 'Done', skipped: 'Skipped', failed: 'Failed' };
+  const FRESHNESS_LABELS = { fresh: 'Fresh', aging: 'Aging', stale: 'Stale', never: 'Never run', absent: 'Not declared' };
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  const own = (obj, key) => obj !== null && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, key);
+  const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const list = (v) => (Array.isArray(v) ? v : []);
+  const known = (values, v, fallback) => (values.indexOf(v) !== -1 ? v : fallback);
+
+  // ---- what the data means (pure, no DOM) -------------------------------------------------
+
+  function isData(data) {
+    return isObject(data) && Array.isArray(data.projects);
+  }
+
+  function isEntry(entry) {
+    return isObject(entry) && isObject(entry.project) && typeof entry.project.slug === 'string' && isObject(entry.score);
+  }
+
+  const entriesOf = (data) => (isData(data) ? data.projects.filter(isEntry) : []);
+  const hasProjects = (data) => entriesOf(data).length > 0;
+  const isActive = (f) => isObject(f) && ACTIVE.indexOf(f.status) !== -1;
+
+  // Open and regressed findings by severity; hardening notes are counted on their own and never by severity.
+  function openCounts(findings) {
+    const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, hardening: 0 };
+    for (const f of list(findings)) {
+      if (!isActive(f)) continue;
+      if (f.class === 'hardening') counts.hardening += 1;
+      else if (SEVERITIES.indexOf(f.severity) !== -1) counts[f.severity] += 1;
+    }
+    return counts;
+  }
+
+  // From a layer's score entry: credit 1 fresh, 0.5 aging, 0 stale (or never run). No entry: the system does not declare it.
+  function freshness(layer) {
+    if (!isObject(layer)) return 'absent';
+    if (layer.credit >= 1) return 'fresh';
+    if (layer.credit >= 0.5) return 'aging';
+    return layer.lastRun ? 'stale' : 'never';
+  }
+
+  const timeOf = (iso) => {
+    const t = typeof iso === 'string' ? Date.parse(iso) : NaN;
+    return Number.isNaN(t) ? null : t;
+  };
+
+  // The latest lastRun over every layer of every system, or null.
+  function lastReviewed(score) {
+    let best = null;
+    let bestAt = -Infinity;
+    const systems = isObject(score) && isObject(score.systems) ? score.systems : {};
+    for (const id of Object.keys(systems)) {
+      const layers = isObject(systems[id]) && isObject(systems[id].layers) ? systems[id].layers : {};
+      for (const name of Object.keys(layers)) {
+        const at = timeOf(isObject(layers[name]) ? layers[name].lastRun : null);
+        if (at !== null && at > bestAt) {
+          best = layers[name].lastRun;
+          bestAt = at;
+        }
+      }
+    }
+    return best;
+  }
+
+  const arg = (value) => (/^[A-Za-z0-9._-]+$/.test(String(value)) ? String(value) : JSON.stringify(String(value)));
+
+  function auditCommand(layer, slug, systemId) {
+    return `/rampart audit ${layer} --project ${arg(slug)} --system ${arg(systemId)}`;
+  }
+
+  function formatLocation(loc) {
+    if (!isObject(loc)) return '';
+    if (typeof loc.package === 'string') {
+      return loc.package + (loc.ecosystem ? ` (${loc.ecosystem})` : '') + (loc.path ? ` in ${loc.path}` : '');
+    }
+    if (typeof loc.path === 'string') return loc.path + (Number.isInteger(loc.line) ? `:${loc.line}` : '');
+    if (typeof loc.host === 'string') return [loc.host, loc.service, loc.setting].filter(Boolean).join(' · ');
+    if (typeof loc.url === 'string') return [loc.url, loc.header].filter(Boolean).join(' · ');
+    return '';
+  }
+
+  // View state in the hash as one plain anchor token: p-<slug>, then ~<filter>.<value> for each filter off its default.
+  const encodePart = (value) =>
+    encodeURIComponent(String(value)).replace(/[~!*'()]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+
+  function decodePart(text) {
+    try {
+      return decodeURIComponent(text);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function parseHash(hash) {
+    const filters = Object.assign({}, DEFAULT_FILTERS);
+    const parts = String(hash || '').replace(/^#/, '').split('~');
+    const head = parts.shift();
+    const slug = head.indexOf('p-') === 0 && head.length > 2 ? decodePart(head.slice(2)) : null;
+    if (!slug) return { slug: null, filters };
+    for (const part of parts) {
+      const dot = part.indexOf('.');
+      if (dot < 1) continue;
+      const key = part.slice(0, dot);
+      if (!own(DEFAULT_FILTERS, key)) continue;
+      const value = decodePart(part.slice(dot + 1));
+      if (value) filters[key] = value;
+    }
+    return { slug, filters };
+  }
+
+  function buildHash(state) {
+    if (!isObject(state) || !state.slug) return '';
+    const filters = isObject(state.filters) ? state.filters : {};
+    let out = `p-${encodePart(state.slug)}`;
+    for (const key of Object.keys(DEFAULT_FILTERS)) {
+      const value = filters[key];
+      if (typeof value === 'string' && value !== '' && value !== DEFAULT_FILTERS[key]) out += `~${key}.${encodePart(value)}`;
+    }
+    return out;
+  }
+
+  // status 'active' means open or regressed; 'all' and the other filters' 'all' match everything.
+  function filterFindings(findings, filters) {
+    const f = Object.assign({}, DEFAULT_FILTERS, filters);
+    return list(findings).filter((x) => {
+      if (!isObject(x)) return false;
+      if (f.system !== 'all' && x.system !== f.system) return false;
+      if (f.severity !== 'all' && x.severity !== f.severity) return false;
+      if (f.class !== 'all' && x.class !== f.class) return false;
+      if (f.status === 'active') return isActive(x);
+      return f.status === 'all' || x.status === f.status;
+    });
+  }
+
+  // Open first, hardening after the rest, then by severity, class, most recently seen and id.
+  function sortFindings(findings) {
+    const rank = (values, v) => (values.indexOf(v) === -1 ? values.length : values.indexOf(v));
+    return list(findings).slice().sort((a, b) =>
+      Number(isActive(b)) - Number(isActive(a)) ||
+      Number(a.class === 'hardening') - Number(b.class === 'hardening') ||
+      rank(SEVERITIES, a.severity) - rank(SEVERITIES, b.severity) ||
+      rank(CLASSES, a.class) - rank(CLASSES, b.class) ||
+      (timeOf(b.lastSeen) || 0) - (timeOf(a.lastSeen) || 0) ||
+      String(a.id).localeCompare(String(b.id)));
+  }
+
+  const pad = (n) => String(n).padStart(2, '0');
+  const fmt1 = (n) => (typeof n === 'number' && Number.isFinite(n) ? n.toFixed(1) : '—');
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+  function day(iso) {
+    const t = timeOf(iso);
+    if (t === null) return '—';
+    const d = new Date(t);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+
+  function stamp(iso) {
+    const t = timeOf(iso);
+    if (t === null) return 'an unknown time';
+    try {
+      return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(t));
+    } catch (err) {
+      return new Date(t).toISOString();
+    }
+  }
+
+  function since(iso) {
+    const t = timeOf(iso);
+    if (t === null) return '';
+    const days = Math.floor((Date.now() - t) / DAY_MS);
+    if (days <= 0) return 'today';
+    return days === 1 ? 'yesterday' : `${days} days ago`;
+  }
+
+  // ---- DOM helpers -------------------------------------------------------------------------
+
+  function append(el, child) {
+    if (child === null || child === undefined || child === false) return;
+    if (Array.isArray(child)) {
+      child.forEach((c) => append(el, c));
+      return;
+    }
+    el.appendChild(typeof child === 'object' ? child : document.createTextNode(String(child)));
+  }
+
+  // h('td', {class: 'id', title: f.id}, f.id): attributes are set one by one and text goes in as text nodes.
+  function h(tag, props, ...children) {
+    const el = document.createElement(tag);
+    for (const key of Object.keys(props || {})) {
+      const value = props[key];
+      if (value === null || value === undefined || value === false) continue;
+      if (key === 'class') el.className = value;
+      else if (key === 'on') Object.keys(value).forEach((type) => el.addEventListener(type, value[type]));
+      else el.setAttribute(key, value === true ? '' : String(value));
+    }
+    append(el, children);
+    return el;
+  }
+
+  const $ = (id) => document.getElementById(id);
+
+  // ---- view state --------------------------------------------------------------------------
+
+  const state = { data: null, entries: [], view: null, slug: null, filters: Object.assign({}, DEFAULT_FILTERS), returnTo: null };
+
+  function show(view) {
+    state.view = view;
+    $('empty-view').hidden = view !== 'empty';
+    $('tiles-view').hidden = view !== 'tiles';
+    $('detail-view').hidden = view !== 'detail';
+  }
+
+  const currentEntry = () => state.entries.find((e) => e.project.slug === state.slug) || null;
+  const projectHref = (slug) => `#${buildHash({ slug, filters: DEFAULT_FILTERS })}`;
+
+  // ---- shared pieces -----------------------------------------------------------------------
+
+  function gradeBadge(grade, small) {
+    const g = known(GRADES, grade, null);
+    return h('span', {
+      class: `grade ${g ? `grade-${g}` : 'grade-none'}${small ? ' grade-sm' : ''}`,
+      role: 'img',
+      'aria-label': g ? `Grade ${g}` : 'No grade',
+      title: g ? `Grade ${g}` : 'No grade',
+    }, g || '?');
+  }
+
+  function trendMark(trend) {
+    if (typeof trend !== 'number' || !Number.isFinite(trend)) return null;
+    const dir = trend > 0 ? 'up' : trend < 0 ? 'down' : 'flat';
+    const size = Math.abs(trend).toFixed(1);
+    const words = { up: `Up ${size}`, down: `Down ${size}`, flat: 'No change' }[dir];
+    return h('span', { class: `trend trend-${dir}`, title: `${words} since the last saved score` },
+      h('span', { 'aria-hidden': 'true' }, { up: '↑', down: '↓', flat: '→' }[dir]),
+      h('span', { 'aria-hidden': 'true' }, dir === 'flat' ? '0.0' : `${dir === 'up' ? '+' : '−'}${size}`),
+      h('span', { class: 'sr-only' }, `${words} since the last saved score`));
+  }
+
+  function scoreBlock(score) {
+    return h('div', { class: 'score' },
+      h('div', { class: 'score-figures' },
+        h('span', { class: 'score-line' }, h('span', { class: 'score-value' }, fmt1(score.score)), h('span', { class: 'score-scale' }, '/100')),
+        trendMark(score.trend)),
+      gradeBadge(score.grade));
+  }
+
+  function countsBlock(findings) {
+    const c = openCounts(findings);
+    return h('div', { class: 'findings-block' },
+      h('div', { class: 'block-row' },
+        h('span', { class: 'label' }, 'Open findings'),
+        h('span', {
+          class: `hardening-pill${c.hardening ? '' : ' is-zero'}`,
+          title: 'Open hardening notes: counted here, never deducted from the score',
+        }, `Hardening ${c.hardening}`)),
+      h('dl', { class: 'counts' }, SEVERITIES.map((sev) =>
+        h('div', { class: `count count-${sev.toLowerCase()}${c[sev] ? ' has' : ''}` },
+          h('dt', null, SEVERITY_LABELS[sev]),
+          h('dd', null, String(c[sev]))))));
+  }
+
+  function layerInfo(systemScore, layer) {
+    const layers = isObject(systemScore) && isObject(systemScore.layers) ? systemScore.layers : {};
+    return own(layers, layer) ? layers[layer] : undefined;
+  }
+
+  function segmentTitle(layer, info) {
+    const st = freshness(info);
+    if (st === 'absent') return `${layer}: not declared for this system`;
+    const last = info.lastRun ? `last run ${day(info.lastRun)}` : 'never run';
+    const due = info.nextDue ? `due ${day(info.nextDue)}` : 'due now';
+    return `${layer}: ${FRESHNESS_LABELS[st].toLowerCase()}, ${last}, ${due}`;
+  }
+
+  function strip(systemScore) {
+    const summary = LAYERS.map((L) => `${L} ${FRESHNESS_LABELS[freshness(layerInfo(systemScore, L))].toLowerCase()}`).join(', ');
+    return h('span', { class: 'strip', role: 'img', 'aria-label': `Layer freshness: ${summary}` },
+      LAYERS.map((L) => {
+        const info = layerInfo(systemScore, L);
+        return h('span', { class: `seg seg-${freshness(info)}`, title: segmentTitle(L, info) },
+          h('span', { class: 'seg-bar' }),
+          h('span', { class: 'seg-label' }, L));
+      }));
+  }
+
+  const declaredLayers = (system) => LAYERS.filter((L) => isObject(system) && own(system.layers, L));
+
+  function actionButton(layer, slug, systemId) {
+    const command = auditCommand(layer, slug, systemId);
+    return h('button', {
+      type: 'button',
+      class: 'action',
+      'aria-disabled': 'true',
+      'aria-label': `${ACTION_LABELS[layer]}: copy the command`,
+      title: 'Copy command',
+      'data-command': command,
+      on: {
+        click: (event) => {
+          event.stopPropagation();
+          copyCommand(command, event.currentTarget);
+        },
+      },
+    }, ACTION_LABELS[layer]);
+  }
+
+  function actionGroup(slug, system) {
+    const layers = declaredLayers(system);
+    if (!layers.length) return h('span', { class: 'muted' }, 'No layers declared');
+    return h('div', { class: 'actions' }, layers.map((L) => actionButton(L, slug, system.id)));
+  }
+
+  function generatedLine() {
+    const data = state.data || {};
+    return ['Generated ', h('time', { datetime: data.generatedAt, title: data.generatedAt }, stamp(data.generatedAt)),
+      ' on ', h('span', { class: 'mono' }, String(data.machineId || 'an unknown machine'))];
+  }
+
+  // ---- tiles -------------------------------------------------------------------------------
+
+  function systemChip(slug, system, systemScore) {
+    const name = system.name || system.id;
+    return h('li', { class: 'system' },
+      h('div', { class: 'system-row' },
+        h('span', { class: 'system-name', title: `${name} (${system.id}, ${system.type})` }, name, h('span', { class: 'system-id' }, system.id)),
+        strip(systemScore)),
+      actionGroup(slug, system));
+  }
+
+  function card(entry) {
+    const p = entry.project;
+    const s = entry.score;
+    const systems = list(p.systems).filter(isObject);
+    const reviewed = lastReviewed(s);
+    const scores = isObject(s.systems) ? s.systems : {};
+    const article = h('article', { class: 'card', 'data-slug': p.slug },
+      h('div', { class: 'card-head' },
+        h('div', { class: 'card-title' },
+          h('h2', { class: 'card-name' }, h('a', {
+            class: 'card-link',
+            href: projectHref(p.slug),
+            on: {
+              click: (event) => {
+                if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                go(p.slug);
+              },
+            },
+          }, p.name || p.slug)),
+          h('p', { class: 'card-slug' }, p.slug)),
+        scoreBlock(s)),
+      countsBlock(entry.findings),
+      h('div', { class: 'systems-block' },
+        h('span', { class: 'label' }, 'Systems'),
+        systems.length
+          ? h('ul', { class: 'systems' }, systems.map((sys) => systemChip(p.slug, sys, scores[sys.id])))
+          : h('p', { class: 'muted' }, 'No systems in the inventory yet.')),
+      h('div', { class: 'card-meta' },
+        h('p', { class: 'card-reviewed' }, 'Last reviewed ',
+          reviewed ? [h('time', { datetime: reviewed, title: reviewed }, day(reviewed)), ` (${since(reviewed)})`] : 'never'),
+        h('p', { class: 'card-foot' }, generatedLine())));
+    article.addEventListener('click', (event) => {
+      if (event.target.closest('a, button, select, input, summary, label')) return;
+      if (String(window.getSelection ? window.getSelection() : '') !== '') return;
+      go(p.slug);
+    });
+    return article;
+  }
+
+  function renderTiles() {
+    $('carousel').replaceChildren(...state.entries.map((entry) => h('li', null, card(entry))));
+  }
+
+  const motion = () =>
+    (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
+
+  function updateNav() {
+    const rail = $('carousel');
+    const overflow = rail.scrollWidth > rail.clientWidth + 1;
+    $('carousel-nav').hidden = !overflow;
+    $('carousel-prev').disabled = rail.scrollLeft <= 1;
+    $('carousel-next').disabled = rail.scrollLeft + rail.clientWidth >= rail.scrollWidth - 1;
+  }
+
+  function scrollCards(dir) {
+    const rail = $('carousel');
+    const first = rail.firstElementChild;
+    if (!first) return;
+    const gap = parseFloat(getComputedStyle(rail).columnGap) || 0;
+    rail.scrollBy({ left: dir * (first.getBoundingClientRect().width + gap), behavior: motion() });
+  }
+
+  const cards = () => Array.from($('carousel').querySelectorAll('.card'));
+
+  function focusCard(el, smooth) {
+    el.scrollIntoView({ behavior: smooth ? motion() : 'auto', block: 'nearest', inline: 'start' });
+    const link = el.querySelector('.card-link');
+    if (link) link.focus({ preventScroll: true });
+  }
+
+  function firstVisible(all) {
+    const left = $('carousel').getBoundingClientRect().left;
+    const i = all.findIndex((c) => c.getBoundingClientRect().right > left + 8);
+    return i === -1 ? 0 : i;
+  }
+
+  // Left and right arrows step through the tiles, unless a form control has the keys.
+  function onKey(event) {
+    if (state.view !== 'tiles' || event.defaultPrevented) return;
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.target && event.target.closest && event.target.closest('input, select, textarea, [contenteditable]')) return;
+    const all = cards();
+    if (!all.length) return;
+    event.preventDefault();
+    let i = all.findIndex((c) => c.contains(document.activeElement));
+    if (i === -1) i = firstVisible(all);
+    const next = Math.max(0, Math.min(all.length - 1, i + (event.key === 'ArrowRight' ? 1 : -1)));
+    focusCard(all[next], true);
+  }
+
+  // ---- project detail ----------------------------------------------------------------------
+
+  function section(id, title, sub, ...children) {
+    return h('section', { class: 'block', 'aria-labelledby': `${id}-heading` },
+      h('div', { class: 'block-head' },
+        h('h2', { class: 'block-title', id: `${id}-heading` }, title),
+        sub ? h('p', { class: 'block-sub' }, sub) : null),
+      children);
+  }
+
+  // One layer of one system: freshness, last run, next due, and the button that copies the command to run it.
+  function layerCell(layer, info, system, slug) {
+    const st = freshness(info);
+    if (st === 'absent') {
+      return h('div', { class: 'layer-cell seg-absent', title: segmentTitle(layer, info) },
+        h('span', { class: 'layer-top' }, h('span', { class: 'seg-bar' }), h('span', { class: 'layer-state muted' }, 'Not declared')));
+    }
+    const cadence = isObject(system.layers) && isObject(system.layers[layer]) ? system.layers[layer].cadenceDays : null;
+    const due = timeOf(info.nextDue);
+    const late = !info.lastRun || (due !== null && due < Date.now());
+    let dueText = 'Due now';
+    if (info.nextDue) dueText = due !== null && due < Date.now() ? `Overdue since ${day(info.nextDue)}` : `Due ${day(info.nextDue)}`;
+    return h('div', { class: `layer-cell seg-${st}`, title: `${segmentTitle(layer, info)}${cadence ? `, every ${cadence} days` : ''}` },
+      h('span', { class: 'layer-top' },
+        h('span', { class: 'seg-bar' }),
+        h('span', { class: 'layer-state' }, FRESHNESS_LABELS[st], cadence ? h('span', { class: 'of' }, ` · ${cadence} d`) : null)),
+      h('span', { class: 'layer-dates' }, info.lastRun ? `Last ${day(info.lastRun)}` : 'No successful run'),
+      h('span', { class: `layer-dates${late ? ' overdue' : ''}` }, dueText),
+      h('span', { class: 'layer-action' }, actionButton(layer, slug, system.id)));
+  }
+
+  function sheetSection(entry) {
+    const p = entry.project;
+    const scores = isObject(entry.score.systems) ? entry.score.systems : {};
+    const systems = list(p.systems).filter(isObject);
+    const layers = LAYERS.filter((L) => systems.some((sys) => own(sys.layers, L)));
+    const head = h('tr', null,
+      h('th', { scope: 'col' }, 'System'),
+      h('th', { scope: 'col' }, 'Grade'),
+      h('th', { scope: 'col', class: 'num' }, 'Score'),
+      h('th', { scope: 'col', class: 'num' }, 'Coverage'),
+      h('th', { scope: 'col', class: 'num' }, 'Findings'),
+      h('th', { scope: 'col', class: 'num' }, 'Hardening'),
+      layers.map((L) => h('th', { scope: 'col' }, L)));
+    const rows = systems.map((sys) => {
+      const sc = isObject(scores[sys.id]) ? scores[sys.id] : {};
+      return h('tr', null,
+        h('th', { scope: 'row', class: 'sys-cell' },
+          h('span', { class: 'sys-name' }, sys.name || sys.id),
+          h('span', { class: 'sys-sub' }, h('span', { class: 'mono' }, sys.id), ` · ${sys.type}${sys.criticality ? ` · ${sys.criticality}` : ''}`)),
+        h('td', null, gradeBadge(sc.grade, true)),
+        h('td', { class: 'num' }, fmt1(sc.score)),
+        h('td', { class: 'num' }, fmt1(sc.coverage), h('span', { class: 'of' }, ' / 40')),
+        h('td', { class: 'num' }, fmt1(sc.findingsScore), h('span', { class: 'of' }, ' / 60')),
+        h('td', { class: 'num' }, typeof sc.hardening === 'number' ? String(sc.hardening) : '—'),
+        layers.map((L) => h('td', null, layerCell(L, layerInfo(sc, L), sys, p.slug))));
+    });
+    const body = rows.length
+      ? rows
+      : h('tr', { class: 'empty-row' }, h('td', { colspan: String(6 + layers.length) }, 'No systems in the inventory yet.'));
+    return section('sheet', 'Score sheet',
+      'Coverage (40 points) credits each layer audited within its cadence. Findings (60 points) loses points for every open finding; hardening notes are counted but cost nothing. Each layer\'s button copies the command that runs it.',
+      h('div', { class: 'table-wrap' }, h('table', { class: 'sheet' }, h('thead', null, head), h('tbody', null, body))));
+  }
+
+  function systemOptions(entry) {
+    const seen = new Map();
+    for (const sys of list(entry.project.systems).filter(isObject)) seen.set(String(sys.id), sys.name || sys.id);
+    for (const f of list(entry.findings)) if (isObject(f) && !seen.has(String(f.system))) seen.set(String(f.system), String(f.system));
+    return Array.from(seen.entries());
+  }
+
+  function normalizeFilters(entry, filters) {
+    const allowed = {
+      system: ['all'].concat(systemOptions(entry).map(([id]) => id)),
+      severity: ['all'].concat(SEVERITIES),
+      status: ['active', 'all'].concat(STATUSES),
+      class: ['all'].concat(CLASSES),
+    };
+    const out = {};
+    for (const key of Object.keys(DEFAULT_FILTERS)) out[key] = known(allowed[key], filters[key], DEFAULT_FILTERS[key]);
+    return out;
+  }
+
+  function filterSelect(key, label, options) {
+    const id = `filter-${key}`;
+    const select = h('select', { id, name: key, on: { change: (event) => setFilter(key, event.target.value) } },
+      options.map(([value, text]) => h('option', { value }, text)));
+    select.value = state.filters[key];
+    return h('div', { class: 'filter' }, h('label', { class: 'label', for: id }, label), select);
+  }
+
+  function dispositionText(d) {
+    if (!isObject(d)) return '';
+    const what = STATUS_LABELS[d.status] || String(d.status || '');
+    const who = [d.by, d.at ? day(d.at) : null].filter(Boolean).join(', ');
+    return `${what}${d.reason ? `: ${d.reason}` : ''}${who ? ` (${who})` : ''}`;
+  }
+
+  function findingDetails(f, disposition) {
+    const v = isObject(f.verification) ? f.verification : null;
+    const rows = [
+      ['Rule', f.ruleId, 'mono'],
+      ['Layer', f.layer],
+      ['Source', f.source],
+      ['Confidence', f.confidence ? String(f.confidence).toLowerCase() : null],
+      ['CWE', list(f.cwe).length ? list(f.cwe).join(', ') : null],
+      ['Evidence', f.evidence],
+      ['Exploit scenario', f.exploitScenario],
+      ['Preconditions', f.preconditions],
+      ['Recommendation', f.recommendation],
+      ['Verification', v ? `${v.confirmed} of ${v.verifiers} verifiers confirmed` : null],
+      ['First seen', f.firstSeen ? day(f.firstSeen) : null],
+      ['Decision', disposition ? dispositionText(disposition) : null],
+    ].filter((row) => row[1] !== null && row[1] !== undefined && row[1] !== '');
+    return h('details', null,
+      h('summary', null, f.title || f.ruleId || f.id),
+      h('dl', { class: 'finding-details' }, rows.map(([k, value, cls]) => [h('dt', null, k), h('dd', cls ? { class: cls } : null, String(value))])));
+  }
+
+  function findingRow(f, disposition) {
+    const sev = known(SEVERITIES, f.severity, null);
+    const cls = known(CLASSES, f.class, null);
+    const status = known(STATUSES, f.status, null);
+    return h('tr', { class: isActive(f) ? 'is-active' : 'is-closed' },
+      h('td', { class: 'id' }, String(f.id)),
+      h('td', null, h('span', { class: `sev sev-${sev ? sev.toLowerCase() : 'unknown'}` }, sev ? SEVERITY_LABELS[sev] : String(f.severity))),
+      h('td', null, h('span', { class: `cls cls-${cls || 'unknown'}` }, cls ? CLASS_LABELS[cls] : String(f.class))),
+      h('td', { class: 'mono nowrap' }, String(f.system)),
+      h('td', { class: 'title-cell' }, findingDetails(f, disposition)),
+      h('td', { class: 'loc' }, formatLocation(f.location)),
+      h('td', null, h('span', {
+        class: `status status-${status || 'unknown'}`,
+        title: disposition ? dispositionText(disposition) : null,
+      }, status ? STATUS_LABELS[status] : String(f.status))),
+      h('td', { class: 'nowrap num' }, f.lastSeen ? h('time', { datetime: f.lastSeen, title: f.lastSeen }, day(f.lastSeen)) : '—'));
+  }
+
+  function renderFindingRows(entry) {
+    const body = $('findings-body');
+    if (!body || !entry) return;
+    const all = list(entry.findings).filter(isObject);
+    const shown = sortFindings(filterFindings(all, state.filters));
+    const dispositions = isObject(entry.dispositions) ? entry.dispositions : {};
+    body.replaceChildren(...(shown.length
+      ? shown.map((f) => findingRow(f, own(dispositions, f.id) ? dispositions[f.id] : null))
+      : [h('tr', { class: 'empty-row' }, h('td', { colspan: '8' }, all.length ? 'No findings match these filters.' : 'No findings recorded for this project.'))]));
+    $('findings-count').textContent = `Showing ${shown.length} of ${plural(all.length, 'finding', 'findings')}`;
+    $('clear-filters').hidden = Object.keys(DEFAULT_FILTERS).every((k) => state.filters[k] === DEFAULT_FILTERS[k]);
+  }
+
+  function findingsSection(entry) {
+    const controls = h('div', { class: 'filters' },
+      filterSelect('system', 'System', [['all', 'All systems']].concat(systemOptions(entry).map(([id, name]) => [id, name === id ? id : `${name} (${id})`]))),
+      filterSelect('severity', 'Severity', [['all', 'All severities']].concat(SEVERITIES.map((s) => [s, SEVERITY_LABELS[s]]))),
+      filterSelect('status', 'Status', [['active', 'Open and regressed'], ['all', 'All statuses']].concat(STATUSES.map((s) => [s, STATUS_LABELS[s]]))),
+      filterSelect('class', 'Class', [['all', 'All classes']].concat(CLASSES.map((c) => [c, CLASS_LABELS[c]]))));
+    const tools = h('div', { class: 'filter-tools' },
+      h('span', { id: 'findings-count', 'aria-live': 'polite' }),
+      h('button', { type: 'button', class: 'link-btn', id: 'clear-filters', on: { click: clearFilters } }, 'Clear filters'));
+    const head = h('tr', null, ['ID', 'Severity', 'Class', 'System', 'Title', 'Location', 'Status', 'Last seen']
+      .map((t) => h('th', { scope: 'col', class: t === 'Last seen' ? 'num' : null }, t)));
+    return section('findings', 'Findings', 'Open a title for its evidence and recommendation.',
+      controls, tools,
+      h('div', { class: 'table-wrap' }, h('table', { class: 'findings' }, h('thead', null, head), h('tbody', { id: 'findings-body' }))));
+  }
+
+  function countsText(counts) {
+    if (!isObject(counts)) return '—';
+    const parts = ['added', 'updated', 'unchanged', 'hardening', 'closed']
+      .filter((k) => typeof counts[k] === 'number')
+      .map((k) => `${counts[k]} ${k}`);
+    return parts.length ? parts.join(' · ') : '—';
+  }
+
+  function runsSection(entry) {
+    const runs = list(entry.runs).filter(isObject).slice().sort((a, b) => String(b.runId).localeCompare(String(a.runId)));
+    if (!runs.length) return section('runs', 'Run history', null, h('p', { class: 'muted' }, 'No runs recorded yet.'));
+    const head = h('tr', null, ['Run', 'Job', 'Layers', 'Systems', 'Status', 'Counts'].map((t) => h('th', { scope: 'col' }, t)));
+    const rows = runs.map((r) => {
+      const status = known(RUN_STATUSES, r.status, null);
+      const when = [r.startedAt ? `started ${stamp(r.startedAt)}` : null, r.finishedAt ? `finished ${stamp(r.finishedAt)}` : null].filter(Boolean).join(', ');
+      return h('tr', null,
+        h('td', { class: 'id', title: when || null }, String(r.runId)),
+        h('td', null, String(r.job || '—')),
+        h('td', { class: 'mono nowrap' }, list(r.layers).join(' ') || '—'),
+        h('td', { class: 'mono' }, list(r.systems).join(', ') || '—'),
+        h('td', null,
+          h('span', { class: `status status-${status || 'unknown'}` }, status ? RUN_STATUS_LABELS[status] : String(r.status)),
+          r.reason ? h('span', { class: 'run-reason' }, String(r.reason)) : null),
+        h('td', { class: 'run-counts' }, countsText(r.counts)));
+    });
+    return section('runs', 'Run history', 'Newest first.',
+      h('div', { class: 'table-wrap' }, h('table', { class: 'runs' }, h('thead', null, head), h('tbody', null, rows))));
+  }
+
+  function renderDetail(entry) {
+    const p = entry.project;
+    const systems = list(p.systems).filter(isObject);
+    const reviewed = lastReviewed(entry.score);
+    $('detail-view').replaceChildren(
+      h('div', { class: 'detail-bar' },
+        h('button', { type: 'button', class: 'back', id: 'back-to-tiles', on: { click: goTiles } },
+          h('span', { 'aria-hidden': 'true' }, '←'), 'All projects')),
+      h('header', { class: 'detail-head' },
+        h('div', { class: 'detail-title' },
+          h('h1', { id: 'detail-heading', tabindex: '-1' }, p.name || p.slug),
+          h('p', { class: 'detail-meta' },
+            h('span', { class: 'mono' }, p.slug),
+            p.criticality ? h('span', null, `Criticality ${p.criticality}`) : null,
+            h('span', null, plural(systems.length, 'system', 'systems')),
+            h('span', null, 'Last reviewed ', reviewed ? h('time', { datetime: reviewed, title: reviewed }, day(reviewed)) : 'never'),
+            h('span', null, generatedLine()))),
+        scoreBlock(entry.score)),
+      h('div', { class: 'detail-summary' }, countsBlock(entry.findings)),
+      sheetSection(entry),
+      findingsSection(entry),
+      runsSection(entry));
+    renderFindingRows(entry);
+    show('detail');
+    window.scrollTo(0, 0);
+    $('detail-heading').focus({ preventScroll: true });
+  }
+
+  function syncFilterControls() {
+    for (const key of Object.keys(DEFAULT_FILTERS)) {
+      const select = $(`filter-${key}`);
+      if (select) select.value = state.filters[key];
+    }
+  }
+
+  // Mirror the view in the address. The history API changes the hash without navigating, so no hashchange fires for it, and a
+  // host that refuses it (a sandboxed frame) only leaves the address out of step: the view is already showing.
+  function mirrorHash(push) {
+    const token = buildHash({ slug: state.slug, filters: state.filters });
+    if (location.hash.replace(/^#/, '') === token) return;
+    try {
+      if (push) history.pushState(null, '', `#${token}`);
+      else history.replaceState(null, '', `#${token}`);
+    } catch (err) {
+      // Nothing to do: see above.
+    }
+  }
+
+  // Filters replace the current history entry rather than adding one per change.
+  const writeHash = () => mirrorHash(false);
+
+  function setFilter(key, value) {
+    state.filters[key] = value;
+    writeHash();
+    renderFindingRows(currentEntry());
+  }
+
+  function clearFilters() {
+    state.filters = Object.assign({}, DEFAULT_FILTERS);
+    syncFilterControls();
+    writeHash();
+    renderFindingRows(currentEntry());
+  }
+
+  // ---- routing and boot --------------------------------------------------------------------
+
+  // Show the view first, then record it as a new history entry, so Back and a reload both return to it.
+  function go(slug) {
+    applyRoute({ slug, filters: Object.assign({}, DEFAULT_FILTERS) });
+    mirrorHash(true);
+  }
+
+  const goTiles = () => go(null);
+
+  // Back, Forward, a reload or an edited address.
+  const route = () => applyRoute(parseHash(location.hash));
+
+  function applyRoute(parsed) {
+    if (!state.entries.length) return;
+    const entry = parsed.slug ? state.entries.find((e) => e.project.slug === parsed.slug) : null;
+    if (entry) {
+      const filters = normalizeFilters(entry, parsed.filters);
+      if (state.view === 'detail' && state.slug === parsed.slug) {
+        state.filters = filters;
+        syncFilterControls();
+        renderFindingRows(entry);
+        return;
+      }
+      state.slug = parsed.slug;
+      state.filters = filters;
+      renderDetail(entry);
+      return;
+    }
+    if (state.view === 'detail') state.returnTo = state.slug;
+    state.slug = null;
+    show('tiles');
+    updateNav();
+    const back = state.returnTo ? cards().find((c) => c.getAttribute('data-slug') === state.returnTo) : null;
+    state.returnTo = null;
+    if (back) focusCard(back, false);
+  }
+
+  function renderMasthead() {
+    const meta = $('masthead-meta');
+    if (!state.data) {
+      meta.hidden = true;
+      return;
+    }
+    meta.replaceChildren(h('span', { class: 'mode' }, 'Static snapshot'), h('span', null, plural(state.entries.length, 'project', 'projects')));
+    meta.hidden = false;
+  }
+
+  function renderEmpty(failed) {
+    $('empty-hint-store').hidden = failed || !state.data;
+    $('empty-hint-error').hidden = !failed;
+    show('empty');
+  }
+
+  function render(data) {
+    state.data = isData(data) ? data : null;
+    state.entries = entriesOf(data);
+    renderMasthead();
+    if (!state.entries.length) {
+      renderEmpty(false);
+      return;
+    }
+    renderTiles();
+    state.view = null;
+    route();
+  }
+
+  // ---- copy and toast ----------------------------------------------------------------------
+
+  let toastTimer = null;
+
+  function toast(message, command) {
+    const el = $('toast');
+    el.replaceChildren(message);
+    if (command) el.appendChild(h('code', null, command));
+    el.classList.add('is-on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('is-on'), 2600);
+  }
+
+  // When the clipboard API is missing or refuses, put the text in the off-screen input, select it and try the old copy
+  // command; if that fails too the text stays selected for the viewer's own copy shortcut.
+  function fallbackCopy(command, button) {
+    const input = $('copy-fallback');
+    input.value = command;
+    input.focus({ preventScroll: true });
+    input.select();
+    input.setSelectionRange(0, command.length);
+    let copied = false;
+    try {
+      copied = document.execCommand('copy');
+    } catch (err) {
+      copied = false;
+    }
+    if (copied) {
+      if (button) button.focus({ preventScroll: true });
+      toast('Copied', command);
+      return;
+    }
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
+    toast(`Press ${mac ? '⌘C' : 'Ctrl+C'} to copy`, command);
+  }
+
+  function copyCommand(command, button) {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      navigator.clipboard.writeText(command).then(() => toast('Copied', command), () => fallbackCopy(command, button));
+    } else {
+      fallbackCopy(command, button);
+    }
+  }
+
+  // ---- data --------------------------------------------------------------------------------
+
+  function readInlineData() {
+    const el = document.getElementById('rampart-data');
+    const text = el ? el.textContent.trim() : '';
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // Static mode only, for now: the inline slot. Returns a promise so a live source can take its place.
+  function loadData() {
+    return Promise.resolve(readInlineData());
+  }
+
+  function boot() {
+    $('carousel-prev').addEventListener('click', () => scrollCards(-1));
+    $('carousel-next').addEventListener('click', () => scrollCards(1));
+    let pending = false;
+    $('carousel').addEventListener('scroll', () => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        updateNav();
+      });
+    }, { passive: true });
+    window.addEventListener('resize', () => {
+      if (state.view === 'tiles') updateNav();
+    });
+    window.addEventListener('popstate', route);
+    window.addEventListener('hashchange', route);
+    document.addEventListener('keydown', onKey);
+    loadData().then(render).catch((err) => {
+      if (typeof console !== 'undefined') console.error('Rampart dashboard:', err);
+      renderEmpty(true);
+    });
+  }
+
+  if (typeof document !== 'undefined') boot();
+
+  return {
+    LAYERS, ACTION_LABELS, DEFAULT_FILTERS,
+    isData, hasProjects, openCounts, freshness, lastReviewed, auditCommand, formatLocation,
+    parseHash, buildHash, filterFindings, sortFindings, loadData, render,
+  };
+})();
+</script>
