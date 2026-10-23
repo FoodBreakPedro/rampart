@@ -149,6 +149,57 @@ test('runCli: a CLI can bring its own parser', () => {
   assert.match(r.stderr, /^l1-fake: --input and --format go together\nusage: /);
 });
 
+// A scan that returns a promise (l1-headers awaits fetch): runCli hands back a promise of the same exit code, with the same
+// output and exit-code rules; a scan that returns a plain result still gets a plain exit code.
+async function cliAsync(specOverride, argv = BASE) {
+  const stdout = sink();
+  const stderr = sink();
+  const pending = runCli(specOverride, argv, { stdout, stderr });
+  assert.ok(pending instanceof Promise, 'a promise-returning scan makes runCli return a promise');
+  assert.equal(stdout.text + stderr.text, '', 'nothing is printed before the scan settles');
+  const code = await pending;
+  return { code, stdout: stdout.text, stderr: stderr.text };
+}
+
+test('runCli: a sync scan still returns the exit code itself, not a promise', () => {
+  const stdout = sink();
+  const code = runCli(spec(() => ({ run: doneRun, counts })), BASE, { stdout, stderr: sink() });
+  assert.equal(code, 0);
+  assert.equal(typeof code, 'number');
+});
+
+test('runCli: an async scan resolves to the exit code, 0 for done and 2 for skipped, with the same output', async () => {
+  const done = await cliAsync(spec(async () => ({ run: doneRun, counts })));
+  assert.equal(done.code, 0);
+  assert.equal(done.stdout, 'l1-fake example-app/mobile: done (run r1)\nfound: 1\n');
+  assert.equal(done.stderr, '');
+
+  const skip = await cliAsync(spec(async () => ({ run: { ...doneRun, status: 'skipped', reason: 'timed out' }, counts })));
+  assert.equal(skip.code, 2);
+  assert.equal(skip.stdout, 'l1-fake example-app/mobile: skipped (run r1)\nreason: timed out\n');
+
+  const json = await cliAsync(spec(async () => ({ run: doneRun, counts, grade: 'A' })), [...BASE, '--json']);
+  assert.deepEqual(JSON.parse(json.stdout), { run: doneRun, counts });
+});
+
+test('runCli: an async scan that rejects is mapped like a sync throw: RangeError 2, anything else 1, redacted', async () => {
+  const range = await cliAsync(spec(async () => { throw new RangeError(`url ${TOKEN} not found`); }));
+  assert.equal(range.code, 2);
+  assert.equal(range.stdout, '');
+  assert.equal(range.stderr, 'l1-fake: url [REDACTED] not found\n');
+
+  const other = await cliAsync(spec(() => Promise.reject(new Error('disk on fire'))));
+  assert.equal(other.code, 1);
+  assert.equal(other.stderr, 'l1-fake: disk on fire\n');
+});
+
+test('runCli: details that throw after an async scan are an unexpected error (1), not an unhandled rejection', async () => {
+  const r = await cliAsync(spec(async () => ({ run: doneRun, counts }), { details: () => { throw new Error('bad details'); } }));
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, 'l1-fake: bad details\n');
+});
+
 // ---- reading what to scan -----------------------------------------------------------------
 
 test('parseReport: JSON with or without a BOM; a bad report is a TypeError that does not quote it', () => {

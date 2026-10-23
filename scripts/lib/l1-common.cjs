@@ -128,20 +128,28 @@ function summary(name, result, system, details) {
 // Run a CLI: parse argv, scan, print, and return the exit code (the caller sets process.exitCode).
 //   name     the command, as it prefixes the output and error lines ("l1-secrets")
 //   usage    the line printed after a usage error
-//   scan     (opts) => {run, counts, ...}, with opts as parse returns them
+//   scan     (opts) => {run, counts, ...}, with opts as parse returns them; or a promise of that (l1-headers awaits fetch)
 //   details  (result) => the lines printed under the head of a done run
 //   parse    (argv) => opts; defaults to parseArgs. It throws UsageError for bad arguments.
 // --json prints {run, counts}, whatever else the result carries. An error is written to stderr, redacted, as "<name>: <message>".
+// A scan that returns a promise makes runCli return a promise of the exit code, by the same rules (a rejection counts as a
+// throw). That promise does not reject. Wait for it before setting process.exitCode.
 function runCli({ name, usage, scan, details, parse = parseArgs }, argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
-  try {
-    const opts = parse(argv);
-    const result = scan(opts);
-    stdout.write(`${opts.json ? JSON.stringify({ run: result.run, counts: result.counts }, null, 2) : summary(name, result, opts.system, details)}\n`);
-    return result.run.status === 'done' ? 0 : 2;
-  } catch (err) {
+  const fail = (err) => {
     stderr.write(`${name}: ${redact(err.message)}\n`);
     if (err instanceof UsageError) stderr.write(`${usage}\n`);
     return err instanceof UsageError || err instanceof RangeError ? 2 : 1;
+  };
+  try {
+    const opts = parse(argv);
+    const finish = (result) => {
+      stdout.write(`${opts.json ? JSON.stringify({ run: result.run, counts: result.counts }, null, 2) : summary(name, result, opts.system, details)}\n`);
+      return result.run.status === 'done' ? 0 : 2;
+    };
+    const result = scan(opts);
+    return result && typeof result.then === 'function' ? Promise.resolve(result).then(finish).catch(fail) : finish(result);
+  } catch (err) {
+    return fail(err);
   }
 }
 
