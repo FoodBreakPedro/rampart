@@ -776,6 +776,37 @@ test('createRun rejects an invalid run and creates no run directory', () => {
   assert.ok(!fs.existsSync(projectPath('runs')));
 });
 
+test('readRuns returns every run.json oldest first, whatever order they were created in', () => {
+  assert.deepEqual(store.readRuns(SLUG), [], 'a project with no runs directory');
+  const ids = ['2026-10-23T18-02-11Z', '2026-10-21T09-00-00Z', '2026-10-23T18-02-09Z'];
+  for (const runId of ids) {
+    const run = { runId, project: SLUG, ...RUN_ARGS, status: 'done', startedAt: '2026-10-23T00:00:00Z', counts: { added: 0, updated: 0, unchanged: 0, hardening: 0 } };
+    fs.mkdirSync(projectPath('runs', runId), { recursive: true });
+    fs.writeFileSync(projectPath('runs', runId, 'run.json'), `${JSON.stringify(run)}\n`);
+  }
+  const runs = store.readRuns(SLUG);
+  assert.deepEqual(runs.map((r) => r.runId), [...ids].sort());
+  assert.equal(runs[0].project, SLUG);
+
+  // createRun and finishRun's output is what readRuns returns.
+  const made = store.finishRun(SLUG, store.createRun(SLUG, RUN_ARGS).runId, { status: 'done' });
+  assert.deepEqual(store.readRuns(SLUG).find((r) => r.runId === made.runId), made);
+});
+
+test('readRuns skips a run directory without a run.json and anything not named like a run id, but not a corrupt run.json', () => {
+  const good = store.createRun(SLUG, RUN_ARGS);
+  fs.mkdirSync(projectPath('runs', '2020-01-01T00-00-00Z'), { recursive: true }); // crashed between mkdir and write
+  fs.mkdirSync(projectPath('runs', 'not-a-run'), { recursive: true });
+  fs.writeFileSync(projectPath('runs', 'not-a-run', 'run.json'), JSON.stringify({ runId: 'not-a-run' }));
+  fs.writeFileSync(projectPath('runs', 'notes.txt'), 'stray file');
+  assert.deepEqual(store.readRuns(SLUG).map((r) => r.runId), [good.runId]);
+
+  fs.mkdirSync(projectPath('runs', '2020-01-02T00-00-00Z'), { recursive: true });
+  fs.writeFileSync(projectPath('runs', '2020-01-02T00-00-00Z', 'run.json'), '{ not json');
+  assert.throws(() => store.readRuns(SLUG), /2020-01-02T00-00-00Z.*not valid JSON/);
+  assert.throws(() => store.readRuns('Bad Slug!'), RangeError);
+});
+
 // ---- raw output ---------------------------------------------------------------------------
 
 test('writeRaw redacts credentials and writes under runs/<runId>/raw/', () => {

@@ -321,6 +321,31 @@ function finishRun(slug, runId, patch = {}) {
   return merged;
 }
 
+// Every run.json of a project, oldest first (a run id sorts as time). A directory not named like a run id is not a run, and a
+// run directory with no run.json (a crash between mkdir and write) has nothing to read; a run.json that is not valid JSON
+// throws, naming the run, because a score computed without it would quietly be too low.
+function readRuns(slug) {
+  checkSlug(slug);
+  let entries;
+  try {
+    entries = fs.readdirSync(path.join(projectDir(slug), 'runs'), { withFileTypes: true });
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const runs = [];
+  for (const runId of entries.filter((e) => e.isDirectory() && RUN_ID_RE.test(e.name)).map((e) => e.name).sort()) {
+    let run;
+    try {
+      run = readJson(runFile(slug, runId), null);
+    } catch (err) {
+      throw new Error(`run ${runId}: ${err.message}`);
+    }
+    if (isObject(run)) runs.push(run);
+  }
+  return runs;
+}
+
 // Tool output for a run. The text is redacted before it lands; name must be a bare file name.
 function writeRaw(slug, runId, name, text) {
   checkSlug(slug);
@@ -486,6 +511,6 @@ if (require.main === module) {
 module.exports = {
   listProjects, readProject, writeProject,
   readFindings, upsertFindings, closeMissing, readDispositions, setDisposition, setClass,
-  createRun, finishRun, writeRaw,
+  createRun, finishRun, readRuns, writeRaw,
   readConfig, writeConfig, appendScore, readScores,
 };
