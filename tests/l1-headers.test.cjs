@@ -272,12 +272,15 @@ test('(c) the same page reached through a different query is the same findings, 
   assert.deepEqual(second.counts, { added: 0, updated: 0, unchanged: 8, regressed: 0, closed: 0, hardening: 8 });
 });
 
-test('a query or fragment on the URL asked for does not reach the final URL either', async () => {
+test('T10: a query or fragment on the URL asked for reaches neither the final URL nor the requested url in the raw copy', async () => {
   const url = await serveBare();
-  const { run } = await checkHeaders({ project: SLUG, system: SYSTEM, url: `${url}page?x=1#section` });
+  const { run } = await checkHeaders({ project: SLUG, system: SYSTEM, url: `${url}page?token=${STATE_TOKEN}#section` });
   assert.equal(readRaw(run).finalUrl, `${url}page`);
-  assert.equal(readRaw(run).url, `${url}page?x=1#section`);
+  assert.equal(readRaw(run).url, `${url}page`, 'the requested url is cut to origin and path too');
   assert.ok(store.readFindings(SLUG).every((f) => f.location.url === `${url}page`));
+  for (const [file, text] of everyStoredText()) {
+    assert.ok(!text.includes(STATE_TOKEN) && !text.includes('#section'), `${file} holds the query or fragment`);
+  }
 });
 
 test('(d) a port nothing listens on is a skipped run naming ECONNREFUSED, never a crash', async () => {

@@ -5,7 +5,8 @@
 // --url overrides the live URL recorded for the system (live.url); one of the two is needed, and only http: and https: URLs are
 // accepted. Redirects are followed and the final response is the one graded: the run records both URLs.
 // The final URL is kept as origin and path only (no query, no fragment): that is what findings, the score and the raw copy
-// name, so a redirect to /login?state=<random> neither stores a token nor gives every run new finding ids.
+// name, so a redirect to /login?state=<random> neither stores a token nor gives every run new finding ids. The requested URL
+// in the raw copy is cut the same way.
 // Exit 0: the run is done. Exit 2: the run was skipped (timeout, connection refused, DNS or TLS failure, ...) or the arguments
 // were bad. Exit 1: anything unexpected.
 //
@@ -153,7 +154,8 @@ async function check({ project, system, url, timeoutMs = DEFAULT_TIMEOUT_MS } = 
 
     const { finalUrl, status, headers } = outcome;
     const grade = gradeHeaders(headers);
-    store.writeRaw(project, run.runId, RAW_NAME, JSON.stringify({ url: target.url, finalUrl, status, headers, grade }, null, 2));
+    // The requested URL is cut to origin and path like the final one: a --url can carry a token in its query too.
+    store.writeRaw(project, run.runId, RAW_NAME, JSON.stringify({ url: pageOf(target.url), finalUrl, status, headers, grade }, null, 2));
     const findings = fromHeaders({ url: finalUrl, status, headers }, { project, system, runId: run.runId });
     const upserted = store.upsertFindings(project, findings, run.runId);
     const closed = status >= 400 ? 0 : store.closeMissing(project, {

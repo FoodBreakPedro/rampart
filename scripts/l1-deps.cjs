@@ -15,9 +15,10 @@
 // and 1 when they found vulnerabilities; both are a finished scan when stdout is a v2 audit report. Any other code, a
 // timeout, a missing binary, stdout that is not a report, or a report the normalizer rejects (an npm error report, an
 // unsupported version) is a skipped run with the reason recorded, never a crash and never a false "clean".
-// A finished scan also closes the system's earlier findings from the same source (trivy, or npm-audit for npm and pnpm) that
-// the report no longer lists (store.closeMissing): they become fixed, with a record in dispositions.json, and counts.closed
-// says how many. A skipped run closes nothing, and neither does a scan with the other tool: its findings have another source.
+// A finished scan also closes the system's earlier dependency findings that the report no longer lists (store.closeMissing),
+// from any dependency tool (DEPENDENCY_SOURCES), not just the one that ran: one dependency scan is the whole answer for the
+// system's dependencies, so switching from npm audit to trivy does not leave the npm audit's findings open beside trivy's.
+// They become fixed, with a record in dispositions.json, and counts.closed says how many. A skipped run closes nothing.
 // Nothing from a report except counts and file paths is ever printed, and the stored copy of the report is redacted.
 
 const fs = require('node:fs');
@@ -48,8 +49,8 @@ const INPUT_FORMATS = {
   npm: { tool: 'npm', normalize: fromNpmAudit },
 };
 const NATIVE_ENV = { npm: 'RAMPART_NPM', pnpm: 'RAMPART_PNPM' };
-// The source the normalizer puts on the findings of each tool (pnpm's report is read as an npm audit report).
-const FINDING_SOURCE = { trivy: 'trivy', npm: 'npm-audit', pnpm: 'npm-audit' };
+// Every source a dependency finding can carry. A finished scan closes what it no longer lists from all of them.
+const DEPENDENCY_SOURCES = ['trivy', 'npm-audit', 'pnpm-audit'];
 
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
@@ -178,7 +179,7 @@ function scan({ project, system, repoPath, input, format, timeoutMs = DEFAULT_TI
       return skipped(withDetail(`${tool} exited 1 but reported no vulnerabilities; the audit may have failed`, stderr));
     }
     const upserted = store.upsertFindings(project, findings, run.runId);
-    const { closed } = store.closeMissing(project, { system, source: FINDING_SOURCE[tool], runId: run.runId, seenIds: findings.map((f) => f.id) });
+    const { closed } = store.closeMissing(project, { system, source: DEPENDENCY_SOURCES, runId: run.runId, seenIds: findings.map((f) => f.id) });
     const counts = { ...upserted, closed };
     return { run: store.finishRun(project, run.runId, { status: 'done', counts, tool: { name: tool } }), counts, lockfile };
   } catch (err) {

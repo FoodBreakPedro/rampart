@@ -593,6 +593,16 @@ test('closeMissing: a filter narrows the candidates further, and only sees the f
   assert.equal(byId()[ID_B].status, 'fixed');
 });
 
+test('closeMissing: source may be a list, and then every source in it is closed for that system', () => {
+  seedClosable();
+  const res = store.closeMissing(SLUG, closeArgs({ source: ['headers', 'trivy'] }));
+  assert.deepEqual(res, { closed: 3 }, 'B and C (headers) and H (trivy)');
+  const after = byId();
+  assert.equal(after[ID_H].status, 'fixed');
+  assert.equal(after[ID_G].status, 'open', 'another system stays');
+  assert.equal(after[ID_A].status, 'open', 'still reported');
+});
+
 test('closeMissing: a closed finding that comes back is regressed by the next upsert, which rewrites its record', () => {
   store.upsertFindings(SLUG, [finding({ source: 'headers' })], RUN);
   store.closeMissing(SLUG, { system: 'db', source: 'headers', runId: CLOSE_RUN, seenIds: [] });
@@ -613,7 +623,7 @@ test('closeMissing: a bad slug, run id or argument is rejected and nothing is wr
   const rows = readText(projectPath('findings.jsonl'));
   assert.throws(() => store.closeMissing('../..', closeArgs()), RangeError);
   assert.throws(() => store.closeMissing(SLUG, closeArgs({ runId: '../x' })), /runId/);
-  for (const bad of [{ system: undefined }, { system: '' }, { source: undefined }, { source: 7 }, { seenIds: undefined }, { seenIds: null }, { seenIds: 'abc' }, { seenIds: 5 }, { filter: 'yes' }, { filter: null }]) {
+  for (const bad of [{ system: undefined }, { system: '' }, { source: undefined }, { source: 7 }, { source: [] }, { source: ['trivy', ''] }, { seenIds: undefined }, { seenIds: null }, { seenIds: 'abc' }, { seenIds: 5 }, { filter: 'yes' }, { filter: null }]) {
     assert.throws(() => store.closeMissing(SLUG, closeArgs(bad)), TypeError, JSON.stringify(bad));
   }
   assert.throws(() => store.closeMissing(SLUG), RangeError, "no arguments is no run id");

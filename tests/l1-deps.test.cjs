@@ -571,21 +571,55 @@ test('findings a person triaged are not closed by a clean scan', () => {
   assert.deepEqual(store.readFindings(SLUG).map((f) => f.status), ['false_positive', 'accepted_risk']);
 });
 
-test('a skipped run closes nothing, and a scan with the other tool does not close this tool\'s findings', () => {
+test('a skipped run closes nothing', () => {
   lock('package-lock.json');
   scanDeps({ project: SLUG, system: 'mobile' }); // trivy: two findings
   process.env.FAKE_EXIT = '2';
   assertSkipped(scanDeps({ project: SLUG, system: 'mobile' }), 'trivy exited 2', 2);
   assert.deepEqual(statuses(), { lodash: 'open', minimist: 'open' }, 'a failed scan says nothing about what is gone');
-  delete process.env.FAKE_EXIT;
+});
 
+// Ruling (final review I2): one dependency scan is the whole answer for a system's dependencies, whichever tool ran.
+const bySource = () => store.readFindings(SLUG).map((f) => `${f.source}:${f.location.package}:${f.status}`).sort();
+
+test('I2: an npm audit then a trivy scan closes the npm-audit findings trivy no longer lists, so nothing is counted twice', () => {
+  lock('package-lock.json');
+  noTrivy();
+  const npm = scanDeps({ project: SLUG, system: 'mobile' }); // npm audit: two findings
+  assert.equal(npm.run.status, 'done');
+  assert.ok(npm.counts.added > 0);
+  assert.ok(bySource().every((row) => row.startsWith('npm-audit:') && row.endsWith(':open')));
+
+  process.env.RAMPART_TRIVY = `node:${TRIVY_SHIM}`; // the user installs trivy, as doctor recommends
+  delete process.env.FAKE_STDOUT;
+  delete process.env.FAKE_REPORT;
+  delete process.env.FAKE_EXIT;
+  const trivy = scanDeps({ project: SLUG, system: 'mobile' });
+  assert.equal(trivy.run.status, 'done');
+  assert.equal(trivy.run.tool.name, 'trivy');
+  assert.equal(trivy.counts.closed, npm.counts.added, 'every npm-audit finding closes');
+  const rows = bySource();
+  assert.ok(rows.filter((r) => r.startsWith('npm-audit:')).every((r) => r.endsWith(':fixed')), rows.join(', '));
+  assert.deepEqual(rows.filter((r) => r.startsWith('trivy:')), ['trivy:lodash:open', 'trivy:minimist:open']);
+  const disp = store.readDispositions(SLUG);
+  for (const f of store.readFindings(SLUG).filter((x) => x.source === 'npm-audit')) {
+    assert.equal(disp[f.id].reason, `not reproduced in run ${trivy.run.runId}`);
+  }
+});
+
+test('I2: a clean scan with either tool closes every dependency source of that system, and only of that system', () => {
+  lock('package-lock.json');
+  scanDeps({ project: SLUG, system: 'mobile' }); // trivy: two findings
+  const other = { ...store.readFindings(SLUG)[0], id: 'abcdefabcdef', system: 'db', source: 'pnpm-audit' };
+  store.upsertFindings(SLUG, [other], '2026-10-23T00-00-00Z');
   noTrivy();
   process.env.FAKE_REPORT = 'npm-audit.empty.json';
   process.env.FAKE_EXIT = '0';
   const npm = scanDeps({ project: SLUG, system: 'mobile' }); // npm audit: clean
   assert.equal(npm.run.status, 'done');
-  assert.equal(npm.counts.closed, 0, 'trivy findings have another source');
-  assert.deepEqual(statuses(), { lodash: 'open', minimist: 'open' });
+  assert.equal(npm.counts.closed, 2, 'the trivy findings close');
+  const rows = store.readFindings(SLUG).map((f) => `${f.system}:${f.source}:${f.status}`).sort();
+  assert.deepEqual(rows, ['db:pnpm-audit:open', 'mobile:trivy:fixed', 'mobile:trivy:fixed']);
 });
 
 test('--input: a report that is not JSON, or does not fit the format, is a skipped run whose reason does not quote it', () => {
