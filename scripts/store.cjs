@@ -217,8 +217,10 @@ function upsertFindings(slug, findings, runId) {
 // fixed, and dispositions.json records why: "not reproduced in run <runId>", by rampart. Findings a person triaged
 // (false_positive, accepted_risk) and findings already fixed are left alone, as are other systems and other sources.
 // Call it only after a scan that finished: a scan that was skipped says nothing about what is gone. If the finding comes
-// back, upsertFindings regresses it like any other fixed finding. Returns {closed: <number of findings closed>}.
-function closeMissing(slug, { system, source, runId, seenIds } = {}) {
+// back, upsertFindings regresses it like any other fixed finding. An optional filter(finding) narrows the candidates further
+// (it only sees findings that qualify otherwise): a scan that covers one page of a system, say, closes only that page's.
+// Returns {closed: <number of findings closed>}.
+function closeMissing(slug, { system, source, runId, seenIds, filter } = {}) {
   checkSlug(slug);
   checkRunId(runId);
   if (typeof system !== 'string' || system === '') throw new TypeError('system must be a non-empty string');
@@ -226,11 +228,11 @@ function closeMissing(slug, { system, source, runId, seenIds } = {}) {
   if (seenIds === null || typeof seenIds !== 'object' || typeof seenIds[Symbol.iterator] !== 'function') {
     throw new TypeError('seenIds must be an array or a Set of finding ids');
   }
+  if (filter !== undefined && typeof filter !== 'function') throw new TypeError('filter must be a function');
   const seen = new Set(seenIds);
   const findings = readFindings(slug);
-  const closing = findings.filter(
-    (f) => f.system === system && f.source === source && (f.status === 'open' || f.status === 'regressed') && !seen.has(f.id)
-  );
+  const candidate = (f) => f.system === system && f.source === source && (f.status === 'open' || f.status === 'regressed') && !seen.has(f.id);
+  const closing = findings.filter((f) => candidate(f) && (!filter || filter(f)));
   if (!closing.length) return { closed: 0 };
 
   const stamp = now();

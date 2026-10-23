@@ -90,13 +90,33 @@ const serveBare = () => serve(respond(200, BARE));
 const serveRedirect = (to) => serve(respond(302, { Location: to, 'Set-Cookie': `redirect=${COOKIE_C}; Path=/` }));
 const serveSilence = () => serve(() => {}); // takes the request and never answers
 
+// Stop one server now; its port then refuses connections.
+async function stop(server) {
+  servers.splice(servers.indexOf(server), 1);
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+}
+
 // A URL nothing listens on: a port that was free a moment ago.
 async function closedUrl() {
   const url = await serve(respond(200, {}));
-  const server = servers.pop();
-  server.closeAllConnections();
-  await new Promise((resolve) => server.close(resolve));
+  await stop(servers[servers.length - 1]);
   return url;
+}
+
+// A site whose answer the test changes between checks: answer(status, headers) for every path, page(path, headers) for one.
+async function serveSite(status, headers, pages = {}) {
+  const now = { status, headers, pages: { ...pages } };
+  const url = await serve((req, res) => {
+    const pagePath = req.url.split('?')[0];
+    respond(now.status, now.pages[pagePath] || now.headers)(req, res);
+  });
+  return {
+    url,
+    server: servers[servers.length - 1],
+    answer: (nextStatus, nextHeaders) => { now.status = nextStatus; now.headers = nextHeaders; },
+    page: (pagePath, pageHeaders) => { now.pages[pagePath] = pageHeaders; },
+  };
 }
 
 const runsDir = () => path.join(home, 'projects', SLUG, 'runs');
@@ -406,13 +426,14 @@ test('a run is created for every checked URL, and a second check of the same pag
 
 // ---- findings that no longer reproduce ----------------------------------------------------
 
-test('(e) a site checked bare and then fixed: the earlier findings are fixed, with a record naming the run, and counted as closed', async () => {
-  setLiveUrl(await serveBare());
+test('(e) a page checked bare and then fixed: the earlier findings are fixed, with a record naming the run, and counted as closed', async () => {
+  const site = await serveSite(200, BARE);
+  setLiveUrl(site.url);
   const first = await checkHeaders({ project: SLUG, system: SYSTEM });
   const earlier = store.readFindings(SLUG);
   assert.equal(earlier.length, 8);
 
-  setLiveUrl(await serveFull()); // the same system, now answering with full marks (another port, so another page)
+  site.answer(200, FULL);
   const { run, counts, grade } = await checkHeaders({ project: SLUG, system: SYSTEM });
   assert.equal(grade.grade, 'A');
   assert.equal(counts.closed, 8);
@@ -433,6 +454,66 @@ test('(e) a site checked bare and then fixed: the earlier findings are fixed, wi
   }
   assert.notEqual(run.runId, first.run.runId);
   assert.equal(scoreLines().length, 2);
+});
+
+test('(e) a check of another page of the system never closes the findings of this one', async () => {
+  const site = await serveSite(200, FULL, { '/one': BARE });
+  const one = `${site.url}one`;
+  const two = `${site.url}two`;
+  const first = await checkHeaders({ project: SLUG, system: SYSTEM, url: one });
+  assert.equal(first.counts.added, 8);
+
+  const second = await checkHeaders({ project: SLUG, system: SYSTEM, url: two }); // /two has full marks
+  assert.equal(second.grade.grade, 'A');
+  assert.equal(second.counts.closed, 0, 'nothing found on /one is "not reproduced" by a look at /two');
+  assert.ok(store.readFindings(SLUG).every((f) => f.status === 'open' && f.location.url === one));
+  assert.deepEqual(store.readDispositions(SLUG), {});
+
+  // Fixing /one is seen by a check of /one, and only by that.
+  site.page('/one', FULL);
+  assert.equal((await checkHeaders({ project: SLUG, system: SYSTEM, url: two })).counts.closed, 0);
+  assert.ok(store.readFindings(SLUG).every((f) => f.status === 'open'));
+  assert.equal((await checkHeaders({ project: SLUG, system: SYSTEM, url: one })).counts.closed, 8);
+  assert.ok(store.readFindings(SLUG).every((f) => f.status === 'fixed'));
+});
+
+test('(e) findings of two pages are closed page by page, each by its own check', async () => {
+  const site = await serveSite(200, BARE);
+  const one = `${site.url}one`;
+  const two = `${site.url}two`;
+  await checkHeaders({ project: SLUG, system: SYSTEM, url: one });
+  await checkHeaders({ project: SLUG, system: SYSTEM, url: two });
+  assert.equal(store.readFindings(SLUG).length, 16);
+
+  site.answer(200, FULL);
+  assert.equal((await checkHeaders({ project: SLUG, system: SYSTEM, url: two })).counts.closed, 8);
+  const statusesOf = (url) => store.readFindings(SLUG).filter((f) => f.location.url === url).map((f) => f.status);
+  assert.ok(statusesOf(two).every((status) => status === 'fixed'));
+  assert.ok(statusesOf(one).every((status) => status === 'open'));
+});
+
+test('(e) an error response is graded but closes nothing, even for the same page; the next good response does', async () => {
+  const site = await serveSite(200, BARE);
+  setLiveUrl(site.url);
+  await checkHeaders({ project: SLUG, system: SYSTEM });
+  assert.equal(store.readFindings(SLUG).length, 8);
+
+  site.answer(404, FULL); // the error page has all the headers; that says nothing about the real page
+  const notFound = await checkHeaders({ project: SLUG, system: SYSTEM });
+  assert.equal(notFound.run.status, 'done');
+  assert.equal(notFound.run.reason, 'final response status was 404; graded anyway');
+  assert.equal(notFound.grade.grade, 'A', 'it is still graded and recorded');
+  assert.deepEqual(notFound.counts, { added: 0, updated: 0, unchanged: 0, regressed: 0, closed: 0, hardening: 0 });
+  assert.equal(notFound.run.counts.closed, 0);
+  assert.ok(store.readFindings(SLUG).every((f) => f.status === 'open'), 'the findings of the real page stay open');
+  assert.deepEqual(store.readDispositions(SLUG), {});
+  assert.equal(scoreLines().length, 2);
+
+  site.answer(500, FULL);
+  assert.equal((await checkHeaders({ project: SLUG, system: SYSTEM })).counts.closed, 0);
+
+  site.answer(399, FULL); // below 400 is a response like any other
+  assert.equal((await checkHeaders({ project: SLUG, system: SYSTEM })).counts.closed, 8);
 });
 
 test('(e) the same page fixed step by step closes what each step fixes, and a header that goes missing again is a regression', async () => {
@@ -460,23 +541,26 @@ test('(e) the same page fixed step by step closes what each step fixes, and a he
 });
 
 test('(e) a skipped check closes nothing: it says nothing about what is gone', async () => {
-  setLiveUrl(await serveBare());
+  const site = await serveSite(200, BARE);
+  setLiveUrl(site.url);
   await checkHeaders({ project: SLUG, system: SYSTEM });
-  setLiveUrl(await closedUrl());
+  await stop(site.server); // the same URL, now refusing connections
   const { run } = await checkHeaders({ project: SLUG, system: SYSTEM });
   assert.equal(run.status, 'skipped');
+  assert.match(run.reason, /ECONNREFUSED/);
   assert.equal(run.counts.closed, undefined);
   assert.ok(store.readFindings(SLUG).every((f) => f.status === 'open'));
   assert.deepEqual(store.readDispositions(SLUG), {});
 });
 
 test('(e) findings that a person triaged are not closed when the header gets fixed', async () => {
-  setLiveUrl(await serveBare());
+  const site = await serveSite(200, BARE);
+  setLiveUrl(site.url);
   await checkHeaders({ project: SLUG, system: SYSTEM });
   const [first, second] = store.readFindings(SLUG);
   store.setDisposition(SLUG, first.id, { status: 'accepted_risk', reason: 'behind a CDN', by: 'pedro' });
   store.setDisposition(SLUG, second.id, { status: 'false_positive', reason: 'scanner quirk', by: 'pedro' });
-  setLiveUrl(await serveFull());
+  site.answer(200, FULL);
   const { counts } = await checkHeaders({ project: SLUG, system: SYSTEM });
   assert.equal(counts.closed, 6);
   const byId = Object.fromEntries(store.readFindings(SLUG).map((f) => [f.id, f.status]));

@@ -10,8 +10,11 @@
 // were bad. Exit 1: anything unexpected.
 //
 // A response with an error status (404, 500) is graded all the same, because its headers are real; the run's reason says so.
-// A finished check also closes the system's earlier headers findings that this response no longer shows (store.closeMissing):
-// they become fixed, with a record in dispositions.json, and counts.closed says how many. A skipped check closes nothing.
+// A finished check also closes the earlier headers findings of this same page (the final URL) that its response no longer shows
+// (store.closeMissing): they become fixed, with a record in dispositions.json, and counts.closed says how many. Findings about
+// another page of the system stay as they were, so checking /other by hand never closes what was found on /. A skipped check
+// closes nothing, and neither does an error response (status 400 and up): it is graded and its findings are recorded, but an
+// error page's headers say nothing about whether the real page was fixed.
 // Only the headers are read: the body is dropped unread. Cookie values are scrubbed from the response as soon as it arrives,
 // so they are not graded, stored, printed or passed on; the raw copy keeps each cookie's name and attributes.
 // Nothing from the response except counts, the grade, the URLs and file paths is ever printed.
@@ -137,7 +140,7 @@ async function fetchFinal(url, timeoutMs) {
 // ---- check --------------------------------------------------------------------------------
 
 // Check one system's live URL and record the outcome as a run. Returns {run, counts, grade, finalUrl, status}: the finished run,
-// the findings upsert counts plus hardening (the number of failed checks) and closed (earlier findings no longer shown), the
+// the findings upsert counts plus hardening (the number of failed checks) and closed (earlier findings of this page no longer shown), the
 // grade ({score, grade, failed}) and the final response's URL (origin and path) and status. For a skipped run the counts are all zero and there is no grade. Throws RangeError for a project,
 // system, URL or timeout that does not resolve (no run is created). Anything else that goes wrong after the run exists marks it
 // failed and is rethrown.
@@ -153,7 +156,13 @@ async function check({ project, system, url, timeoutMs = DEFAULT_TIMEOUT_MS } = 
     store.writeRaw(project, run.runId, RAW_NAME, JSON.stringify({ url: target.url, finalUrl, status, headers, grade }, null, 2));
     const findings = fromHeaders({ url: finalUrl, status, headers }, { project, system, runId: run.runId });
     const upserted = store.upsertFindings(project, findings, run.runId);
-    const { closed } = store.closeMissing(project, { system, source: 'headers', runId: run.runId, seenIds: findings.map((f) => f.id) });
+    const closed = status >= 400 ? 0 : store.closeMissing(project, {
+      system,
+      source: 'headers',
+      runId: run.runId,
+      seenIds: findings.map((f) => f.id),
+      filter: (f) => Boolean(f.location) && f.location.url === finalUrl,
+    }).closed;
     const counts = { ...upserted, closed, hardening: findings.length };
     store.appendScore(project, { kind: 'headers', system, url: finalUrl, score: grade.score, grade: grade.grade });
 
