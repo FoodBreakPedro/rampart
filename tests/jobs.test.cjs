@@ -148,6 +148,15 @@ test('route: a system with executor local (host-backed) stays local; cloud and e
   assert.equal(jobs.route({ project: cloudOk, system: repoSystem({ executor: 'either' }), type: 'audit', layer: 'L2' }).executorKind, 'cloud');
 });
 
+test('route: a host-backed system never goes to cloud, whatever its executor says', () => {
+  const sys = (executor) => ({ id: 'box', executor, host: { ssh: 'me@box.lan' }, repo: { remote: 'github.com/acme/app' } });
+  for (const executor of ['either', 'cloud', undefined]) {
+    const r = jobs.route({ project: cloudOk, system: sys(executor), type: 'audit', layer: 'L1' });
+    assert.equal(r.executorKind, 'local', String(executor));
+    assert.match(r.reason, /host/i);
+  }
+});
+
 test('route: the remote must be on github.com, in any of the forms git uses', () => {
   const kind = (remote) => jobs.route({ project: cloudOk, system: { id: 's', repo: { remote } }, type: 'audit', layer: 'L1' }).executorKind;
   for (const remote of [
@@ -266,6 +275,16 @@ test('refusalPatch: failed with the fixed text; the merged job validates', () =>
   assert.deepEqual(validate(jobSchema, asJob(job, patch)), { ok: true, errors: [] });
 });
 
+test('times: null, invalid and out-of-range dates are rejected, so an id is never malformed', () => {
+  for (const bad of [null, new Date('nope'), new Date('12345-01-01T00:00:00Z'), new Date(8.64e15), new Date(-1e14), '12345', 'tomorrow']) {
+    assert.throws(() => jobs.newJobId(bad), TypeError, String(bad));
+    assert.throws(() => jobs.claimPatch(queuedJob(), 'e', bad), TypeError, String(bad));
+  }
+  assert.throws(() => jobs.refusalPatch(queuedJob(), null), TypeError);
+  assert.equal(jobs.claimPatch(queuedJob(), 'e', 0).claimedAt, '1970-01-01T00:00:00.000Z', 'the number 0 is a time; null is not');
+  assert.match(jobs.newJobId(new Date('9999-12-31T23:59:59Z')), /^job-99991231-235959-[0-9a-f]{4}$/);
+});
+
 test('patches accept an ISO string or a millisecond number for now', () => {
   assert.equal(jobs.claimPatch(queuedJob(), 'e', NOW_ISO).claimedAt, NOW_ISO);
   assert.equal(jobs.claimPatch(queuedJob(), 'e', NOW.getTime()).claimedAt, NOW_ISO);
@@ -360,6 +379,13 @@ test('CLI route: from a project file or from the store, picking the system by id
   assert.equal(cliJson(['route', '--project', 'example-app', '--system', 'mobile', '--type', 'audit', '--layer', 'L1']).executorKind, 'cloud');
 });
 
+test('CLI route without --system is a usage error, not a routing decision', () => {
+  const file = writeTmp('project.json', { cloudAllowed: true, systems: [repoSystem()] });
+  const r = cli(['route', '--project-file', file, '--type', 'audit', '--layer', 'L1']);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /--system/);
+});
+
 test('CLI route: a system id the project does not have is an error, not a silent local', () => {
   const file = writeTmp('project.json', { systems: [repoSystem()] });
   const r = cli(['route', '--project-file', file, '--system', 'missing', '--type', 'audit', '--layer', 'L1']);
@@ -407,6 +433,9 @@ test('CLI usage errors exit 2: no command, unknown command, missing options, bad
   assert.equal(cli(['completion-patch', '--job', 'x.json']).status, 2);
   assert.equal(cli(['new-id', '--now', 'tomorrow']).status, 2);
   assert.equal(cli(['new-id', '--bogus']).status, 2);
+  assert.equal(cli(['new-id', '--now', '12345']).status, 2);
+  assert.equal(cli(['new-id', '--now', '12345-01-01T00:00:00Z']).status, 2);
+  assert.equal(cli(['claim-patch', '--job', 'x.json', '--executor', 'e', '--now', '12345']).status, 2);
   assert.match(cli(['frobnicate']).stderr, /usage/);
 });
 

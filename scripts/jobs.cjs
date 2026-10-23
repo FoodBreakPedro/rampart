@@ -16,7 +16,7 @@
 // CLI (each command prints JSON with --json; claim-patch, completion-patch and refusal-patch always do):
 //   node scripts/jobs.cjs new-id [--now <iso>]
 //   node scripts/jobs.cjs cost --type <t> [--layer <L>] [--units n] [--effort low|medium|high] [--classes n] [--probes n] [--open-verified n]
-//   node scripts/jobs.cjs route (--project <slug> | --project-file <file>) [--system <id>] [--type <t>] [--layer <L>]
+//   node scripts/jobs.cjs route (--project <slug> | --project-file <file>) --system <id> [--type <t>] [--layer <L>]
 //   node scripts/jobs.cjs claim-patch --job <file> --executor <id> [--now <iso>]
 //   node scripts/jobs.cjs completion-patch --job <file> --status done|failed [--run-id <id>] [--summary <text>] [--now <iso>]
 //   node scripts/jobs.cjs refusal-patch --job <file> [--now <iso>]
@@ -28,11 +28,14 @@ const { redact } = require('./lib/redact.cjs');
 
 // ---- the page functions ---------------------------------------------------------------------
 
-// A time as an ISO string. Throws on anything that is not a valid time.
+// A time as an ISO string. Throws on null, on anything that is not a valid time and on a year outside 0000-9999 (its ISO
+// string would carry a sign or more digits, and an id built from it would be malformed).
 function toIsoTime(now) {
+  if (now === null) throw new TypeError('now must be a valid time');
   const d = now === undefined ? new Date() : new Date(now);
-  if (Number.isNaN(d.getTime())) throw new TypeError('now must be a valid time');
-  return d.toISOString();
+  const iso = Number.isNaN(d.getTime()) ? '' : d.toISOString();
+  if (!/^\d{4}-/.test(iso)) throw new TypeError('now must be a valid time');
+  return iso;
 }
 
 // A non-negative whole number, or the default when the value is absent.
@@ -104,7 +107,7 @@ function costEstimate(input) {
   throw new RangeError('layer must be L1, L2, L3 or INFRA for an audit');
 }
 
-// Where a job runs. Cloud only when the project allows it, the system is not tied to this machine's network, the repo is on
+// Where a job runs. Cloud only when the project allows it, the system has no host (a host is reached from here), the repo is on
 // github.com and the work is not INFRA or apply. Anything else, and anything unreadable, is local.
 function route(args) {
   const a = args || {};
@@ -112,6 +115,7 @@ function route(args) {
   const system = a.system || {};
   if (a.type === 'apply') return { executorKind: 'local', reason: 'apply changes run locally' };
   if (a.layer === 'INFRA') return { executorKind: 'local', reason: 'infra checks need the local network, so they run locally' };
+  if (system.host) return { executorKind: 'local', reason: 'this system is reached through a host, so it runs locally' };
   if (system.executor === 'local') return { executorKind: 'local', reason: 'this system is set to run locally' };
   if (project.cloudAllowed !== true) return { executorKind: 'local', reason: 'cloud is not allowed for this project' };
   if (!isGithubRemote(system.repo && system.repo.remote)) return { executorKind: 'local', reason: 'cloud needs a repo on github.com' };
@@ -171,7 +175,7 @@ const USAGE = [
   'usage: node scripts/jobs.cjs <command> [options]',
   '  new-id [--now <iso>]',
   '  cost --type <t> [--layer L1|L2|L3|INFRA] [--units n] [--effort low|medium|high] [--classes n] [--probes n] [--open-verified n]',
-  '  route (--project <slug> | --project-file <file>) [--system <id>] [--type <t>] [--layer <L>]',
+  '  route (--project <slug> | --project-file <file>) --system <id> [--type <t>] [--layer <L>]',
   '  claim-patch --job <file> --executor <id> [--now <iso>]',
   '  completion-patch --job <file> --status done|failed [--run-id <id>] [--summary <text>] [--now <iso>]',
   '  refusal-patch --job <file> [--now <iso>]',
@@ -223,9 +227,11 @@ function count(opts, name) {
 
 function nowOf(opts) {
   if (opts.now === undefined) return new Date();
-  const d = new Date(opts.now);
-  if (Number.isNaN(d.getTime())) throw new UsageError('--now must be a time such as 2026-10-23T12:00:00Z');
-  return d;
+  try {
+    return toIsoTime(opts.now);
+  } catch {
+    throw new UsageError('--now must be a time such as 2026-10-23T12:00:00Z');
+  }
 }
 
 function readJsonFile(file, what) {
@@ -268,32 +274,34 @@ function runCommand(command, opts) {
       }
     }
     case 'route': {
+      const systemId = need(opts, 'system');
       const project = readProjectFor(opts);
-      let system = {};
-      if (opts.system !== undefined) {
-        system = (Array.isArray(project.systems) ? project.systems : []).find((s) => s && s.id === opts.system);
-        if (!system) throw new Error(`the project has no system "${opts.system}"`);
-      }
+      const system = (Array.isArray(project.systems) ? project.systems : []).find((s) => s && s.id === systemId);
+      if (!system) throw new Error(`the project has no system "${systemId}"`);
       const r = route({ project, system, type: opts.type, layer: opts.layer });
       return { value: r, text: `${r.executorKind}: ${r.reason}` };
     }
     case 'claim-patch': {
       const file = need(opts, 'job');
       const executor = need(opts, 'executor');
+      const now = nowOf(opts);
       const job = readJsonFile(file, 'the job');
-      return { value: claimPatch(job, executor, nowOf(opts)), always: true };
+      return { value: claimPatch(job, executor, now), always: true };
     }
     case 'completion-patch': {
       const file = need(opts, 'job');
       const status = need(opts, 'status');
       if (status !== 'done' && status !== 'failed') throw new UsageError('--status must be done or failed');
+      const now = nowOf(opts);
       const job = readJsonFile(file, 'the job');
       const result = { runId: opts['run-id'], status, resultSummary: opts.summary };
-      return { value: completionPatch(job, result, nowOf(opts)), always: true };
+      return { value: completionPatch(job, result, now), always: true };
     }
     case 'refusal-patch': {
-      const job = readJsonFile(need(opts, 'job'), 'the job');
-      return { value: refusalPatch(job, nowOf(opts)), always: true };
+      const file = need(opts, 'job');
+      const now = nowOf(opts);
+      const job = readJsonFile(file, 'the job');
+      return { value: refusalPatch(job, now), always: true };
     }
     case undefined:
       throw new UsageError('a command is required');
