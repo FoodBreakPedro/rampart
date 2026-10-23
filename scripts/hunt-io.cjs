@@ -142,8 +142,7 @@ function cleanEvidence(value) {
 }
 
 // An agent file ingest cannot use is overwritten, so what the agent wrote (possibly a credential) does not stay in the run directory.
-// Reading one back reports the reason it holds.
-const stubReason = (r) => (isObject(r.value) && typeof r.value.invalid === 'string' ? r.value.invalid : null);
+// The reason is always computed by the code, never read from the file: a stub an agent wrote itself is just more invalid content.
 function stub(file, reason) {
   const text = toJson({ invalid: reason });
   if (readText(file) !== text) writeAtomic(file, text);
@@ -237,8 +236,8 @@ function ingestCandidates(slug, runId, doc) {
     const r = readJsonFile(file);
     const reason = !hunter ? 'no hunter with this key was planned' : r.bad ? 'not valid JSON' : !Array.isArray(r.value) ? 'not a JSON array' : null;
     if (reason !== null) {
-      invalid.push({ file: `candidates/${name}`, reason: stubReason(r) || reason, whole: true });
-      stub(file, stubReason(r) || reason);
+      invalid.push({ file: `candidates/${name}`, reason, whole: true });
+      stub(file, reason);
       continue;
     }
     const seen = new Set();
@@ -286,7 +285,7 @@ function ingestVotes(slug, runId, candidates) {
     const r = readJsonFile(file);
     const n = r.bad ? { reason: 'not valid JSON' } : normalizeVote(r.value, name, candidates);
     if (!n.vote) {
-      const reason = stubReason(r) || n.reason;
+      const reason = n.reason;
       invalid.push({ file: `votes/${name}`, reason, whole: true });
       stub(file, reason);
       continue;

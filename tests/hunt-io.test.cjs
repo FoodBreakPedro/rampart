@@ -581,3 +581,14 @@ test('assemble runs once; writeVote rejects a path-like file name; readVotes che
   const r = cli('assemble', '--project', SLUG, '--run', s.runId);
   assert.equal(r.status, 2);
 });
+
+test('an agent-written {"invalid": ...} stub is not trusted: its text is never echoed', () => {
+  const s = setup();
+  const cfile = path.join(s.dir, 'candidates', `${keyOf('app/api/users', 'authz-scoping')}.json`);
+  const vfile = path.join(s.dir, 'votes', `${keyOf('app/api/users', 'authz-scoping')}__c1__1.json`);
+  fs.writeFileSync(cfile, JSON.stringify({ invalid: AKIA }));
+  fs.writeFileSync(vfile, JSON.stringify({ invalid: AKIA }));
+  hio.ingest(SLUG, s.runId);
+  hio.ingest(SLUG, s.runId);
+  for (const f of [cfile, vfile, path.join(s.dir, 'invalid.json')]) assert.ok(!fs.readFileSync(f, 'utf8').includes(AKIA), f);
+});
