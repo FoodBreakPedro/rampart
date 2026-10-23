@@ -320,7 +320,7 @@ function setDisposition(slug, id, { status, reason, by, at } = {}) {
   dispositions[id] = { status, reason: redact(String(reason ?? '')), by: String(by ?? ''), at: when };
   writeAtomic(projectFile(slug, 'dispositions.json'), toJson(dispositions));
   finding.status = status;
-  finding.updatedAt = when;
+  finding.updatedAt = now(); // the status changed now, whatever time the decision was made (the record keeps that), so a push never misses it
   writeFindings(slug, findings);
   return finding;
 }

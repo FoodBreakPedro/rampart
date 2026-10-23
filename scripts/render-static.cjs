@@ -87,8 +87,10 @@ function publicUrl(url) {
   }
 }
 
-// A repo remote with any userinfo before the host removed (https://token@github.com/o/r becomes https://github.com/o/r).
-const publicRemote = (remote) => remote.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#@]*@/i, '$1');
+// A repo remote with any user before the host removed: https://token@github.com/o/r becomes https://github.com/o/r, and the
+// scp form git@github.com:o/r.git becomes github.com:o/r.git.
+const publicRemote = (remote) =>
+  remote.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#@]*@/i, '$1').replace(/^[^/:@\s]+@(?=[^/:@\s]+:)/, '');
 
 // A system with only the fields a viewer needs. An allowlist, because the system schema is open: a field added later stays
 // private until it is listed here.

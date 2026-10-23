@@ -66,6 +66,7 @@ function seed() {
       {
         id: 'db', type: 'supabase', name: 'Self-hosted Supabase', packs: ['supabase'], criticality: 'data', executor: 'local',
         host: { ssh: 'deploy@192.0.2.10:2222', composeProject: 'secret-compose', configPath: '/srv/private/config' },
+        repo: { remote: 'git@github.com:acme/db.git', defaultBranch: 'main', paths: { [machineId()]: '/srv/private/db' } },
         layers: { INFRA: { cadenceDays: 30 } },
       },
     ],
@@ -115,6 +116,7 @@ test('publicProject keeps only repo.remote/defaultBranch, host.hostname and live
   assert.deepEqual(web.repo, { remote: 'https://github.com/acme/web', defaultBranch: 'main' });
   assert.deepEqual(web.live, { url: 'https://app.example.invalid/dashboard' });
   assert.deepEqual(db.host, { hostname: '192.0.2.10' });
+  assert.deepEqual(db.repo, { remote: 'github.com:acme/db.git', defaultBranch: 'main' }, 'the scp-style ssh user is dropped');
   assert.equal('live' in db, false, 'no live url, none invented');
   assert.deepEqual(web.layers, { L1: { cadenceDays: 7 }, L2: { cadenceDays: 30 } });
   assert.equal(p.slug, SLUG);
@@ -129,6 +131,12 @@ test('publicProject host handles every ssh form: no user, no port, no @, ssh://,
   assert.equal(hostOf('ssh://root@example.test:2222/'), 'example.test');
   assert.equal(hostOf('root@[2001:db8::1]:22'), '2001:db8::1');
   assert.equal(hostOf('2001:db8::1'), '2001:db8::1');
+  const remoteOf = (remote) => publicProject({ slug: SLUG, systems: [{ id: 'x', repo: { remote } }] }).systems[0].repo.remote;
+  assert.equal(remoteOf('git@github.com:o/r.git'), 'github.com:o/r.git');
+  assert.equal(remoteOf('user@192.0.2.10:repos/x.git'), '192.0.2.10:repos/x.git');
+  assert.equal(remoteOf('https://tok@github.com/o/r'), 'https://github.com/o/r');
+  assert.equal(remoteOf('ssh://git@github.com/o/r.git'), 'ssh://github.com/o/r.git');
+  assert.equal(remoteOf('github.com/o/r'), 'github.com/o/r');
   const urlOf = (url) => publicProject({ slug: SLUG, systems: [{ id: 'x', live: { url } }] }).systems[0].live;
   assert.deepEqual(urlOf('http://example.test'), { url: 'http://example.test/' });
   assert.equal(urlOf('javascript:alert(1)'), undefined, 'not an http(s) url');
@@ -216,15 +224,20 @@ test('a changed project and a new score snapshot each plan the project doc', () 
   assert.equal(plan.docs[0].data.cloudAllowed, true);
 });
 
-test('a run doc carries REPORT.md as reportMd, redacted and cut to 200000 characters', () => {
+test('a run doc carries REPORT.md as reportMd, redacted and cut so the serialized doc stays under 256 KiB by bytes', () => {
   const runId = seed();
   let run = planPush(SLUG, { now: NOW }).docs.find((d) => d.collection === 'runs').data;
   assert.ok(run.reportMd.startsWith('# Report'));
   assert.ok(run.reportMd.includes('PASSWORD=[REDACTED]') && !run.reportMd.includes(PLANTED));
-  fs.writeFileSync(path.join(runDir(SLUG, runId), 'REPORT.md'), `# Long\n${'x'.repeat(250000)}`);
-  run = planPush(SLUG, { now: NOW }).docs.find((d) => d.collection === 'runs').data;
-  assert.equal(run.reportMd.length, 200000);
-  assert.ok(Buffer.byteLength(JSON.stringify(run)) < 256 * 1024, 'inside the 256 KiB doc cap');
+  const huge = { ascii: 'x'.repeat(300000), 'multi-byte': '\u00e9'.repeat(200000), 'escaped newlines': '\n'.repeat(200000), emoji: '\u{1F600}'.repeat(100000) };
+  for (const [what, filler] of Object.entries(huge)) {
+    fs.writeFileSync(path.join(runDir(SLUG, runId), 'REPORT.md'), `# Long\n${filler}`);
+    run = planPush(SLUG, { now: NOW }).docs.find((d) => d.collection === 'runs').data;
+    assert.ok(Buffer.byteLength(JSON.stringify(run)) < 256 * 1024, `${what}: inside the 256 KiB doc cap`);
+    assert.ok(Buffer.byteLength(JSON.stringify(run)) > 200 * 1024, `${what}: not cut far below the cap`);
+    assert.ok(run.reportMd.startsWith('# Long'));
+    assert.ok(!/[\uD800-\uDBFF]$/.test(run.reportMd), `${what}: no half surrogate pair at the cut`);
+  }
 });
 
 test('planPush batches are ArtifactData entries chunked at 50: set when the version is unknown, update with if_version when known', () => {
@@ -394,7 +407,8 @@ test('the store stamps updatedAt on findings and runs; setDisposition keeps a pu
   assert.ok(store.readRuns(SLUG).find((r) => r.runId === runId).updatedAt);
   store.setDisposition(SLUG, ID_A, { status: 'fixed', reason: 'r', by: 'user-1', at: '2026-10-23T09:00:00.000Z' });
   assert.equal(store.readDispositions(SLUG)[ID_A].at, '2026-10-23T09:00:00.000Z');
-  assert.equal(store.readFindings(SLUG).find((x) => x.id === ID_A).updatedAt, '2026-10-23T09:00:00.000Z');
+  const stamped = store.readFindings(SLUG).find((x) => x.id === ID_A).updatedAt;
+  assert.ok(stamped > '2026-10-23T09:00:00.000Z' && stamped >= f.updatedAt, 'the finding is stamped now, so an incremental push never misses the status change');
   store.setDisposition(SLUG, ID_A, { status: 'open', reason: 'r', by: 'user-1', at: 'not a time' });
   assert.ok(Number.isFinite(Date.parse(store.readDispositions(SLUG)[ID_A].at)), 'an unparseable time falls back to now');
 });
@@ -532,4 +546,145 @@ test('R23: a doc stamped exactly at since is planned again (the cursor is inclus
   tick();
   const later = planPush(SLUG, { since: new Date().toISOString(), now: NOW });
   assert.deepEqual(later.docs, [], 'a since after every stamp plans nothing');
+});
+
+// ---- fix round 1: merge rule (R25), safe plan output, id check, cadenceOverrides ---------------
+
+const person = (status, at, over = {}) => ({ status, reason: 'from the page', by: 'user-1', at, ...over });
+const statusOf = (id) => store.readFindings(SLUG).find((f) => f.id === id).status;
+
+test('R25: a page fixed decision older than a later local regression does not hide it, now or on any later pull', () => {
+  const runId = seed();
+  const fixed = person('fixed', PAST);
+  assert.deepEqual(applyPull(SLUG, [pageFinding(ID_A, fixed, PAST)]), { applied: 1, skipped: 0 });
+  assert.equal(statusOf(ID_A), 'fixed');
+  tick();
+  store.upsertFindings(SLUG, [finding(ID_A)], runId); // a later scan sees it again
+  assert.equal(statusOf(ID_A), 'regressed');
+  assert.deepEqual(applyPull(SLUG, [pageFinding(ID_A, fixed, PAST)]), { applied: 0, skipped: 1 });
+  assert.equal(statusOf(ID_A), 'regressed', 'the regression stands');
+  assert.equal(store.readDispositions(SLUG)[ID_A].by, 'rampart');
+  assert.equal(planPush(SLUG, { now: NOW }).docs.find((d) => d.id === ID_A).data.disposition, null, 'push does not send the stale decision back');
+});
+
+test('R25: a page accepted_risk or false_positive beats a later local regression; so does a page fixed that is newer than it', () => {
+  const runId = seed();
+  for (const [id, page] of [[ID_A, person('accepted_risk', PAST)], [ID_B, person('false_positive', PAST)]]) {
+    store.setDisposition(SLUG, id, { status: 'fixed', reason: 'upgraded', by: 'rampart' });
+    tick();
+    store.upsertFindings(SLUG, [finding(id)], runId);
+    assert.equal(statusOf(id), 'regressed');
+    assert.deepEqual(applyPull(SLUG, [pageFinding(id, page, PAST)]), { applied: 1, skipped: 0 });
+    assert.equal(statusOf(id), page.status, 'a judgment automation never overrides');
+  }
+});
+
+test('R25: a page fixed decision newer than the local regression applies', () => {
+  const runId = seed();
+  store.setDisposition(SLUG, ID_A, { status: 'fixed', reason: 'upgraded', by: 'rampart' });
+  tick();
+  store.upsertFindings(SLUG, [finding(ID_A)], runId);
+  assert.equal(statusOf(ID_A), 'regressed');
+  assert.deepEqual(applyPull(SLUG, [pageFinding(ID_A, person('fixed', FUTURE), FUTURE)]), { applied: 1, skipped: 0 });
+  assert.equal(statusOf(ID_A), 'fixed');
+});
+
+test('R25: a page open decision older than a local close-missing stays fixed', () => {
+  const runId = seed();
+  assert.deepEqual(applyPull(SLUG, [pageFinding(ID_A, person('open', PAST), PAST)]), { applied: 1, skipped: 0 });
+  tick();
+  store.closeMissing(SLUG, { system: 'web', source: 'npm-audit', runId, seenIds: [] });
+  assert.equal(statusOf(ID_A), 'fixed');
+  assert.deepEqual(applyPull(SLUG, [pageFinding(ID_A, person('open', PAST), PAST)]), { applied: 0, skipped: 1 });
+  assert.equal(statusOf(ID_A), 'fixed');
+  assert.deepEqual(applyPull(SLUG, [pageFinding(ID_A, person('fixed', FUTURE), FUTURE)]), { applied: 1, skipped: 0 }, 'a page fixed that is newer applies');
+});
+
+test('R25: the same page decision pulled twice applies once; a newer page decision by a person replaces it', () => {
+  seed();
+  const page = person('accepted_risk', '2026-10-23T09:00:00.000Z');
+  assert.deepEqual(applyPull(SLUG, [pageFinding(ID_A, page, page.at)]), { applied: 1, skipped: 0 });
+  assert.deepEqual(applyPull(SLUG, [pageFinding(ID_A, page, page.at)]), { applied: 0, skipped: 1 });
+  const newer = person('false_positive', '2026-10-23T10:00:00.000Z');
+  assert.deepEqual(applyPull(SLUG, [pageFinding(ID_A, newer, newer.at)]), { applied: 1, skipped: 0 });
+  assert.equal(statusOf(ID_A), 'false_positive');
+  assert.deepEqual(applyPull(SLUG, [pageFinding(ID_A, page, page.at)]), { applied: 0, skipped: 1 }, 'the older person decision does not come back');
+});
+
+test('minor 4: a doc whose id differs from its data.id is skipped and writes nothing', () => {
+  seed();
+  const known = store.readFindings(SLUG).find((f) => f.id === ID_A);
+  const result = applyPull(SLUG, [
+    { collection: 'jobs', id: 'job-A', data: job({ id: 'job-B' }) },
+    { collection: 'findings', id: ID_B, data: { ...known, disposition: person('accepted_risk', PAST), updatedAt: PAST } },
+  ]);
+  assert.deepEqual(result, { applied: 0, skipped: 2 });
+  assert.equal(store.readJob('job-B'), null);
+  assert.equal(statusOf(ID_A), 'open');
+  assert.equal(statusOf(ID_B), 'open');
+});
+
+test('R26: a project doc carries cadenceOverrides: null so a consumed page override does not linger', () => {
+  seed();
+  const doc = planPush(SLUG, { now: NOW }).docs.find((d) => d.collection === 'projects').data;
+  assert.ok('cadenceOverrides' in doc);
+  assert.equal(doc.cadenceOverrides, null);
+});
+
+test('CLI push refuses an --out that is not empty and holds no earlier plan, and leaves it untouched', () => {
+  seed();
+  const out = path.join(home, 'project root');
+  fs.mkdirSync(path.join(out, 'docs'), { recursive: true });
+  fs.writeFileSync(path.join(out, 'docs', 'precious.md'), 'keep me');
+  fs.writeFileSync(path.join(out, 'package.json'), '{}');
+  let r = cli('push', '--project', SLUG, '--out', out);
+  assert.equal(r.status, 2, r.stderr);
+  assert.match(r.stderr, /not empty/);
+  assert.equal(fs.readFileSync(path.join(out, 'docs', 'precious.md'), 'utf8'), 'keep me');
+  assert.deepEqual(fs.readdirSync(out).sort(), ['docs', 'package.json']);
+
+  fs.writeFileSync(path.join(out, 'batches.json'), '{not a plan');
+  r = cli('push', '--project', SLUG, '--out', out);
+  assert.equal(r.status, 2, 'a batches.json that is not a plan does not count');
+  assert.equal(fs.readFileSync(path.join(out, 'docs', 'precious.md'), 'utf8'), 'keep me');
+
+  const dot = cli('push', '--project', SLUG, '--out', '.');
+  assert.equal(dot.status, 2, 'the project root of this repo is not an output folder');
+});
+
+test('CLI push reuses an --out that holds an earlier plan: removes only the files that plan listed', () => {
+  seed();
+  const out = path.join(home, 'plan out');
+  assert.equal(cli('push', '--project', SLUG, '--out', out).status, 0);
+  const first = JSON.parse(fs.readFileSync(path.join(out, 'batches.json'), 'utf8')).batches.flat();
+  assert.equal(first.length, 4);
+  const stranger = path.join(out, 'docs', 'findings', 'notes.txt');
+  fs.writeFileSync(stranger, 'not part of the plan');
+
+  const since = new Date(Date.now() + 60000).toISOString();
+  const r = cli('push', '--project', SLUG, '--since', since, '--out', out);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^0 docs in 0 batches/);
+  for (const e of first) assert.ok(!fs.existsSync(e.file_path), 'the earlier plan\'s file is gone');
+  assert.equal(fs.readFileSync(stranger, 'utf8'), 'not part of the plan', 'a file the plan did not list stays');
+  assert.ok(!fs.existsSync(path.join(out, 'docs', 'projects')) && !fs.existsSync(path.join(out, 'docs', 'runs')), 'emptied folders are removed');
+
+  fs.rmSync(stranger);
+  assert.equal(cli('push', '--project', SLUG, '--out', out).status, 0);
+  assert.equal(cli('push', '--project', SLUG, '--since', since, '--out', out).status, 0);
+  assert.ok(!fs.existsSync(path.join(out, 'docs')), 'the docs folder goes when it is empty');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(out, 'batches.json'), 'utf8')).batches, []);
+});
+
+test('CLI push never deletes outside <out>/docs even when an earlier batches.json names such a file', () => {
+  seed();
+  const out = path.join(home, 'plan out 2');
+  assert.equal(cli('push', '--project', SLUG, '--out', out).status, 0);
+  const victim = path.join(home, 'victim.txt');
+  fs.writeFileSync(victim, 'safe');
+  const plan = JSON.parse(fs.readFileSync(path.join(out, 'batches.json'), 'utf8'));
+  plan.batches[0][0].file_path = victim;
+  fs.writeFileSync(path.join(out, 'batches.json'), JSON.stringify(plan));
+  assert.equal(cli('push', '--project', SLUG, '--out', out).status, 0);
+  assert.equal(fs.readFileSync(victim, 'utf8'), 'safe');
 });

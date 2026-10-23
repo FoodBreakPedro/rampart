@@ -10,8 +10,9 @@
 //   applyPull(slug, docs) -> {applied, skipped}
 //     docs: [{collection, id, data}] read from the DB. Jobs are mirrored to ~/.rampart/jobs, project settings and
 //     finding dispositions are merged by the rules below. Other collections are ignored (neither applied nor skipped).
-// Merge rule: a disposition made in the page (by is not 'rampart') beats an automated status change; between two decisions
-// by people the later one stands; an automated (by 'rampart') page disposition applies only when its doc is newer than the
+// Merge rule: a disposition made in the page (by is not 'rampart') beats local automation, except that a page fixed or open
+// loses to an automated change (regression, close) made after it; accepted_risk and false_positive always win. Between two
+// decisions by people the later one stands; the same decision pulled twice applies once; an automated (by 'rampart') page disposition applies only when its doc is newer than the
 // local finding; for jobs and project settings the newer updatedAt wins.
 // Nothing private is planned: projects go through publicProject, findings are the stored (redacted) records, and a run doc
 // carries its summary and REPORT.md, never raw tool output. Packs docs are not planned yet (Plan 2 owns packs).
@@ -31,7 +32,8 @@ const { redact } = require('./lib/redact.cjs');
 const { writeAtomic } = require('./lib/atomic.cjs');
 
 const BATCH_SIZE = 50;
-const REPORT_MAX_CHARS = 200000; // a doc is capped at 256 KiB
+const DOC_MAX_BYTES = 256 * 1024; // the DB's cap on one document
+const DOC_MARGIN_BYTES = 4096; // headroom for what the DB wraps around it
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T|$)/;
 const PAGE_STATUSES = ['open', 'fixed', 'false_positive', 'accepted_risk'];
 const EXECUTORS = ['local', 'cloud'];
@@ -63,7 +65,7 @@ function pageDisposition(record) {
   return { status: record.status, reason: String(record.reason ?? ''), by: String(record.by ?? ''), at: String(record.at ?? '') };
 }
 
-// REPORT.md of a run, redacted and cut to the doc cap, or null when the run has none.
+// REPORT.md of a run, redacted, or null when the run has none (the cut to the doc cap is fitReport's).
 function readReport(slug, runId) {
   let text;
   try {
@@ -72,12 +74,36 @@ function readReport(slug, runId) {
     if (err.code === 'ENOENT') return null;
     throw err;
   }
-  const cut = redact(text).slice(0, REPORT_MAX_CHARS);
-  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut; // never end on half a surrogate pair
+  return redact(text);
+}
+
+const jsonBytes = (value) => Buffer.byteLength(JSON.stringify(value));
+
+// The longest start of the report that keeps the serialized doc inside the cap, measured in bytes of the JSON (multi-byte
+// characters and escaped newlines both cost more than one byte). Never ends on half a surrogate pair.
+function fitReport(text, data) {
+  const limit = DOC_MAX_BYTES - DOC_MARGIN_BYTES;
+  const head = (n) => {
+    const cut = text.slice(0, n);
+    return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+  };
+  const fits = (n) => jsonBytes({ ...data, reportMd: head(n) }) <= limit;
+  if (fits(text.length)) return text;
+  let lo = 0;
+  let hi = text.length;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (fits(mid)) lo = mid;
+    else hi = mid;
+  }
+  return head(lo);
 }
 
 function projectDoc(slug, project, findings, runs, now) {
-  const data = { ...publicProject(project), score: projectScore(slug, project, findings, runs, now), updatedAt: project.updated };
+  // cadenceOverrides: null clears a page override the last pull already applied, so it does not linger in the DB.
+  const data = {
+    ...publicProject(project), score: projectScore(slug, project, findings, runs, now), cadenceOverrides: null, updatedAt: project.updated,
+  };
   return { collection: 'projects', id: slug, data: redactDeep(data) };
 }
 
@@ -90,7 +116,7 @@ function runDoc(slug, run) {
   const { raw, ...summary } = run;
   const data = { ...summary, updatedAt: run.updatedAt || run.finishedAt };
   const report = readReport(slug, run.runId);
-  if (report !== null) data.reportMd = report;
+  if (report !== null) data.reportMd = fitReport(report, data);
   return { collection: 'runs', id: run.runId, data: redactDeep(data) };
 }
 
@@ -196,7 +222,13 @@ function pullFinding(slug, data) {
   if (local && local.status === page.status && local.by === page.by && local.at === page.at) return false; // already applied
   const localByPerson = isObject(local) && local.by !== 'rampart';
   if (page.by !== 'rampart') {
-    if (localByPerson && ms(local.at) > ms(page.at)) return false; // a later local decision stands (the next push carries it)
+    // A person in the page. Against another person the later decision wins. Against local automation (a regression, a close)
+    // the page's judgments (accepted_risk, false_positive) always win, but fixed and open only win while no later scan has
+    // changed the finding: a later regression or close is new evidence, and re-applying the stale decision on every pull
+    // would hide it for good.
+    if (localByPerson && ms(local.at) > ms(page.at)) return false; // the next push carries the later local decision
+    const judgment = page.status === 'accepted_risk' || page.status === 'false_positive';
+    if (!localByPerson && !judgment && isObject(local) && ms(local.at) > ms(page.at)) return false;
   } else if (localByPerson || !(ms(data.updatedAt || page.at) > ms(finding.updatedAt || finding.lastSeen))) {
     return false; // an automated change never beats a person, nor a newer local state
   }
@@ -212,7 +244,9 @@ function applyPull(slug, docs) {
   const wanted = docs.filter((d) => isObject(d) && PULLED.includes(d.collection)).sort((a, b) => order(a) - order(b));
   for (const doc of wanted) {
     const id = doc.id ?? doc.doc_id;
-    const done =
+    // A doc filed under one id but holding another is not trusted: nothing is written for it.
+    const consistent = doc.collection === 'projects' || id === undefined || (isObject(doc.data) && doc.data.id === id);
+    const done = !consistent ? false :
       doc.collection === 'jobs' ? pullJob(slug, doc.data)
         : doc.collection === 'projects' ? pullProject(slug, id, doc.data)
           : pullFinding(slug, doc.data);
@@ -268,9 +302,54 @@ function readJsonFile(file, what) {
 
 const safeName = (id) => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(id);
 
+// Makes <out> ready for a new plan. A missing or empty folder is ready. A folder holding the batches.json of an earlier push
+// has just the files that plan listed removed (only below <out>/docs), and the folders that leaves empty. Anything else is
+// refused, so --out . in a project cannot delete the project's own docs/.
+function clearEarlierPlan(out) {
+  let entries;
+  try {
+    entries = fs.readdirSync(out);
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    if (err.code === 'ENOTDIR') throw new UsageError('push: --out is not a folder');
+    throw err;
+  }
+  if (!entries.length) return;
+  let listed = null;
+  try {
+    const plan = JSON.parse(fs.readFileSync(path.join(out, 'batches.json'), 'utf8'));
+    if (isObject(plan) && Array.isArray(plan.batches) && plan.batches.every(Array.isArray)) listed = plan.batches.flat();
+  } catch {
+    listed = null;
+  }
+  if (!listed) throw new UsageError('push: --out exists and is not empty; give a new or empty folder (or one an earlier push wrote)');
+  const docsDir = path.join(out, 'docs');
+  const inside = (p) => {
+    const rel = path.relative(docsDir, p);
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  };
+  for (const entry of listed) {
+    if (!isObject(entry) || typeof entry.file_path !== 'string' || !inside(path.resolve(entry.file_path))) continue;
+    const file = path.resolve(entry.file_path);
+    try {
+      fs.unlinkSync(file); // a file only: unlink never removes a folder
+    } catch {
+      continue;
+    }
+    for (let dir = path.dirname(file); dir === docsDir || inside(dir); dir = path.dirname(dir)) {
+      try {
+        fs.rmdirSync(dir); // fails while the folder still holds anything
+      } catch {
+        break;
+      }
+      if (dir === docsDir) break;
+    }
+  }
+}
+
 // Writes the plan as files so no store data passes through the conversation: one body per doc, and batches.json naming them.
 function writePlan(plan, out) {
-  fs.rmSync(path.join(out, 'docs'), { recursive: true, force: true });
+  clearEarlierPlan(out);
   const batches = plan.batches.map((batch) =>
     batch.map((entry) => {
       if (!safeName(entry.doc_id) || !COLLECTION_RE.test(entry.collection)) throw new Error('a doc id cannot be a file name');
