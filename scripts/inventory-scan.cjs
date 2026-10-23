@@ -2,7 +2,8 @@
 // Inventory scanner: what kind of systems live in one folder, found from manifests and file names alone, and a project.json
 // draft built from them. The `inventory-mapper` agent starts from this and the user confirms it before it is saved.
 //   node scripts/inventory-scan.cjs <folder> [--json] [--slug <slug>] [--name <name>]
-// Prints a table of the systems found; --json prints {systems, draft} instead. Exit 0 when the folder was scanned (even if it
+// Prints a table of the systems found; --json prints {systems, draft} instead (--slug and --name shape that draft; the default
+// slug is the folder name, and only --json needs one). Exit 0 when the folder was scanned (even if it
 // held nothing recognizable), 2 for a folder that does not exist or bad arguments, 1 for anything unexpected.
 //
 // Only these are opened: package.json, app.json and the compose files in the folder itself (for `image:` lines). Everything else
@@ -34,6 +35,10 @@ const WRANGLER_FILES = ['wrangler.toml', 'wrangler.json', 'wrangler.jsonc'];
 // An `image:` key, as a block line (optionally a list item) or inside a flow mapping, and the image it names.
 const IMAGE_KEY = /(?:^\s*(?:-\s*)?|[{,]\s*)image\s*:\s*["']?([^\s"'},#]+)/g;
 const N8N_IMAGE = /(?:^|\/)n8nio\/n8n(?:[:@]|$)/i;
+// A YAML comment starts at a # that follows whitespace. ${VAR:-default} and ${VAR-default} stand for their default (bounded, so a
+// long line of unclosed ${A- cannot make the scan quadratic).
+const COMMENT_TAIL = /\s#.*$/;
+const ENV_DEFAULT = /\$\{[A-Za-z_][A-Za-z0-9_]*:?-([^}]{0,256})\}/g;
 const SSH_SCHEMES = new Set(['ssh', 'git+ssh', 'ssh+git']);
 
 // What each system type is called, which packs it starts with, and how it is run. "repo" systems are code that is checked out
@@ -116,11 +121,16 @@ function filesMatching(dir, pattern) {
   return names.filter((n) => pattern.test(n) && isFile(path.join(dir, n))).sort();
 }
 
-// Whether a compose file has an `image:` line naming n8n. Only those lines are looked at, and nothing from them is kept.
+// Whether a compose file has an `image:` line naming n8n. Only those lines are looked at, and nothing from them is kept. A comment
+// (a whole line, or the tail of one) is not a line; a ${VAR:-default} image counts as its default.
 function composeHasN8n(file) {
   const text = readText(file);
   if (text === null) return false;
-  return text.split(/\r?\n/).some((line) => [...line.matchAll(IMAGE_KEY)].some((m) => N8N_IMAGE.test(m[1])));
+  return text.split(/\r?\n/).some((raw) => {
+    if (raw.trimStart().startsWith('#')) return false;
+    const line = raw.replace(COMMENT_TAIL, '').replace(ENV_DEFAULT, '$1');
+    return [...line.matchAll(IMAGE_KEY)].some((m) => N8N_IMAGE.test(m[1]));
+  });
 }
 
 function resolveFolder(folder) {
@@ -226,6 +236,9 @@ function gitInfo(dir) {
 
 const slugSource = () => loadSchema('project').properties.slug.pattern;
 const isSlug = (value) => typeof value === 'string' && new RegExp(slugSource()).test(value);
+function requireSlug(slug) {
+  if (!isSlug(slug)) throw new RangeError(`slug must match ${slugSource()}`);
+}
 
 // A project.json draft for the folder: the systems found, the safest defaults (local executor, no cloud, medium criticality, the
 // layer cadences for the kind of system), and an owner attestation left empty, so the project does not validate until the user has
@@ -233,7 +246,7 @@ const isSlug = (value) => typeof value === 'string' && new RegExp(slugSource()).
 // Throws RangeError when the slug cannot be saved or the folder does not exist.
 function draftProject({ slug, name, folder, systems } = {}) {
   const dir = resolveFolder(folder);
-  if (!isSlug(slug)) throw new RangeError(`slug must match ${slugSource()}`);
+  requireSlug(slug);
   const found = systems === undefined ? detectSystems(dir) : systems;
   const git = found.some((s) => (TYPES[s.type] || TYPES.other).kind === 'repo') ? gitInfo(dir) : null;
   return {
@@ -309,9 +322,16 @@ function main(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
   try {
     const opts = parseCli(argv);
     const dir = resolveFolder(opts.folder);
+    if (opts.slug !== undefined) requireSlug(opts.slug); // a slug that cannot be saved is wrong in either mode
     const systems = detectSystems(dir);
-    const draft = draftProject({ slug: opts.slug !== undefined ? opts.slug : slugFromFolder(dir), name: opts.name, folder: dir, systems });
-    stdout.write(`${opts.json ? JSON.stringify({ systems, draft }, null, 2) : table(dir, systems)}\n`);
+    let output;
+    if (opts.json) {
+      const slug = opts.slug !== undefined ? opts.slug : slugFromFolder(dir);
+      output = JSON.stringify({ systems, draft: draftProject({ slug, name: opts.name, folder: dir, systems }) }, null, 2);
+    } else {
+      output = table(dir, systems);
+    }
+    stdout.write(`${output}\n`);
     return 0;
   } catch (err) {
     stderr.write(`inventory-scan: ${redact(err.message)}\n`);

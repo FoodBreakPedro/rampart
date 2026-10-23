@@ -19,7 +19,7 @@ const REPO_LAYERS = { L1: { cadenceDays: 7 }, L2: { cadenceDays: 30 }, L3: { cad
 const HOST_LAYERS = { INFRA: { cadenceDays: 30 }, L3: { cadenceDays: 90 } };
 
 // Environment variables a test changes, put back afterwards (undefined means "was not set").
-const TOUCHED = ['RAMPART_GIT', 'PATH', 'GIT_CEILING_DIRECTORIES'];
+const TOUCHED = ['RAMPART_GIT', 'PATH', 'GIT_CEILING_DIRECTORIES', 'SHIM_REMOTE', 'SHIM_HEAD', 'SHIM_EXIT', 'SHIM_LOG'];
 const saved = Object.fromEntries(TOUCHED.map((k) => [k, process.env[k]]));
 
 // A scratch folder for every test, named with spaces and shell characters, filled from {relative/path: text}.
@@ -170,11 +170,17 @@ test('n8n: only an image line naming n8nio/n8n counts', () => {
   const yes = [
     'n8nio/n8n', 'n8nio/n8n:latest', 'n8nio/n8n:1.80.0', 'docker.n8n.io/n8nio/n8n', 'docker.n8n.io/n8nio/n8n:1.80.0',
     'registry.example.com:5000/n8nio/n8n:2', '"n8nio/n8n"', "'n8nio/n8n:1'", 'n8nio/n8n@sha256:abc123',
+    // ${VAR:-default} and ${VAR-default} count as their default; ${VAR} alone leaves the rest of the name to decide
+    '${N8N_IMAGE:-n8nio/n8n:latest}', '${N8N_IMAGE-n8nio/n8n}', '"${N8N_IMAGE:-n8nio/n8n:1}"',
+    '${REGISTRY:-docker.n8n.io}/n8nio/n8n:1', 'n8nio/n8n:${N8N_TAG:-latest}', 'n8nio/n8n:${N8N_TAG}',
   ];
   for (const image of yes) {
     assert.deepEqual(typesIn(tmp({ 'docker-compose.yml': compose(image) })), ['n8n', 'docker-host'], image);
   }
-  const no = ['n8nio/n8n-custom', 'myorg/n8nio-n8n', 'n8nio/runners', 'postgres:16', 'n8n'];
+  const no = [
+    'n8nio/n8n-custom', 'myorg/n8nio-n8n', 'n8nio/runners', 'postgres:16', 'n8n',
+    '${N8N_IMAGE:-postgres:16}', '${N8N_IMAGE}', '${N8N_IMAGE:-}', 'postgres:${N8N_TAG:-n8nio/n8n}x',
+  ];
   for (const image of no) {
     assert.deepEqual(typesIn(tmp({ 'docker-compose.yml': compose(image) })), ['docker-host'], image);
   }
@@ -183,12 +189,18 @@ test('n8n: only an image line naming n8nio/n8n counts', () => {
     'flow mapping': 'services: { n8n: { image: n8nio/n8n } }\n',
     'trailing comment': 'services:\n  a:\n    image: n8nio/n8n # the automation server\n',
     'CRLF line ends': 'services:\r\n  a:\r\n    image: n8nio/n8n\r\n',
+    'flow mapping with a trailing comment': 'services: { n8n: { image: n8nio/n8n } } # keep this one\n',
   };
   for (const [label, text] of Object.entries(other)) assert.deepEqual(typesIn(tmp({ 'docker-compose.yml': text })), ['n8n', 'docker-host'], label);
   const notImage = {
     'commented out': 'services:\n  a:\n    # image: n8nio/n8n\n',
     'named in a command': 'services:\n  a:\n    command: pull n8nio/n8n\n',
     'in an env value': 'services:\n  a:\n    environment:\n      IMAGE: n8nio/n8n\n',
+    'commented-out flow mapping': '# services: { n8n: { image: n8nio/n8n } }\n',
+    'indented commented-out flow mapping': 'services:\n  # a: { image: n8nio/n8n }\n',
+    'comment mentioning image:': '# pin this, image: n8nio/n8n later\n',
+    'comment tail mentioning image:': 'services:\n  a:\n    ports: [80] # pin this, image: n8nio/n8n later\n',
+    'comment tail of a flow mapping': 'services: { a: { ports: [80] } } # { image: n8nio/n8n }\n',
   };
   for (const [label, text] of Object.entries(notImage)) assert.deepEqual(typesIn(tmp({ 'docker-compose.yml': text })), ['docker-host'], label);
 });
@@ -436,16 +448,62 @@ test('git that cannot be started (or is not installed) leaves the remote out and
   assert.equal(repo.defaultBranch, 'main');
 });
 
-test('git that exits non-zero or prints nothing leaves the remote out', () => {
-  const dir = tmp({ 'package.json': pkg({ next: '*' }), 'shim.cjs': 'process.exit(Number(process.env.SHIM_EXIT || 0));' });
-  process.env.RAMPART_GIT = `node:${path.join(dir, 'shim.cjs')}`;
-  for (const exit of ['0', '2', '128']) {
-    process.env.SHIM_EXIT = exit;
+// A stand-in for git (RAMPART_GIT=node:<script>) that answers "remote ..." with SHIM_REMOTE and anything else with SHIM_HEAD, exits
+// with SHIM_EXIT, and logs the argv of every call to SHIM_LOG.
+function shimGit({ remote = '', head = '', exit = 0 }) {
+  const dir = tmp({
+    'package.json': pkg({ next: '*' }),
+    'git-shim.cjs': [
+      "const fs = require('node:fs');",
+      'const args = process.argv.slice(2);',
+      "fs.appendFileSync(process.env.SHIM_LOG, JSON.stringify(args) + '\\n');",
+      "process.stdout.write((args[0] === 'remote' ? process.env.SHIM_REMOTE : process.env.SHIM_HEAD) + '\\n');",
+      'process.exitCode = Number(process.env.SHIM_EXIT);',
+    ].join('\n'),
+  });
+  const log = path.join(dir, 'git-calls.jsonl');
+  Object.assign(process.env, {
+    RAMPART_GIT: `node:${path.join(dir, 'git-shim.cjs')}`,
+    SHIM_REMOTE: remote,
+    SHIM_HEAD: head,
+    SHIM_EXIT: String(exit),
+    SHIM_LOG: log,
+  });
+  const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+  return { dir, calls };
+}
+
+test('git output is used: the origin URL loses its credentials, origin/HEAD names the branch, arguments reach git one by one', () => {
+  const { dir, calls } = shimGit({ remote: 'https://user:s3cret-pass@github.com/o/r.git', head: 'refs/remotes/origin/trunk' });
+  const repo = repoOf(dir);
+  assert.equal(repo.remote, 'https://github.com/o/r.git');
+  assert.equal(repo.defaultBranch, 'trunk');
+  assert.ok(!JSON.stringify(repo).includes('s3cret'));
+  assert.deepEqual(calls(), [['remote', 'get-url', 'origin'], ['symbolic-ref', 'refs/remotes/origin/HEAD']]);
+});
+
+test('git that exits non-zero leaves the remote out even when it printed a URL', () => {
+  for (const exit of [1, 2, 128]) {
+    const { dir, calls } = shimGit({ remote: 'https://user:s3cret-pass@github.com/o/r.git', head: 'refs/remotes/origin/trunk', exit });
     const repo = repoOf(dir);
-    assert.ok(!('remote' in repo), exit);
-    assert.equal(repo.defaultBranch, 'main', exit);
+    assert.ok(!('remote' in repo), String(exit));
+    assert.equal(repo.defaultBranch, 'main', String(exit));
+    assert.ok(!JSON.stringify(repo).includes('s3cret'), String(exit));
+    assert.deepEqual(calls(), [['remote', 'get-url', 'origin']], String(exit)); // no point asking for the branch of a missing remote
   }
-  delete process.env.SHIM_EXIT;
+});
+
+test('git that prints nothing, or a default branch that is not a remote-tracking ref, changes nothing it should not', () => {
+  const { dir } = shimGit({ remote: '', head: 'refs/remotes/origin/trunk' });
+  const repo = repoOf(dir);
+  assert.ok(!('remote' in repo));
+  assert.equal(repo.defaultBranch, 'main');
+  for (const head of ['', 'refs/heads/trunk', 'origin/trunk', 'refs/remotes/origin/has space']) {
+    const { dir: d } = shimGit({ remote: 'git@github.com:o/r.git', head });
+    const r = repoOf(d);
+    assert.equal(r.remote, 'git@github.com:o/r.git', head);
+    assert.equal(r.defaultBranch, 'main', head);
+  }
 });
 
 // ---- the command line ---------------------------------------------------------------------
@@ -528,11 +586,28 @@ test('CLI exits 2 with a message on stderr for usage errors and a missing folder
   assert.match(cli(path.join(dir, 'missing')).stderr, /not found/);
 });
 
-test('CLI cannot derive a slug from a folder name with no letters or digits', () => {
+test('CLI cannot derive a slug from a folder name with no letters or digits, but only the --json draft needs one', () => {
   const dir = path.join(tmp(), '___');
   fs.mkdirSync(dir);
   const r = cli(dir, '--json');
   assert.equal(r.status, 2);
   assert.match(r.stderr, /--slug/);
   assert.equal(cli(dir, '--json', '--slug', 'given-slug').status, 0);
+  const human = cli(dir);
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /no systems/i);
+});
+
+test('CLI human mode does not build the draft (git is never asked), and still rejects a slug that cannot be saved', () => {
+  const dir = tmp({ 'package.json': pkg({ next: '*' }) });
+  const marker = path.join(dir, 'git-ran');
+  fs.writeFileSync(path.join(dir, 'git-shim.cjs'), "require('node:fs').writeFileSync(process.env.SHIM_MARK, 'x');");
+  const env = { ...process.env, RAMPART_GIT: `node:${path.join(dir, 'git-shim.cjs')}`, SHIM_MARK: marker };
+  const human = spawnSync(process.execPath, [CLI, dir], { encoding: 'utf8', env });
+  assert.equal(human.status, 0, human.stderr);
+  assert.ok(!fs.existsSync(marker));
+  const json = spawnSync(process.execPath, [CLI, dir, '--json'], { encoding: 'utf8', env });
+  assert.equal(json.status, 0, json.stderr);
+  assert.ok(fs.existsSync(marker));
+  assert.equal(spawnSync(process.execPath, [CLI, dir, '--slug', 'Bad Slug'], { encoding: 'utf8', env }).status, 2);
 });
