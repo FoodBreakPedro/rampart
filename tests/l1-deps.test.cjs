@@ -16,6 +16,7 @@ const fixturePath = (name) => path.join(__dirname, 'fixtures', name);
 const fixture = (name) => JSON.parse(fs.readFileSync(fixturePath(name), 'utf8'));
 const TOKEN = 'ghp_depsdepsdepsdepsdepsdeps99999';
 const ZERO = { added: 0, updated: 0, unchanged: 0, regressed: 0 };
+const DONE_ZERO = { ...ZERO, closed: 0 }; // a done run adds how many findings it closed
 
 // Environment variables a test changes, put back afterwards (undefined means "was not set").
 const TOUCHED = [
@@ -123,8 +124,8 @@ test('(a) trivy: two vulnerable packages become two findings, the run is done an
   assert.equal(run.tool.name, 'trivy');
   assert.deepEqual(run.tool, { name: 'trivy' }, 'no version is recorded, and a null would not validate');
   assert.ok(run.finishedAt);
-  assert.deepEqual(counts, { added: 2, updated: 0, unchanged: 0, regressed: 0 });
-  assert.deepEqual(run.counts, { added: 2, updated: 0, unchanged: 0, hardening: 0, regressed: 0 });
+  assert.deepEqual(counts, { added: 2, updated: 0, unchanged: 0, regressed: 0, closed: 0 });
+  assert.deepEqual(run.counts, { added: 2, updated: 0, unchanged: 0, hardening: 0, regressed: 0, closed: 0 });
   assert.deepEqual(readRun(run), run, 'run.json on disk is the returned run');
 
   const findings = store.readFindings(SLUG);
@@ -165,8 +166,8 @@ test('(b) no trivy, an npm lockfile, npm exiting 1: two findings and a done run 
   assert.equal(run.status, 'done');
   assert.equal(run.reason, undefined);
   assert.deepEqual(run.tool, { name: 'npm' });
-  assert.deepEqual(counts, { added: 2, updated: 0, unchanged: 0, regressed: 0 });
-  assert.deepEqual(run.counts, { added: 2, updated: 0, unchanged: 0, hardening: 0, regressed: 0 });
+  assert.deepEqual(counts, { added: 2, updated: 0, unchanged: 0, regressed: 0, closed: 0 });
+  assert.deepEqual(run.counts, { added: 2, updated: 0, unchanged: 0, hardening: 0, regressed: 0, closed: 0 });
   assert.deepEqual(readRun(run), run);
 
   const findings = store.readFindings(SLUG);
@@ -188,7 +189,7 @@ test('(c) the empty npm report with exit 0 is a done run with nothing added', ()
   const { run, counts } = scanDeps({ project: SLUG, system: 'mobile' });
   assert.equal(run.status, 'done');
   assert.deepEqual(run.tool, { name: 'npm' });
-  assert.deepEqual(counts, ZERO);
+  assert.deepEqual(counts, DONE_ZERO);
   assert.deepEqual(store.readFindings(SLUG), []);
   assert.deepEqual(JSON.parse(fs.readFileSync(rawFile(run), 'utf8')), fixture('npm-audit.empty.json'));
 });
@@ -198,7 +199,7 @@ test('(c) the empty trivy report (no Results) with exit 0 is also a done run wit
   process.env.FAKE_REPORT = 'trivy.empty.json';
   const { run, counts } = scanDeps({ project: SLUG, system: 'mobile' });
   assert.equal(run.status, 'done');
-  assert.deepEqual(counts, ZERO);
+  assert.deepEqual(counts, DONE_ZERO);
   assert.deepEqual(store.readFindings(SLUG), []);
 });
 
@@ -514,11 +515,77 @@ test('a second scan of the same dependencies changes nothing: unchanged 2, same 
   const { run, counts } = scanDeps({ project: SLUG, system: 'mobile' });
   assert.equal(run.status, 'done');
   assert.notEqual(run.runId, first.run.runId);
-  assert.deepEqual(counts, { added: 0, updated: 0, unchanged: 2, regressed: 0 });
+  assert.deepEqual(counts, { added: 0, updated: 0, unchanged: 2, regressed: 0, closed: 0 });
   const after = store.readFindings(SLUG);
   assert.deepEqual(after.map((f) => f.id), before.map((f) => f.id));
   assert.deepEqual(after.map((f) => f.firstSeen), before.map((f) => f.firstSeen));
   assert.ok(after.every((f) => f.verification.run === run.runId));
+});
+
+// ---- findings that no longer reproduce ----------------------------------------------------
+
+const statuses = () => Object.fromEntries(store.readFindings(SLUG).map((f) => [f.location.package, f.status]));
+
+test('a finished scan that no longer lists a package closes its finding, with a disposition naming the run', () => {
+  lock('package-lock.json');
+  assert.equal(scanDeps({ project: SLUG, system: 'mobile' }).counts.added, 2);
+  assert.deepEqual(statuses(), { lodash: 'open', minimist: 'open' });
+
+  const onlyLodash = fixture('trivy.json');
+  onlyLodash.Results[0].Vulnerabilities = onlyLodash.Results[0].Vulnerabilities.filter((v) => v.PkgName === 'lodash');
+  process.env.FAKE_STDOUT = JSON.stringify(onlyLodash);
+  const { run, counts } = scanDeps({ project: SLUG, system: 'mobile' });
+  assert.equal(run.status, 'done');
+  assert.deepEqual(counts, { added: 0, updated: 0, unchanged: 1, regressed: 0, closed: 1 });
+  assert.equal(run.counts.closed, 1);
+  assert.deepEqual(readRun(run), run);
+  assert.deepEqual(statuses(), { lodash: 'open', minimist: 'fixed' });
+  const closed = store.readFindings(SLUG).find((f) => f.location.package === 'minimist');
+  const { at, ...record } = store.readDispositions(SLUG)[closed.id];
+  assert.deepEqual(record, { status: 'fixed', reason: `not reproduced in run ${run.runId}`, by: 'rampart' });
+  assert.ok(at);
+});
+
+test('an empty report closes everything of that source, and a package that comes back is a regression', () => {
+  lock('package-lock.json');
+  scanDeps({ project: SLUG, system: 'mobile' });
+  process.env.FAKE_REPORT = 'trivy.empty.json';
+  const clean = scanDeps({ project: SLUG, system: 'mobile' });
+  assert.deepEqual(clean.counts, { added: 0, updated: 0, unchanged: 0, regressed: 0, closed: 2 });
+  assert.deepEqual(statuses(), { lodash: 'fixed', minimist: 'fixed' });
+
+  delete process.env.FAKE_REPORT;
+  const again = scanDeps({ project: SLUG, system: 'mobile' });
+  assert.deepEqual(again.counts, { added: 0, updated: 0, unchanged: 0, regressed: 2, closed: 0 });
+  assert.deepEqual(statuses(), { lodash: 'regressed', minimist: 'regressed' });
+});
+
+test('findings a person triaged are not closed by a clean scan', () => {
+  lock('package-lock.json');
+  scanDeps({ project: SLUG, system: 'mobile' });
+  const [first, second] = store.readFindings(SLUG);
+  store.setDisposition(SLUG, first.id, { status: 'false_positive', reason: 'dev dependency', by: 'pedro' });
+  store.setDisposition(SLUG, second.id, { status: 'accepted_risk', reason: 'not reachable', by: 'pedro' });
+  process.env.FAKE_REPORT = 'trivy.empty.json';
+  assert.equal(scanDeps({ project: SLUG, system: 'mobile' }).counts.closed, 0);
+  assert.deepEqual(store.readFindings(SLUG).map((f) => f.status), ['false_positive', 'accepted_risk']);
+});
+
+test('a skipped run closes nothing, and a scan with the other tool does not close this tool\'s findings', () => {
+  lock('package-lock.json');
+  scanDeps({ project: SLUG, system: 'mobile' }); // trivy: two findings
+  process.env.FAKE_EXIT = '2';
+  assertSkipped(scanDeps({ project: SLUG, system: 'mobile' }), 'trivy exited 2', 2);
+  assert.deepEqual(statuses(), { lodash: 'open', minimist: 'open' }, 'a failed scan says nothing about what is gone');
+  delete process.env.FAKE_EXIT;
+
+  noTrivy();
+  process.env.FAKE_REPORT = 'npm-audit.empty.json';
+  process.env.FAKE_EXIT = '0';
+  const npm = scanDeps({ project: SLUG, system: 'mobile' }); // npm audit: clean
+  assert.equal(npm.run.status, 'done');
+  assert.equal(npm.counts.closed, 0, 'trivy findings have another source');
+  assert.deepEqual(statuses(), { lodash: 'open', minimist: 'open' });
 });
 
 test('--input: a report that is not JSON, or does not fit the format, is a skipped run whose reason does not quote it', () => {
@@ -575,6 +642,7 @@ test('cli: a finished scan exits 0 and prints the tool, the lockfile, counts and
   assert.match(r.stdout, /trivy/);
   assert.match(r.stdout, /pnpm-lock\.yaml/, 'the lockfile that was chosen is reported');
   assert.match(r.stdout, /2 new/);
+  assert.match(r.stdout, /0 closed/);
   assert.match(r.stdout, /raw[\\/]deps\.json/);
   assert.equal(r.stderr, '');
   assert.equal(store.readFindings(SLUG).length, 2);

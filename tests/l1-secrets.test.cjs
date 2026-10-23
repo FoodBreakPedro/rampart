@@ -249,6 +249,17 @@ test('a second scan of the same leaks changes nothing: unchanged 2, same finding
   assert.ok(after.every((f) => f.verification.run === run.runId), 'the stored finding names the latest run');
 });
 
+test('a later clean scan closes nothing: a leak stays in the history, so its finding stays open', () => {
+  scanSecrets({ project: SLUG, system: 'mobile' });
+  process.env.FAKE_EXIT = '0';
+  process.env.FAKE_REPORT = 'gitleaks.empty.json';
+  const { run, counts } = scanSecrets({ project: SLUG, system: 'mobile' });
+  assert.equal(run.status, 'done');
+  assert.deepEqual(counts, { added: 0, updated: 0, unchanged: 0, regressed: 0 }, 'no closed count');
+  assert.deepEqual(store.readFindings(SLUG).map((f) => f.status), ['open', 'open']);
+  assert.deepEqual(store.readDispositions(SLUG), {});
+});
+
 test('a scan that outlives the timeout is a skipped run, "gitleaks timed out"', () => {
   process.env.FAKE_SLEEP_MS = '20000';
   const started = Date.now();

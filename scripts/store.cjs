@@ -212,6 +212,40 @@ function upsertFindings(slug, findings, runId) {
   return counts;
 }
 
+// Close the findings a fresh scan of one system no longer reports. Every stored finding with that system and source whose
+// status is open or regressed and whose id is not in seenIds (an array or a Set of the ids the scan just reported) becomes
+// fixed, and dispositions.json records why: "not reproduced in run <runId>", by rampart. Findings a person triaged
+// (false_positive, accepted_risk) and findings already fixed are left alone, as are other systems and other sources.
+// Call it only after a scan that finished: a scan that was skipped says nothing about what is gone. If the finding comes
+// back, upsertFindings regresses it like any other fixed finding. Returns {closed: <number of findings closed>}.
+function closeMissing(slug, { system, source, runId, seenIds } = {}) {
+  checkSlug(slug);
+  checkRunId(runId);
+  if (typeof system !== 'string' || system === '') throw new TypeError('system must be a non-empty string');
+  if (typeof source !== 'string' || source === '') throw new TypeError('source must be a non-empty string');
+  if (seenIds === null || typeof seenIds !== 'object' || typeof seenIds[Symbol.iterator] !== 'function') {
+    throw new TypeError('seenIds must be an array or a Set of finding ids');
+  }
+  const seen = new Set(seenIds);
+  const findings = readFindings(slug);
+  const closing = findings.filter(
+    (f) => f.system === system && f.source === source && (f.status === 'open' || f.status === 'regressed') && !seen.has(f.id)
+  );
+  if (!closing.length) return { closed: 0 };
+
+  const stamp = now();
+  const dispositions = readDispositions(slug);
+  for (const f of closing) {
+    f.status = 'fixed';
+    dispositions[f.id] = { status: 'fixed', reason: `not reproduced in run ${runId}`, by: 'rampart', at: stamp };
+  }
+  // Records first, as upsertFindings does: a crash in between leaves a record that findings.jsonl does not yet agree with,
+  // which the next scan puts right, not a closed finding with no reason.
+  writeAtomic(projectFile(slug, 'dispositions.json'), toJson(dispositions));
+  writeFindings(slug, findings);
+  return { closed: closing.length };
+}
+
 function loadFinding(slug, id) {
   const findings = readFindings(slug);
   const finding = findings.find((f) => f.id === id);
@@ -449,7 +483,7 @@ if (require.main === module) {
 
 module.exports = {
   listProjects, readProject, writeProject,
-  readFindings, upsertFindings, readDispositions, setDisposition, setClass,
+  readFindings, upsertFindings, closeMissing, readDispositions, setDisposition, setClass,
   createRun, finishRun, writeRaw,
   readConfig, writeConfig, appendScore, readScores,
 };

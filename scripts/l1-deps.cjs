@@ -15,6 +15,9 @@
 // and 1 when they found vulnerabilities; both are a finished scan when stdout is a v2 audit report. Any other code, a
 // timeout, a missing binary, stdout that is not a report, or a report the normalizer rejects (an npm error report, an
 // unsupported version) is a skipped run with the reason recorded, never a crash and never a false "clean".
+// A finished scan also closes the system's earlier findings from the same source (trivy, or npm-audit for npm and pnpm) that
+// the report no longer lists (store.closeMissing): they become fixed, with a record in dispositions.json, and counts.closed
+// says how many. A skipped run closes nothing, and neither does a scan with the other tool: its findings have another source.
 // Nothing from a report except counts and file paths is ever printed, and the stored copy of the report is redacted.
 
 const fs = require('node:fs');
@@ -45,6 +48,8 @@ const INPUT_FORMATS = {
   npm: { tool: 'npm', normalize: fromNpmAudit },
 };
 const NATIVE_ENV = { npm: 'RAMPART_NPM', pnpm: 'RAMPART_PNPM' };
+// The source the normalizer puts on the findings of each tool (pnpm's report is read as an npm audit report).
+const FINDING_SOURCE = { trivy: 'trivy', npm: 'npm-audit', pnpm: 'npm-audit' };
 
 const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
@@ -129,9 +134,10 @@ function toFindings(reportText, label, normalize, ctx) {
 }
 
 // Scan one system and record the outcome as a run. Returns {run, counts, lockfile}: the finished run, the findings upsert
-// counts ({added, updated, unchanged, regressed}, all zero for a skipped run) and the lockfile that chose the manager
-// (absent for --input, and when there was none). Throws RangeError for a project, system, path or option that does not
-// resolve (no run is created). Anything else that goes wrong after the run exists marks it failed and is rethrown.
+// counts plus closed ({added, updated, unchanged, regressed, closed}; a skipped run has the first four at zero and no closed)
+// and the lockfile that chose the manager (absent for --input, and when there was none). Throws RangeError for a project,
+// system, path or option that does not resolve (no run is created). Anything else that goes wrong after the run exists marks
+// it failed and is rethrown.
 function scan({ project, system, repoPath, input, format, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
   const target = resolveTarget({ project, system, repoPath, input, format });
   const run = store.createRun(project, { job: 'audit', layers: ['L1'], systems: [system], executor: 'local' });
@@ -171,7 +177,9 @@ function scan({ project, system, repoPath, input, format, timeoutMs = DEFAULT_TI
     if (exitCode === VULNERABILITIES_EXIT && findings.length === 0) {
       return skipped(withDetail(`${tool} exited 1 but reported no vulnerabilities; the audit may have failed`, stderr));
     }
-    const counts = store.upsertFindings(project, findings, run.runId);
+    const upserted = store.upsertFindings(project, findings, run.runId);
+    const { closed } = store.closeMissing(project, { system, source: FINDING_SOURCE[tool], runId: run.runId, seenIds: findings.map((f) => f.id) });
+    const counts = { ...upserted, closed };
     return { run: store.finishRun(project, run.runId, { status: 'done', counts, tool: { name: tool } }), counts, lockfile };
   } catch (err) {
     markFailed(run, err);
@@ -198,10 +206,10 @@ function parse(argv) {
 
 // The lines under the head of a done run.
 function details({ run, counts, lockfile }) {
-  const { added, updated, unchanged, regressed } = counts;
+  const { added, updated, unchanged, regressed, closed } = counts;
   return [
     `tool: ${run.tool.name}${lockfile ? `, lockfile: ${lockfile}` : ' (report given with --input)'}`,
-    `dependencies: ${added} new, ${updated} updated, ${unchanged} unchanged, ${regressed} regressed`,
+    `dependencies: ${added} new, ${updated} updated, ${unchanged} unchanged, ${regressed} regressed, ${closed} closed`,
     `raw report: ${path.join(runDir(run.project, run.runId), 'raw', RAW_NAME)}`,
   ];
 }

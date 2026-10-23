@@ -111,6 +111,7 @@ test('every function that takes a slug rejects one that could leave the store', 
     readProject: (s) => store.readProject(s),
     readFindings: (s) => store.readFindings(s),
     upsertFindings: (s) => store.upsertFindings(s, [finding()], RUN),
+    closeMissing: (s) => store.closeMissing(s, { system: 'web', source: 'headers', runId: RUN, seenIds: [] }),
     readDispositions: (s) => store.readDispositions(s),
     setDisposition: (s) => store.setDisposition(s, ID_A, { status: 'fixed', reason: 'r', by: 'b' }),
     setClass: (s) => store.setClass(s, ID_A, 'verified', 'n'),
@@ -139,6 +140,7 @@ test('runId is checked against the run id format wherever it is accepted', () =>
     const label = JSON.stringify(bad);
     const aboutRunId = (e) => e instanceof RangeError && /runId/.test(e.message) && !e.message.includes('..');
     assert.throws(() => store.upsertFindings(SLUG, [finding()], bad), aboutRunId, `upsertFindings ${label}`);
+    assert.throws(() => store.closeMissing(SLUG, { system: 'web', source: 'headers', runId: bad, seenIds: [] }), aboutRunId, `closeMissing ${label}`);
     assert.throws(() => store.finishRun(SLUG, bad, { status: 'done' }), aboutRunId, `finishRun ${label}`);
     assert.throws(() => store.writeRaw(SLUG, bad, 'x.json', '{}'), aboutRunId, `writeRaw ${label}`);
   }
@@ -495,6 +497,109 @@ test('a corrupt findings.jsonl line is reported by line number without echoing i
     () => store.readFindings(SLUG),
     (e) => /line 3/.test(e.message) && !e.message.includes('abcdefghij')
   );
+});
+
+// ---- closeMissing -------------------------------------------------------------------------
+
+const ID_D = 'd'.repeat(12);
+const ID_E = 'e'.repeat(12);
+const ID_F = 'f'.repeat(12);
+const ID_G = '1'.repeat(12);
+const ID_H = '2'.repeat(12);
+const CLOSE_RUN = '2026-10-24T09-30-00Z';
+const closeArgs = (over = {}) => ({ system: 'web', source: 'headers', runId: CLOSE_RUN, seenIds: [ID_A], ...over });
+
+// web/headers: A (still reported), B (open), C (regressed), D (false positive), E (accepted risk), F (fixed by Pedro);
+// api/headers: G; web/trivy: H.
+function seedClosable() {
+  const web = (id, over = {}) => finding({ id, system: 'web', source: 'headers', ...over });
+  store.upsertFindings(SLUG, [
+    web(ID_A), web(ID_B), web(ID_C), web(ID_D), web(ID_E), web(ID_F),
+    web(ID_G, { system: 'api' }), web(ID_H, { source: 'trivy' }),
+  ], RUN);
+  store.setDisposition(SLUG, ID_D, { status: 'false_positive', reason: 'scanner quirk', by: 'pedro' });
+  store.setDisposition(SLUG, ID_E, { status: 'accepted_risk', reason: 'internal only', by: 'pedro' });
+  store.setDisposition(SLUG, ID_F, { status: 'fixed', reason: 'patched in abc123', by: 'pedro' });
+  store.setDisposition(SLUG, ID_C, { status: 'fixed', reason: 'patched in def456', by: 'pedro' });
+  store.upsertFindings(SLUG, [web(ID_C)], '2026-10-23T20-00-00Z'); // C comes back: regressed
+  assert.equal(store.readFindings(SLUG).find((f) => f.id === ID_C).status, 'regressed');
+}
+const byId = () => Object.fromEntries(store.readFindings(SLUG).map((f) => [f.id, f]));
+
+test('closeMissing: only the open or regressed findings of that system and source that were not seen are fixed, with a disposition', () => {
+  seedClosable();
+  const before = byId();
+  const dispBefore = store.readDispositions(SLUG);
+  tick();
+  const started = iso();
+  const res = store.closeMissing(SLUG, closeArgs());
+  const finished = iso();
+
+  assert.deepEqual(res, { closed: 2 });
+  const after = byId();
+  assert.equal(after[ID_A].status, 'open', 'still reported');
+  assert.equal(after[ID_B].status, 'fixed');
+  assert.equal(after[ID_C].status, 'fixed', 'a regressed finding closes too');
+  assert.equal(after[ID_D].status, 'false_positive');
+  assert.equal(after[ID_E].status, 'accepted_risk');
+  assert.equal(after[ID_F].status, 'fixed');
+  assert.equal(after[ID_G].status, 'open', 'another system');
+  assert.equal(after[ID_H].status, 'open', 'another source');
+  for (const [id, row] of Object.entries(after)) {
+    assert.deepEqual({ ...row, status: undefined }, { ...before[id], status: undefined }, `${id}: only the status changes (lastSeen too)`);
+  }
+
+  const disp = store.readDispositions(SLUG);
+  for (const id of [ID_B, ID_C]) {
+    const { at, ...rest } = disp[id];
+    assert.deepEqual(rest, { status: 'fixed', reason: `not reproduced in run ${CLOSE_RUN}`, by: 'rampart' });
+    assert.ok(at >= started && at <= finished);
+  }
+  for (const id of [ID_D, ID_E, ID_F]) assert.deepEqual(disp[id], dispBefore[id], `${id}: the person's record is untouched`);
+  for (const id of [ID_A, ID_G, ID_H]) assert.equal(disp[id], undefined, `${id}: no record`);
+  assert.deepEqual(readJsonFile(projectPath('dispositions.json')), disp);
+  assert.deepEqual(tmpFiles(projectPath()), []);
+});
+
+test('closeMissing: a second call changes nothing, and seenIds may be a Set or empty', () => {
+  seedClosable();
+  assert.deepEqual(store.closeMissing(SLUG, closeArgs({ seenIds: new Set([ID_A]) })), { closed: 2 });
+  const rows = readText(projectPath('findings.jsonl'));
+  const disp = readText(projectPath('dispositions.json'));
+  assert.deepEqual(store.closeMissing(SLUG, closeArgs({ runId: '2026-10-25T09-30-00Z' })), { closed: 0 });
+  assert.equal(readText(projectPath('findings.jsonl')), rows);
+  assert.equal(readText(projectPath('dispositions.json')), disp, 'the reason still names the run that closed it');
+
+  assert.deepEqual(store.closeMissing(SLUG, closeArgs({ seenIds: [] })), { closed: 1 }, 'with nothing seen, A closes as well');
+  assert.equal(byId()[ID_A].status, 'fixed');
+});
+
+test('closeMissing: a closed finding that comes back is regressed by the next upsert, which rewrites its record', () => {
+  store.upsertFindings(SLUG, [finding({ source: 'headers' })], RUN);
+  store.closeMissing(SLUG, { system: 'db', source: 'headers', runId: CLOSE_RUN, seenIds: [] });
+  assert.equal(byId()[ID_A].status, 'fixed');
+  assert.deepEqual(store.upsertFindings(SLUG, [finding({ source: 'headers' })], '2026-10-25T09-30-00Z'), { added: 0, updated: 0, unchanged: 0, regressed: 1 });
+  assert.equal(byId()[ID_A].status, 'regressed');
+  assert.equal(store.readDispositions(SLUG)[ID_A].status, 'regressed');
+});
+
+test('closeMissing: a project with no findings is {closed: 0} and writes nothing', () => {
+  assert.deepEqual(store.closeMissing(SLUG, closeArgs()), { closed: 0 });
+  assert.ok(!fs.existsSync(projectPath('findings.jsonl')));
+  assert.ok(!fs.existsSync(projectPath('dispositions.json')));
+});
+
+test('closeMissing: a bad slug, run id or argument is rejected and nothing is written', () => {
+  store.upsertFindings(SLUG, [finding({ system: 'web', source: 'headers' })], RUN);
+  const rows = readText(projectPath('findings.jsonl'));
+  assert.throws(() => store.closeMissing('../..', closeArgs()), RangeError);
+  assert.throws(() => store.closeMissing(SLUG, closeArgs({ runId: '../x' })), /runId/);
+  for (const bad of [{ system: undefined }, { system: '' }, { source: undefined }, { source: 7 }, { seenIds: undefined }, { seenIds: null }, { seenIds: 'abc' }, { seenIds: 5 }]) {
+    assert.throws(() => store.closeMissing(SLUG, closeArgs(bad)), TypeError, JSON.stringify(bad));
+  }
+  assert.throws(() => store.closeMissing(SLUG), RangeError, "no arguments is no run id");
+  assert.equal(readText(projectPath('findings.jsonl')), rows);
+  assert.ok(!fs.existsSync(projectPath('dispositions.json')));
 });
 
 // ---- dispositions -------------------------------------------------------------------------

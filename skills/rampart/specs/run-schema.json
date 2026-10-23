@@ -23,7 +23,8 @@
         "added": { "type": "integer", "minimum": 0 },
         "updated": { "type": "integer", "minimum": 0 },
         "unchanged": { "type": "integer", "minimum": 0 },
-        "hardening": { "type": "integer", "minimum": 0 }
+        "hardening": { "type": "integer", "minimum": 0 },
+        "closed": { "type": "integer", "minimum": 0, "description": "Findings closed because the scan no longer reported them." }
       }
     },
     "revision": {
