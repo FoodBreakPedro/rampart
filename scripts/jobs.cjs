@@ -7,24 +7,30 @@
 //   claimPatch(job, executorId, now)          -> {status: 'claimed', claimedBy, claimedAt, updatedAt}; throws unless queued
 //   completionPatch(job, {runId, status, resultSummary}, now) -> status done|failed with finishedAt, updatedAt; the summary redacted, 500 chars
 //   refusalPatch(job, now)                    -> a failed job that was not created by the owner
+//   startPatch(now, sessionId?)               -> {status: 'running', startedAt, updatedAt, sessionId?}
+//   executorDoc({sessionId?, remoteControl, machineId, now}) -> {id, doc}: the executors/<id> document watch registers
 // `now` is a Date, an ISO string or milliseconds. Cost is an estimate of subagents, not money.
 //
 // The dashboard page has no module loader, so it embeds copies of PAGE_FUNCTIONS (Task 6 tests the copies against these).
 // Those are plain function declarations: no require, no Node-only global, no reference to anything outside the list. The page
 // never completes a job, so completionPatch (which needs the Node redactor) is not among them.
 //
-// CLI (each command prints JSON with --json; claim-patch, completion-patch and refusal-patch always do):
+// CLI (each command prints JSON with --json; the patch commands and executor-doc always do):
 //   node scripts/jobs.cjs new-id [--now <iso>]
 //   node scripts/jobs.cjs cost --type <t> [--layer <L>] [--units n] [--effort low|medium|high] [--classes n] [--probes n] [--open-verified n]
 //   node scripts/jobs.cjs route (--project <slug> | --project-file <file>) --system <id> [--type <t>] [--layer <L>]
 //   node scripts/jobs.cjs claim-patch --job <file> --executor <id> [--now <iso>]
 //   node scripts/jobs.cjs completion-patch --job <file> --status done|failed [--run-id <id>] [--summary <text>] [--now <iso>]
 //   node scripts/jobs.cjs refusal-patch --job <file> [--now <iso>]
+//   node scripts/jobs.cjs start-patch [--session <id>] [--now <iso>]
+//   node scripts/jobs.cjs executor-doc --remote-control true|false [--session <id>] [--now <iso>]   -> {id, doc}
+// A --job file is the bare job or the {id, data, version} wrapper an ArtifactData read with out_dir may save.
 // Exit 0 ok, 2 bad arguments, 1 anything else (a job that is not queued, a missing file).
 
 const fs = require('node:fs');
 const util = require('node:util');
 const { redact } = require('./lib/redact.cjs');
+const { machineId } = require('./lib/paths.cjs');
 
 // ---- the page functions ---------------------------------------------------------------------
 
@@ -165,6 +171,38 @@ function completionPatch(job, result, now) {
   return patch;
 }
 
+// A DB document id: one path segment of letters, digits and _ - . ~ : @ +, never "." or "..".
+const DOC_ID_RE = /^(?!\.\.?$)[A-Za-z0-9_\-.~:@+]{1,200}$/;
+
+function checkSessionId(sessionId) {
+  if (typeof sessionId !== 'string' || !DOC_ID_RE.test(sessionId)) {
+    throw new RangeError('session id must be 1 to 200 characters of letters, digits and _ - . ~ : @ +');
+  }
+  return sessionId;
+}
+
+// The patch that marks a claimed job as running; sessionId names the session working it, when one is known.
+function startPatch(now, sessionId) {
+  const at = toIsoTime(now);
+  const patch = { status: 'running', startedAt: at, updatedAt: at };
+  if (sessionId !== undefined) patch.sessionId = checkSessionId(sessionId);
+  return patch;
+}
+
+// The executors/<id> document a watch session registers and heartbeats. Its id is the session id only when the session has one
+// and Remote Control is on (send_message can then reach it); otherwise local-<machineId>, with remoteControl false.
+function executorDoc({ sessionId, remoteControl, machineId, now } = {}) {
+  if (typeof remoteControl !== 'boolean') throw new TypeError('remoteControl must be true or false');
+  if (typeof machineId !== 'string' || !/^[A-Za-z0-9-]{1,64}$/.test(machineId)) throw new RangeError('machineId must be a short id');
+  if (sessionId !== undefined) checkSessionId(sessionId);
+  const at = toIsoTime(now);
+  const reachable = remoteControl && sessionId !== undefined;
+  return {
+    id: reachable ? sessionId : `local-${machineId}`,
+    doc: { kind: 'local', machineId, heartbeatAt: at, remoteControl: reachable, updatedAt: at },
+  };
+}
+
 const PAGE_FUNCTIONS = ['toIsoTime', 'wholeCount', 'isGithubRemote', 'newJobId', 'costEstimate', 'route', 'claimPatch', 'refusalPatch'];
 
 // ---- CLI ------------------------------------------------------------------------------------
@@ -179,6 +217,8 @@ const USAGE = [
   '  claim-patch --job <file> --executor <id> [--now <iso>]',
   '  completion-patch --job <file> --status done|failed [--run-id <id>] [--summary <text>] [--now <iso>]',
   '  refusal-patch --job <file> [--now <iso>]',
+  '  start-patch [--session <id>] [--now <iso>]',
+  '  executor-doc --remote-control true|false [--session <id>] [--now <iso>]',
   'add --json for JSON output',
 ].join('\n');
 
@@ -200,6 +240,8 @@ const OPTIONS = {
   'run-id': { type: 'string' },
   status: { type: 'string' },
   summary: { type: 'string' },
+  session: { type: 'string' },
+  'remote-control': { type: 'string' },
 };
 
 function parseArgs(argv) {
@@ -239,6 +281,22 @@ function readJsonFile(file, what) {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (err) {
     throw new Error(`could not read ${what} ${file}: ${err.code || 'not valid JSON'}`);
+  }
+}
+
+// A job as a file: the bare document, or the {id, data, version} wrapper an ArtifactData read with out_dir may save.
+function readJobFile(file) {
+  const content = readJsonFile(file, 'the job');
+  const wrapped = content && typeof content === 'object' && !('status' in content) && content.data && typeof content.data === 'object';
+  return wrapped ? content.data : content;
+}
+
+function sessionOf(opts) {
+  if (opts.session === undefined) return undefined;
+  try {
+    return checkSessionId(opts.session);
+  } catch (err) {
+    throw new UsageError(`--session: ${err.message}`);
   }
 }
 
@@ -285,7 +343,7 @@ function runCommand(command, opts) {
       const file = need(opts, 'job');
       const executor = need(opts, 'executor');
       const now = nowOf(opts);
-      const job = readJsonFile(file, 'the job');
+      const job = readJobFile(file);
       return { value: claimPatch(job, executor, now), always: true };
     }
     case 'completion-patch': {
@@ -293,15 +351,26 @@ function runCommand(command, opts) {
       const status = need(opts, 'status');
       if (status !== 'done' && status !== 'failed') throw new UsageError('--status must be done or failed');
       const now = nowOf(opts);
-      const job = readJsonFile(file, 'the job');
+      const job = readJobFile(file);
       const result = { runId: opts['run-id'], status, resultSummary: opts.summary };
       return { value: completionPatch(job, result, now), always: true };
     }
     case 'refusal-patch': {
       const file = need(opts, 'job');
       const now = nowOf(opts);
-      const job = readJsonFile(file, 'the job');
+      const job = readJobFile(file);
       return { value: refusalPatch(job, now), always: true };
+    }
+    case 'start-patch': {
+      const session = sessionOf(opts);
+      return { value: startPatch(nowOf(opts), session), always: true };
+    }
+    case 'executor-doc': {
+      const rc = need(opts, 'remote-control');
+      if (rc !== 'true' && rc !== 'false') throw new UsageError('--remote-control must be true or false');
+      const session = sessionOf(opts);
+      const value = executorDoc({ sessionId: session, remoteControl: rc === 'true', machineId: machineId(), now: nowOf(opts) });
+      return { value, always: true };
     }
     case undefined:
       throw new UsageError('a command is required');
@@ -333,6 +402,8 @@ module.exports = {
   claimPatch,
   completionPatch,
   refusalPatch,
+  startPatch,
+  executorDoc,
   toIsoTime,
   wholeCount,
   isGithubRemote,

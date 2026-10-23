@@ -1259,3 +1259,102 @@ test('CLI exits 1 for a bad status, class or unknown finding id, and 2 for usage
   }
   assert.equal(readText(projectPath('findings.jsonl')), before);
 });
+
+// ---- the live dashboard's settings ------------------------------------------------------------
+
+const DASH_URL = 'https://claude.ai/artifact/0f3c9a2b-7d41-4e8a-9c55-1b2a3c4d5e6f';
+const ALL_UNSET = { url: null, ownerId: null, publishedAt: null, pageHash: null, remoteControl: null, scheduleId: null };
+
+test('readDashboard: every field null until set; setDashboard sets only the fields given and keeps the rest of config.json', () => {
+  assert.deepEqual(store.readDashboard(), ALL_UNSET);
+  store.writeConfig({ other: 1 });
+  const d = store.setDashboard({ url: DASH_URL, ownerId: 'u_AbCdEfGhIjKlMnOpQrStUv' });
+  assert.deepEqual(d, { ...ALL_UNSET, url: DASH_URL, ownerId: 'u_AbCdEfGhIjKlMnOpQrStUv' });
+  store.setDashboard({ remoteControl: false, publishedAt: '2026-10-23T12:00:00.000Z', pageHash: 'a'.repeat(64), scheduleId: 'rampart-watch' });
+  const cfg = store.readConfig();
+  assert.equal(cfg.other, 1, 'other config keys survive');
+  assert.deepEqual(cfg.dashboard, {
+    url: DASH_URL, ownerId: 'u_AbCdEfGhIjKlMnOpQrStUv', remoteControl: false,
+    publishedAt: '2026-10-23T12:00:00.000Z', pageHash: 'a'.repeat(64), scheduleId: 'rampart-watch',
+  });
+  assert.equal(store.readDashboard().remoteControl, false, 'false is a value, not unset');
+  store.setDashboard({ url: 'https://claude.ai/code/artifact/abc-123' });
+  assert.equal(store.readDashboard().url, 'https://claude.ai/code/artifact/abc-123');
+  assert.equal(store.readDashboard().ownerId, 'u_AbCdEfGhIjKlMnOpQrStUv');
+  assert.deepEqual(tmpFiles(home), []);
+});
+
+test('setDashboard refuses a bad value or an unknown field and writes nothing', () => {
+  store.setDashboard({ url: DASH_URL });
+  const before = readText(path.join(home, 'config.json'));
+  const bad = [
+    { url: 'http://claude.ai/artifact/x' },
+    { url: 'https://evil.example/artifact/x' },
+    { url: 'https://claude.ai.evil.example/artifact/x' },
+    { url: `${DASH_URL}?token=1` },
+    { url: 'https://claude.ai/chat/abc' },
+    { ownerId: '' },
+    { ownerId: 'u 1' },
+    { ownerId: 'u_1"; rm -rf ~' },
+    { ownerId: 42 },
+    { publishedAt: 'yesterday' },
+    { pageHash: 'short' },
+    { remoteControl: 'true' },
+    { scheduleId: '$(id)' },
+    { url: DASH_URL, ownerId: 'ok', scheduleId: 'bad id' },
+  ];
+  for (const patch of bad) assert.throws(() => store.setDashboard(patch), RangeError, JSON.stringify(patch));
+  assert.throws(() => store.setDashboard({ colour: 'red' }), RangeError);
+  for (const empty of [{}, null, [], 'x']) assert.throws(() => store.setDashboard(empty), TypeError);
+  assert.equal(readText(path.join(home, 'config.json')), before);
+});
+
+test('readDashboard reads a hand-edited malformed field as null, never hands it on', () => {
+  store.writeConfig({ dashboard: { url: 'https://evil.example/x', ownerId: 'u_ok', remoteControl: 'yes' } });
+  assert.deepEqual(store.readDashboard(), { ...ALL_UNSET, ownerId: 'u_ok' });
+  store.writeConfig({ dashboard: 'not an object' });
+  assert.deepEqual(store.readDashboard(), ALL_UNSET);
+});
+
+test('CLI dashboard prints the fields; dashboard-set sets only the given ones', () => {
+  const empty = cli('dashboard', '--json');
+  assert.equal(empty.status, 0, empty.stderr);
+  assert.deepEqual(JSON.parse(empty.stdout), ALL_UNSET);
+  assert.match(cli('dashboard').stdout, /^url: \(unset\)$/m);
+
+  const r = cli('dashboard-set', '--url', DASH_URL, '--owner-id', 'u_owner', '--remote-control', 'true');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, 'url, ownerId, remoteControl set\n');
+  const s = cli('dashboard-set', '--schedule-id=rampart-watch', '--published-at', '2026-10-23T12:00:00Z', '--page-hash', 'b'.repeat(64), '--json');
+  assert.equal(s.status, 0, s.stderr);
+  assert.deepEqual(JSON.parse(s.stdout), {
+    url: DASH_URL, ownerId: 'u_owner', publishedAt: '2026-10-23T12:00:00Z', pageHash: 'b'.repeat(64), remoteControl: true, scheduleId: 'rampart-watch',
+  });
+  assert.equal(cli('dashboard-set', '--remote-control', 'false').status, 0);
+  assert.equal(JSON.parse(cli('dashboard', '--json').stdout).remoteControl, false);
+  assert.match(cli('dashboard').stdout, new RegExp(`^url: ${DASH_URL.replace(/[.?]/g, '\$&')}$`, 'm'));
+});
+
+test('CLI dashboard-set exits 2 and writes nothing for a missing, unknown or bad flag', () => {
+  cli('dashboard-set', '--url', DASH_URL);
+  const before = readText(path.join(home, 'config.json'));
+  const usage = [
+    ['dashboard-set'],
+    ['dashboard-set', '--url'],
+    ['dashboard-set', '--url', 'https://example.com/x'],
+    ['dashboard-set', '--owner-id', 'has space'],
+    ['dashboard-set', '--remote-control', 'yes'],
+    ['dashboard-set', '--colour', 'red'],
+    ['dashboard-set', '--status', 'open'],
+    ['dashboard-set', 'extra', '--url', DASH_URL],
+    ['dashboard', '--url', DASH_URL],
+    ['dashboard', 'extra'],
+  ];
+  for (const args of usage) {
+    const r = cli(...args);
+    assert.equal(r.status, 2, `node store.cjs ${args.join(' ')}`);
+    assert.equal(r.stdout, '');
+    assert.ok(r.stderr.length > 0);
+  }
+  assert.equal(readText(path.join(home, 'config.json')), before);
+});

@@ -479,6 +479,51 @@ function readJobs(slug) {
   return jobs.sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0));
 }
 
+// ---- the live dashboard's settings (config.json "dashboard") ------------------------------
+
+// Each field with the check its value must pass. url is the artifact's claude.ai link; ownerId is the page owner's opaque user
+// id (from the DB's meta/owner); pageHash names the published page version; scheduleId is the scheduled task that runs watch.
+const OPAQUE_ID_RE = /^[A-Za-z0-9_.:@|+=-]{1,200}$/;
+const DASHBOARD_FIELDS = {
+  url: (v) => typeof v === 'string' && /^https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]{1,128}$/.test(v),
+  ownerId: (v) => typeof v === 'string' && OPAQUE_ID_RE.test(v),
+  publishedAt: (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v) && Number.isFinite(Date.parse(v)),
+  pageHash: (v) => typeof v === 'string' && /^[A-Za-z0-9_:+/=-]{8,200}$/.test(v),
+  remoteControl: (v) => typeof v === 'boolean',
+  scheduleId: (v) => typeof v === 'string' && OPAQUE_ID_RE.test(v),
+};
+const DASHBOARD_HINTS = {
+  url: 'an https://claude.ai/artifact/<id> or https://claude.ai/code/artifact/<id> link',
+  ownerId: 'an opaque id (letters, digits and _ . : @ | + = -, up to 200)',
+  publishedAt: 'an ISO date-time',
+  pageHash: 'a hash of 8 to 200 characters (letters, digits and _ : + / = -)',
+  remoteControl: 'true or false',
+  scheduleId: 'an opaque id (letters, digits and _ . : @ | + = -, up to 200)',
+};
+
+// Every dashboard field, null when unset or when the stored value does not pass its check (a hand-edited config never
+// hands a recipe a malformed URL or owner id).
+function readDashboard() {
+  const cfg = readConfig();
+  const stored = isObject(cfg.dashboard) ? cfg.dashboard : {};
+  const out = {};
+  for (const [key, ok] of Object.entries(DASHBOARD_FIELDS)) out[key] = Object.hasOwn(stored, key) && ok(stored[key]) ? stored[key] : null;
+  return out;
+}
+
+// Sets only the given fields, each checked first (nothing is written when one fails), and keeps the rest of config.json.
+function setDashboard(patch) {
+  if (!isObject(patch) || !Object.keys(patch).length) throw new TypeError('setDashboard needs at least one field');
+  for (const [key, value] of Object.entries(patch)) {
+    if (!Object.hasOwn(DASHBOARD_FIELDS, key)) throw new RangeError(`unknown dashboard field ${key}`);
+    if (!DASHBOARD_FIELDS[key](value)) throw new RangeError(`dashboard ${key} must be ${DASHBOARD_HINTS[key]}`);
+  }
+  const cfg = readConfig();
+  const stored = isObject(cfg.dashboard) ? cfg.dashboard : {};
+  writeConfig({ ...cfg, dashboard: { ...stored, ...patch } });
+  return readDashboard();
+}
+
 // ---- CLI ----------------------------------------------------------------------------------
 
 class UsageError extends Error {}
@@ -492,9 +537,16 @@ const USAGE = [
   '                  [--new-since <iso>] [--id <id>] [--ids]',
   '  disposition <slug> <id> <status> --reason "<text>" [--by <name>]',
   '  set-class <slug> <id> <class> --note "<text>"',
+  '  dashboard                     (the live dashboard\'s settings; --json prints every field, null when unset)',
+  '  dashboard-set [--url <link>] [--owner-id <id>] [--published-at <iso>] [--page-hash <hash>]',
+  '                [--remote-control true|false] [--schedule-id <id>]   (sets only the fields given)',
 ].join('\n');
 
 const VALUE_FLAGS = ['status', 'reason', 'by', 'note', 'source', 'system', 'class', 'since', 'new-since', 'id'];
+const DASHBOARD_FLAGS = {
+  url: 'url', 'owner-id': 'ownerId', 'published-at': 'publishedAt', 'page-hash': 'pageHash', 'remote-control': 'remoteControl', 'schedule-id': 'scheduleId',
+};
+VALUE_FLAGS.push(...Object.keys(DASHBOARD_FLAGS));
 const BOOLEAN_FLAGS = ['json', 'ids'];
 const FINDING_FILTERS = ['status', 'source', 'system', 'class', 'since', 'new-since', 'id'];
 const FINDING_ID_RE = /^[0-9a-f]{12}$/;
@@ -506,6 +558,8 @@ const VERBS = {
   findings: { args: ['slug'], flags: [...FINDING_FILTERS, 'ids'] },
   disposition: { args: ['slug', 'id', 'status'], flags: ['reason', 'by'], required: ['reason'] },
   'set-class': { args: ['slug', 'id', 'class'], flags: ['note'], required: ['note'] },
+  dashboard: { args: [], flags: [] },
+  'dashboard-set': { args: [], flags: Object.keys(DASHBOARD_FLAGS) },
 };
 
 function parseArgs(argv) {
@@ -617,6 +671,24 @@ const HANDLERS = {
     const f = setClass(slug, id, cls, note);
     return { text: `${f.id}  ${f.class}`, json: f };
   },
+  dashboard: () => {
+    const d = readDashboard();
+    return { text: Object.entries(d).map(([k, v]) => `${k}: ${v === null ? '(unset)' : v}`).join('\n'), json: d };
+  },
+  'dashboard-set': (_args, flags) => {
+    const patch = {};
+    for (const [flag, key] of Object.entries(DASHBOARD_FLAGS)) {
+      if (flags[flag] === undefined) continue;
+      if (key !== 'remoteControl') patch[key] = flags[flag];
+      else if (flags[flag] === 'true' || flags[flag] === 'false') patch[key] = flags[flag] === 'true';
+      else throw new UsageError('--remote-control must be true or false');
+    }
+    if (!Object.keys(patch).length) {
+      throw new UsageError(`dashboard-set needs at least one of ${Object.keys(DASHBOARD_FLAGS).map((f) => `--${f}`).join(', ')}`);
+    }
+    const d = setDashboard(patch);
+    return { text: `${Object.keys(patch).join(', ')} set`, json: d };
+  },
 };
 
 function main(argv) {
@@ -656,4 +728,5 @@ module.exports = {
   createRun, finishRun, readRuns, writeRaw,
   readConfig, writeConfig, appendScore, readScores,
   writeJob, readJob, readJobs,
+  readDashboard, setDashboard,
 };

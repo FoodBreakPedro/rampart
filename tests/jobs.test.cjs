@@ -445,3 +445,55 @@ test('CLI: a missing or corrupt --job file exits 1', () => {
   fs.writeFileSync(bad, '{not json');
   assert.equal(cli(['claim-patch', '--job', bad, '--executor', 'e']).status, 1);
 });
+
+// ---- the watch executor: start patch, executor doc, saved job files ---------------------------
+
+const { machineId } = require('../scripts/lib/paths.cjs');
+
+test('startPatch: running with startedAt and updatedAt; sessionId only when given; the merged job validates', () => {
+  const claimed = asJob(queuedJob(), jobs.claimPatch(queuedJob(), 'local-abc', NOW));
+  const patch = jobs.startPatch(NOW);
+  assert.deepEqual(patch, { status: 'running', startedAt: NOW_ISO, updatedAt: NOW_ISO });
+  assert.deepEqual(jobs.startPatch(NOW, 'sess-1'), { status: 'running', startedAt: NOW_ISO, updatedAt: NOW_ISO, sessionId: 'sess-1' });
+  assert.deepEqual(validate(jobSchema, asJob(claimed, jobs.startPatch(NOW, 'sess-1'))), { ok: true, errors: [] });
+  assert.throws(() => jobs.startPatch(NOW, ''), /session/);
+  assert.throws(() => jobs.startPatch(NOW, 'has space'), /session/);
+  assert.throws(() => jobs.startPatch(null), TypeError);
+});
+
+test('executorDoc: the session id only with Remote Control on; otherwise local-<machineId> with remoteControl false', () => {
+  const m = 'a1b2c3d4e5f6';
+  assert.deepEqual(jobs.executorDoc({ sessionId: 'sess-1', remoteControl: true, machineId: m, now: NOW }), {
+    id: 'sess-1',
+    doc: { kind: 'local', machineId: m, heartbeatAt: NOW_ISO, remoteControl: true, updatedAt: NOW_ISO },
+  });
+  const local = { id: `local-${m}`, doc: { kind: 'local', machineId: m, heartbeatAt: NOW_ISO, remoteControl: false, updatedAt: NOW_ISO } };
+  assert.deepEqual(jobs.executorDoc({ sessionId: 'sess-1', remoteControl: false, machineId: m, now: NOW }), local, 'no Remote Control: send_message cannot reach it');
+  assert.deepEqual(jobs.executorDoc({ remoteControl: true, machineId: m, now: NOW }), local, 'no session id known');
+  assert.throws(() => jobs.executorDoc({ sessionId: '../x', remoteControl: true, machineId: m, now: NOW }), /session/);
+  assert.throws(() => jobs.executorDoc({ remoteControl: 'yes', machineId: m, now: NOW }), /remoteControl/);
+  assert.throws(() => jobs.executorDoc({ remoteControl: false, machineId: '', now: NOW }), /machineId/);
+});
+
+test('CLI start-patch and executor-doc print JSON; executor-doc uses this machine\'s id', () => {
+  assert.deepEqual(cli(['start-patch', '--now', NOW_ISO]).stdout.trim(), JSON.stringify(jobs.startPatch(NOW)));
+  assert.deepEqual(cliJson(['start-patch', '--session', 'sess-1', '--now', NOW_ISO]), jobs.startPatch(NOW, 'sess-1'));
+  const local = cliJson(['executor-doc', '--remote-control', 'false', '--now', NOW_ISO]);
+  assert.deepEqual(local, jobs.executorDoc({ remoteControl: false, machineId: machineId(), now: NOW }));
+  assert.equal(local.id, `local-${machineId()}`);
+  const rc = cliJson(['executor-doc', '--remote-control', 'true', '--session', 'sess-1', '--now', NOW_ISO]);
+  assert.equal(rc.id, 'sess-1');
+  assert.equal(rc.doc.remoteControl, true);
+  assert.equal(cli(['executor-doc']).status, 2, '--remote-control is required');
+  assert.equal(cli(['executor-doc', '--remote-control', 'maybe']).status, 2);
+  assert.equal(cli(['executor-doc', '--remote-control', 'true', '--session', 'a b']).status, 2);
+  assert.equal(cli(['start-patch', '--session', '../x']).status, 2);
+});
+
+test('CLI patches read a job saved by an ArtifactData read: a bare body or an {id, data, version} wrapper', () => {
+  const wrapped = writeTmp('wrapped.json', { id: 'job-20261023-120000-abcd', data: queuedJob(), version: 7 });
+  assert.deepEqual(cliJson(['claim-patch', '--job', wrapped, '--executor', 'local-abc', '--now', NOW_ISO]), jobs.claimPatch(queuedJob(), 'local-abc', NOW));
+  assert.deepEqual(cliJson(['refusal-patch', '--job', wrapped, '--now', NOW_ISO]), jobs.refusalPatch(queuedJob(), NOW));
+  const claimedWrapped = writeTmp('claimed.json', { id: 'x', data: queuedJob({ status: 'claimed' }), version: 8 });
+  assert.equal(cli(['claim-patch', '--job', claimedWrapped, '--executor', 'e']).status, 1, 'the wrapped status is the one checked');
+});
