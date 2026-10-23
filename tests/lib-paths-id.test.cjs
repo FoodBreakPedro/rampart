@@ -63,6 +63,18 @@ test('normalizeLocation package', () => {
   assert.equal(normalizeLocation({ package: 'left-pad' }), ':left-pad');
 });
 
+test('normalizeLocation package ignores a manifest path: the package decides the shape', () => {
+  assert.equal(normalizeLocation({ package: 'lodash', ecosystem: 'npm', path: 'package-lock.json' }), 'npm:lodash');
+  assert.equal(normalizeLocation({ package: 'lodash', path: 'package-lock.json' }), ':lodash');
+  // The same package in two lockfiles normalizes to the same string; a ruleId that names the lockfile tells them apart.
+  assert.equal(
+    normalizeLocation({ package: 'lodash', ecosystem: 'npm', path: 'web/package-lock.json' }),
+    normalizeLocation({ package: 'lodash', ecosystem: 'npm', path: 'package-lock.json' }),
+  );
+  // A code location is still a code location.
+  assert.equal(normalizeLocation({ path: 'package-lock.json', symbol: 'lodash' }), 'package-lock.json:lodash');
+});
+
 test('findingId is 12 hex and stable across line changes', () => {
   const a = findingId({ project: 'p', system: 's', ruleId: 'r', location: { path: 'a.ts', symbol: 'f', line: 1 } });
   const b = findingId({ project: 'p', system: 's', ruleId: 'r', location: { path: 'a.ts', symbol: 'f', line: 99 } });

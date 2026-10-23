@@ -177,8 +177,9 @@ test('fromTrivy lodash: max severity, sorted cve list, cwe union, location and e
   assert.equal(lodash.recommendation, 'Upgrade lodash to 4.17.21');
   assert.equal(
     lodash.id,
-    findingId({ project: 'example-app', system: 'mobile', ruleId: 'trivy/pkg/lodash', location: lodash.location }),
+    findingId({ project: 'example-app', system: 'mobile', ruleId: 'trivy/pkg/lodash', location: { package: 'lodash', ecosystem: 'npm' } }),
   );
+  assert.ok(findings.every((f) => !f.ruleId.includes('@')), 'a single-target report keeps the plain ruleId');
 });
 
 test('fromTrivy minimist: a single advisory keeps its own severity and reads in the singular', () => {
@@ -220,7 +221,7 @@ test('fromTrivy returns [] when Results is missing, or when a target has no Vuln
   assert.deepEqual(fromTrivy({ Results: [{ Target: 'package-lock.json', Type: 'npm', Vulnerabilities: null }] }, CTX), []);
 });
 
-test('fromTrivy groups by target as well as package, and the target is recorded in the location', () => {
+test('fromTrivy groups by target as well as package; with several targets the ruleId names the target', () => {
   const report = fixture('trivy.json');
   const lock = report.Results[0];
   report.Results.push({
@@ -231,7 +232,12 @@ test('fromTrivy groups by target as well as package, and the target is recorded 
   });
   const findings = fromTrivy(report, CTX);
   assert.equal(findings.length, 3);
-  const lodashes = findings.filter((f) => f.ruleId === 'trivy/pkg/lodash');
+  assert.deepEqual(findings.map((f) => f.ruleId).sort(), [
+    'trivy/pkg/lodash@package-lock.json',
+    'trivy/pkg/lodash@requirements.txt',
+    'trivy/pkg/minimist@package-lock.json',
+  ]);
+  const lodashes = findings.filter((f) => f.location.package === 'lodash');
   assert.equal(lodashes.length, 2);
   assert.deepEqual(lodashes.map((f) => f.location.path).sort(), ['package-lock.json', 'requirements.txt']);
   const pip = lodashes.find((f) => f.location.ecosystem === 'pip');
@@ -246,12 +252,32 @@ test('fromTrivy gives the same package in two lockfiles of one ecosystem two dif
   const report = fixture('trivy.json');
   report.Results.push({ ...clone(report.Results[0]), Target: 'web/package-lock.json' });
   const findings = fromTrivy(report, CTX);
-  const lodashes = findings.filter((f) => f.ruleId === 'trivy/pkg/lodash');
+  const lodashes = findings.filter((f) => f.location.package === 'lodash');
   assert.equal(findings.length, 4);
-  assert.equal(lodashes.length, 2);
+  assert.deepEqual(lodashes.map((f) => f.ruleId).sort(), ['trivy/pkg/lodash@package-lock.json', 'trivy/pkg/lodash@web/package-lock.json']);
   assert.deepEqual(lodashes.map((f) => f.location.path).sort(), ['package-lock.json', 'web/package-lock.json']);
   assert.equal(new Set(findings.map((f) => f.id)).size, 4, 'no two findings share an id');
+  // The location alone no longer tells the two apart (the id hashes the package, not the lockfile); the ruleId does.
+  assert.equal(
+    findingId({ project: 'example-app', system: 'mobile', ruleId: 'trivy/pkg/lodash', location: lodashes[0].location }),
+    findingId({ project: 'example-app', system: 'mobile', ruleId: 'trivy/pkg/lodash', location: lodashes[1].location }),
+  );
   assertAllValid(findings);
+});
+
+test('fromTrivy names the target in the ruleId only when the report has more than one distinct target', () => {
+  const one = fixture('trivy.json');
+  // Two Results for the same Target (say a lang-pkgs and a secret result) are still one target.
+  one.Results.push({ Target: 'package-lock.json', Class: 'secret', Type: 'npm' });
+  assert.deepEqual(fromTrivy(one, CTX).map((f) => f.ruleId).sort(), ['trivy/pkg/lodash', 'trivy/pkg/minimist']);
+
+  // A second target counts even when it has no vulnerabilities of its own: the ruleId depends on the layout of the scan.
+  const two = fixture('trivy.json');
+  two.Results.push({ Target: 'web/package-lock.json', Class: 'lang-pkgs', Type: 'npm' });
+  assert.deepEqual(
+    fromTrivy(two, CTX).map((f) => f.ruleId).sort(),
+    ['trivy/pkg/lodash@package-lock.json', 'trivy/pkg/minimist@package-lock.json'],
+  );
 });
 
 test('fromTrivy counts a repeated advisory once and says so when there is no fix', () => {
