@@ -25,6 +25,7 @@ Fixes from the whole-branch review of alpha.1.
 - No project grades above C: repo systems declare L2 and L3, which have no engine until Plan 2, so their coverage is capped even with zero findings.
 - Real gitleaks and trivy runs were not exercised on the build machine; the secrets and dependency checks were tested with recorded reports and fake binaries.
 - The secrets triage reads a leak's commit with git only when the repository is the session's working directory; otherwise it judges from the working tree.
+- A dependency scan with a different tool than the last one closes the other tool's findings for that system, so a machine with only npm closes the pip or Go findings trivy reported until trivy runs again.
 
 ## 0.1.0-alpha.1 — 2026-10-23
 

@@ -9,9 +9,10 @@
 // no findings in the report is a skipped run (gitleaks also exits 1 when the scan itself fails). Any other exit code, a
 // timeout, or a missing binary is a skipped run with the reason recorded, never a crash and never a false "clean".
 // Nothing from a report except counts and file paths is ever printed. The stored copy of the report (from gitleaks or from
-// --input) loses the fields that hold the matched value and the author (CREDENTIAL_FIELDS) before it is written, and the
-// store redacts what is left: redact() alone knows only some token formats, and a report written without --redact carries
-// the value in Match and Line as well as in Secret.
+// --input) keeps only the entry fields in STORED_FIELDS, none of which holds the matched value or a person, and the store
+// redacts what is left: redact() alone knows only some token formats, and a report written without --redact carries the
+// value in Secret, Match and Line. Text that is not a gitleaks JSON report (a SARIF or CSV export, a truncated file) is not
+// stored at all: raw/ gets a stub that says so.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -28,33 +29,31 @@ const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 const VERSION_TIMEOUT_MS = 10 * 1000;
 const CLEAN_EXIT = 0;
 const LEAKS_EXIT = 1;
-// gitleaks report fields that hold the matched value (Secret, Match, Line) or a person (Author, Email). They are dropped from
-// the stored copy of every report; nothing reads them (the normalizer uses RuleID, Description, File and Commit).
-const CREDENTIAL_FIELDS = ['Secret', 'Match', 'Line', 'Author', 'Email'];
-// The same fields as "Key": "value" in a report that does not parse (a truncated file), up to the closing quote or the end.
-const CREDENTIAL_FIELD_TEXT = new RegExp(String.raw`"(${CREDENTIAL_FIELDS.join('|')})"\s*:\s*"(?:[^"\\]|\\[\s\S])*(?:"|$)`, 'g');
+// The gitleaks report entry fields kept in the stored copy: an allowlist, so a field that holds the matched value (Secret,
+// Match, Line), a person (Author, Email), a commit message, or anything a later gitleaks version adds never lands in raw/.
+const STORED_FIELDS = [
+  'RuleID', 'Description', 'StartLine', 'EndLine', 'StartColumn', 'EndColumn', 'File', 'SymlinkFile', 'Commit', 'Entropy',
+  'Date', 'Tags', 'Fingerprint',
+];
+// What raw/ holds instead of text that is not a gitleaks JSON report (an array of entry objects).
+const NOT_STORED = { stored: false, reason: 'not a gitleaks JSON report' };
 
 // ---- the stored copy ----------------------------------------------------------------------
 
-// A copy of value with every CREDENTIAL_FIELDS key removed, at any depth.
-function withoutCredentialFields(value) {
-  if (Array.isArray(value)) return value.map(withoutCredentialFields);
-  if (value === null || typeof value !== 'object') return value;
-  return Object.fromEntries(
-    Object.entries(value).filter(([key]) => !CREDENTIAL_FIELDS.includes(key)).map(([key, v]) => [key, withoutCredentialFields(v)])
-  );
-}
+const isEntry = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
-// The report text as it is kept under raw/: parsed and written back without the credential fields, or, for text that is not
-// JSON, with those fields' string values cut out. The store then redacts the result as it writes it.
+// The report text as it is kept under raw/: each entry with only its STORED_FIELDS, or the NOT_STORED stub when the text does
+// not parse to an array of objects (SARIF, CSV, a truncated file). The store then redacts the result as it writes it.
 function storedReport(text) {
   let parsed;
   try {
     parsed = parseReport(text, 'gitleaks');
   } catch {
-    return text.replace(CREDENTIAL_FIELD_TEXT, '"$1": "[REMOVED]"');
+    parsed = undefined;
   }
-  return `${JSON.stringify(withoutCredentialFields(parsed), null, 2)}\n`;
+  if (!Array.isArray(parsed) || !parsed.every(isEntry)) return `${JSON.stringify(NOT_STORED)}\n`;
+  const kept = parsed.map((entry) => Object.fromEntries(STORED_FIELDS.filter((k) => Object.hasOwn(entry, k)).map((k) => [k, entry[k]])));
+  return `${JSON.stringify(kept, null, 2)}\n`;
 }
 
 // ---- scan ---------------------------------------------------------------------------------

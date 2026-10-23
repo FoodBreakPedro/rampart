@@ -1026,6 +1026,14 @@ test('T5: a torn last line in scores.jsonl (an append cut short) is left out, an
   assert.throws(() => store.readScores(SLUG), /line 2 is not valid JSON/, 'a broken line in the middle is still corruption');
 });
 
+test('T5: the torn-line tolerance is for scores.jsonl only: a cut-off last line of findings.jsonl still throws', () => {
+  store.upsertFindings(SLUG, [finding(), finding({ id: ID_B })], RUN);
+  const whole = readText(projectPath('findings.jsonl'));
+  fs.writeFileSync(projectPath('findings.jsonl'), whole.slice(0, whole.length - 20)); // the last row loses its tail
+  assert.throws(() => store.readFindings(SLUG), /findings\.jsonl line 2 is not valid JSON/);
+  assert.throws(() => store.upsertFindings(SLUG, [finding({ id: ID_C })], RUN), /line 2 is not valid JSON/, 'nothing writes over it');
+});
+
 // ---- CLI ----------------------------------------------------------------------------------
 
 const cli = (...args) =>

@@ -75,10 +75,11 @@ function readJson(file, fallback) {
   }
 }
 
-// One row per line. A last line with no newline after it that does not parse is a torn append (appendScore is the one write
-// that is not atomic, and a crash can cut it short): it is left out rather than blocking every reader, and the next
-// appendScore drops it. A line that does not parse anywhere else is corruption and throws.
-function readJsonl(file) {
+// One row per line; a line that does not parse is corruption and throws. With { tornTail: true } (scores.jsonl only), a last
+// line with no newline after it that does not parse is a torn append instead (appendScore is the one write that is not
+// atomic, and a crash can cut it short): it is left out rather than blocking every reader, and the next appendScore drops it.
+// findings.jsonl is always rewritten whole and atomically, so a cut-off last line there is real damage and throws.
+function readJsonl(file, { tornTail = false } = {}) {
   const text = readOptional(file);
   if (text === null) return [];
   const rows = [];
@@ -88,7 +89,7 @@ function readJsonl(file) {
     try {
       rows.push(JSON.parse(line));
     } catch {
-      if (i === lines.length - 1) return; // the text did not end with a newline: a torn last line
+      if (tornTail && i === lines.length - 1) return; // the text did not end with a newline: a torn last line
       throw new Error(`${path.basename(file)} line ${i + 1} is not valid JSON`);
     }
   });
@@ -435,7 +436,7 @@ function appendScore(slug, snapshot) {
   return row;
 }
 
-const readScores = (slug) => readJsonl(projectFile(slug, 'scores.jsonl'));
+const readScores = (slug) => readJsonl(projectFile(slug, 'scores.jsonl'), { tornTail: true });
 
 // ---- CLI ----------------------------------------------------------------------------------
 

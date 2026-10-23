@@ -364,9 +364,57 @@ test('C1: a real run that leaves an unredacted report is stored the same way, an
   process.env.FAKE_REPORT = truncated;
   const broken = scanSecrets({ project: SLUG, system: 'mobile' });
   assert.equal(broken.run.status, 'skipped');
-  assert.match(fs.readFileSync(rawFile(broken.run), 'utf8'), /"Match": "\[REMOVED\]"/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(rawFile(broken.run), 'utf8')), { stored: false, reason: 'not a gitleaks JSON report' });
   for (const [file, text] of everyStoredText()) noUnlisted(text, file);
 });
+
+test('C1: the stored copy keeps only the allowlisted entry fields, so a field gitleaks may add later is never kept', () => {
+  const report = path.join(home, 'extra fields.json');
+  fs.writeFileSync(report, JSON.stringify([{
+    RuleID: 'gitlab-pat', Description: 'GitLab PAT', File: 'ci/release.sh', Commit: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+    StartLine: 3, EndLine: 3, StartColumn: 1, EndColumn: 30, SymlinkFile: '', Entropy: 4.2, Date: '2026-10-01T00:00:00Z',
+    Tags: ['key'], Fingerprint: 'a1b2c3d4:ci/release.sh:gitlab-pat:3',
+    Message: `rotate ${UNLISTED_TOKEN}`, Context: UNLISTED_TOKEN, Secret: UNLISTED_TOKEN,
+  }]));
+  const { run } = scanSecrets({ project: SLUG, system: 'mobile', input: report });
+  assert.equal(run.status, 'done');
+  const [entry] = JSON.parse(fs.readFileSync(rawFile(run), 'utf8'));
+  assert.deepEqual(Object.keys(entry).sort(), [
+    'Commit', 'Date', 'Description', 'EndColumn', 'EndLine', 'Entropy', 'File', 'Fingerprint', 'RuleID', 'StartColumn',
+    'StartLine', 'SymlinkFile', 'Tags',
+  ]);
+  for (const [file, text] of everyStoredText()) noUnlisted(text, file);
+});
+
+// A gitleaks SARIF and CSV export of the same leak: neither is the JSON report, so the run is skipped and raw/ gets a stub.
+const sarifReport = () => JSON.stringify({
+  version: '2.1.0',
+  runs: [{
+    tool: { driver: { name: 'gitleaks', rules: [{ id: 'gitlab-pat' }] } },
+    results: [{
+      ruleId: 'gitlab-pat', message: { text: 'gitlab-pat has detected secret for file ci/release.sh.' },
+      locations: [{ physicalLocation: { artifactLocation: { uri: 'ci/release.sh' }, region: { startLine: 3, snippet: { text: UNLISTED_TOKEN } } } }],
+      partialFingerprints: { commitSha: 'a1b2c3d4e5f6', author: 'Someone Real', email: 'someone.real@example.invalid' },
+    }],
+  }],
+});
+const csvReport = () => [
+  'RuleID,Commit,File,SymlinkFile,Secret,Match,StartLine,EndLine,StartColumn,EndColumn,Author,Message,Date,Email,Fingerprint,Tags',
+  `gitlab-pat,a1b2c3d4e5f6,ci/release.sh,,${UNLISTED_TOKEN},GL=${UNLISTED_TOKEN},3,3,1,30,Someone Real,ci,2026-10-01T00:00:00Z,someone.real@example.invalid,a1b2c3d4:ci/release.sh:gitlab-pat:3,`,
+].join('\n');
+
+for (const [format, body] of [['SARIF', sarifReport], ['CSV', csvReport]]) {
+  test(`C1: a gitleaks ${format} export passed with --input is a skipped run, and its token reaches no stored file`, () => {
+    const input = path.join(home, `report.${format.toLowerCase()}`);
+    fs.writeFileSync(input, body());
+    assert.ok(fs.readFileSync(input, 'utf8').includes(UNLISTED_TOKEN));
+    const { run } = scanSecrets({ project: SLUG, system: 'mobile', input });
+    assert.equal(run.status, 'skipped');
+    assert.deepEqual(JSON.parse(fs.readFileSync(rawFile(run), 'utf8')), { stored: false, reason: 'not a gitleaks JSON report' });
+    assert.deepEqual(store.readFindings(SLUG), []);
+    for (const [file, text] of everyStoredText()) noUnlisted(text, file);
+  });
+}
 
 test('a project, system or repo path that does not resolve is a RangeError and leaves no run behind', () => {
   assert.throws(() => scanSecrets({ project: 'no-such-app', system: 'mobile' }), RangeError);
