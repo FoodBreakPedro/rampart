@@ -141,7 +141,7 @@ const stubUser = ({ owner = false, can = null, id = OWNER_ID } = {}) => Object.f
 });
 
 // window.claude with use(name) recording each name asked for.
-function stubClaude({ db = null, user = null } = {}) {
+function stubClaude({ db = null, user = null, mcp = null } = {}) {
   const asked = [];
   return {
     asked,
@@ -149,6 +149,7 @@ function stubClaude({ db = null, user = null } = {}) {
       asked.push(name);
       if (name === 'db') return db;
       if (name === 'user') return user;
+      if (name === 'mcp') return mcp;
       return null;
     },
   };
@@ -156,11 +157,12 @@ function stubClaude({ db = null, user = null } = {}) {
 
 // The page, booted over the mini DOM: its markup after </style> (the data slot filled with `inline`), its one inline script
 // run in a fresh context whose window has `claude` when given.
-function bootPage({ inline = '', claude, hash = '' } = {}) {
+function bootPage({ inline = '', claude, hash = '', engines = null } = {}) {
   const html = fs.readFileSync(TEMPLATE, 'utf8');
   const scriptAt = html.indexOf('<script>');
   const markup = html.slice(html.indexOf('</style>') + '</style>'.length, scriptAt)
-    .replace(/(<script id="rampart-data" type="application\/json">)(<\/script>)/, (m, open, close) => `${open}${inline}${close}`);
+    .replace(/(<script id="rampart-data" type="application\/json">)(<\/script>)/, (m, open, close) => `${open}${inline}${close}`)
+    .replace(/data-engines='[^']*'/, (m) => (engines ? `data-engines='${JSON.stringify(engines)}'` : m));
   const { document } = createDocument(markup);
   const script = /<script>([\s\S]*?)<\/script>/.exec(html.slice(scriptAt))[1];
   const location = { hash };
@@ -216,10 +218,10 @@ const withHeartbeat = (seed, at) => {
   return out;
 };
 
-async function bootLive({ seed = withHeartbeat(fixtureDocs(), new Date().toISOString()), user = stubUser(), hash = '', options } = {}) {
+async function bootLive({ seed = withHeartbeat(fixtureDocs(), new Date().toISOString()), user = stubUser(), hash = '', options, mcp = null, engines = null } = {}) {
   const store = stubDb(seed, options);
-  const claude = stubClaude({ db: store.db, user });
-  const page = bootPage({ claude, hash });
+  const claude = stubClaude({ db: store.db, user, mcp });
+  const page = bootPage({ claude, hash, engines });
   await settle();
   return { ...page, store, claude };
 }
@@ -839,4 +841,360 @@ test('dispositions: static mode has no decision control, and a decision never sh
   // The page's own inline data slot holds the raw store data; what is rendered is <main>.
   assert.ok(!allText(document.getElementById('main')).includes('u_page_user_placeholder'));
   assert.ok(document.querySelector('button.action'), 'the copy-the-command buttons are still there');
+});
+
+// ---- jobs (Task 6) -----------------------------------------------------------------------------
+
+const jobsLib = require('../scripts/jobs.cjs');
+const { validate, loadSchema } = require('../scripts/lib/validate.cjs');
+
+const REMOTE = 'Claude Code Remote';
+const JOB_ID = /^job-\d{8}-\d{6}-[0-9a-f]{4}$/;
+
+// An mcp namespace whose callTool records each call and resolves {payload}, or rejects with `reject`.
+function stubMcp({ payload = { session_id: 'session-cloud-placeholder' }, reject = null } = {}) {
+  const calls = [];
+  const ns = Object.freeze({
+    callTool: async (server, tool, input) => {
+      calls.push({ server, tool, input: clone(input) });
+      if (reject) throw reject;
+      return { content: [], payload };
+    },
+  });
+  return { calls, ns };
+}
+
+// The fixture DB with a fresh heartbeat and a fresh job-0001, adjusted: example-app's cloudAllowed, the executor's
+// remoteControl and heartbeat.
+function jobSeed({ cloudAllowed = false, remoteControl = false, heartbeatAt = new Date().toISOString() } = {}) {
+  const seed = withHeartbeat(fixtureDocs(), heartbeatAt);
+  seed.projects['example-app'].cloudAllowed = cloudAllowed;
+  seed.executors['session-placeholder'].remoteControl = remoteControl;
+  seed.jobs['job-0001'].confirmedAt = new Date().toISOString();
+  seed.jobs['job-0001'].updatedAt = seed.jobs['job-0001'].confirmedAt;
+  return seed;
+}
+
+const jobWrites = (store) => store.writes.filter((w) => w.path.startsWith('jobs/'));
+const jobSets = (store) => jobWrites(store).filter((w) => w.op === 'set');
+const sheetOf = (doc) => doc.querySelector('[role="dialog"]');
+const layerButton = (doc, system, layer) => doc.querySelector(`button[data-action="queue"][data-system="${system}"][data-layer="${layer}"]`);
+const verifyButton = (doc, finding) => doc.querySelector(`button[data-action="queue"][data-finding="${finding}"]`);
+const readDoc = async (store, p) => clone((await store.db.doc(p).get()).data());
+const isValidJob = (job) => validate(loadSchema('job'), job);
+
+async function press(el) {
+  el.dispatchEvent(makeEvent('click'));
+  await settle();
+}
+
+// Open the confirm sheet from a button and confirm it; returns the job the page set.
+async function queueFrom(doc, store, button) {
+  await press(button);
+  assert.ok(sheetOf(doc), 'the button opens the confirm sheet');
+  await press(doc.getElementById('job-sheet-confirm'));
+  const sets = jobSets(store);
+  return sets.length ? sets[sets.length - 1].data : null;
+}
+
+test('jobs: the page copies of PAGE_FUNCTIONS match scripts/jobs.cjs, whitespace aside (R32)', () => {
+  const html = fs.readFileSync(TEMPLATE, 'utf8');
+  const norm = (text) => text.replace(/\s+/g, ' ').trim();
+  for (const name of jobsLib.PAGE_FUNCTIONS) {
+    const marker = `function ${name}(`;
+    const at = html.indexOf(marker);
+    assert.ok(at !== -1, `the page has ${name}`);
+    assert.equal(html.indexOf(marker, at + 1), -1, `the page has one ${name}`);
+    let depth = 0;
+    let end = -1;
+    for (let i = html.indexOf('{', at); i < html.length; i += 1) {
+      if (html[i] === '{') depth += 1;
+      else if (html[i] === '}' && (depth -= 1) === 0) {
+        end = i + 1;
+        break;
+      }
+    }
+    assert.equal(norm(html.slice(at, end)), norm(jobsLib[name].toString()), `${name} matches jobs.cjs`);
+  }
+});
+
+test('jobs: a viewer in live mode sees the job table but no job control; layer buttons still copy the command', async () => {
+  const seed = jobSeed({ cloudAllowed: true, remoteControl: true });
+  seed.jobs['job-stale'] = { ...seed.jobs['job-0001'], id: 'job-stale', confirmedAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' };
+  const mcp = stubMcp();
+  const { document, store } = await bootLive({ seed, user: stubUser({ owner: false, can: true }), hash: '#p-example-app~status.all', mcp: mcp.ns });
+  assert.equal(document.querySelectorAll('[data-write]').length, 0);
+  assert.ok(rowFor(document, 'job-0001') && rowFor(document, 'job-stale'), 'job rows are there, read-only');
+  assert.equal(document.querySelectorAll('button[data-action="requeue"]').length, 0);
+  assert.equal(document.querySelectorAll('button[data-action="queue"]').length, 0);
+  const copy = document.querySelector('button.action');
+  assert.equal(copy.getAttribute('data-command'), '/rampart audit L1 --project example-app --system mobile');
+  await press(copy);
+  same(sheetOf(document), null, 'no confirm sheet');
+  assert.deepEqual(store.writes, []);
+  assert.deepEqual(mcp.calls, []);
+});
+
+test('jobs: a layer button opens a confirm dialog with type, scope, cost and route; Escape, Cancel and a click outside never queue', async () => {
+  const { document, store } = await bootLive({ seed: jobSeed(), user: ownerUser(), hash: '#p-example-app' });
+  const button = layerButton(document, 'mobile', 'L1');
+  assert.ok(button && button.hasAttribute('data-write'), 'the owner gets a job button tagged data-write');
+  button.focus();
+  await press(button);
+  let sheet = sheetOf(document);
+  assert.equal(sheet.getAttribute('aria-modal'), 'true');
+  assert.ok(sheet.getAttribute('aria-labelledby'));
+  assert.ok(sheet.contains(document.activeElement), 'focus moves into the sheet');
+  const text = sheet.textContent;
+  const { note } = jobsLib.costEstimate({ type: 'audit', layer: 'L1' });
+  assert.match(text, /Audit L1/);
+  assert.match(text, /example-app/);
+  assert.match(text, /mobile/);
+  assert.ok(text.includes(note), 'the cost note is shown');
+  assert.match(text, /local executor online/);
+  const confirm = document.getElementById('job-sheet-confirm');
+  assert.ok(confirm.hasAttribute('data-write'));
+  assert.equal(confirm.disabled, false, 'enabled once the cost and route are shown');
+
+  document.activeElement.dispatchEvent(makeEvent('keydown', { key: 'Escape' }));
+  await settle();
+  same(sheetOf(document), null, 'Escape closes it');
+  same(document.activeElement, button, 'focus returns to the button');
+
+  await press(button);
+  await press(document.getElementById('job-sheet-cancel'));
+  same(sheetOf(document), null, 'Cancel closes it');
+  same(document.activeElement, button);
+
+  await press(button);
+  sheet = sheetOf(document);
+  await press(sheet.parentNode);
+  assert.deepEqual(jobWrites(store), [], 'a click outside the sheet queues nothing');
+  assert.ok(sheetOf(document), 'and leaves the sheet open');
+
+  // Tab stays inside; with the focus fallen to the page, Tab brings it back and Escape still closes.
+  const cancel = document.getElementById('job-sheet-cancel');
+  const confirmButton = document.getElementById('job-sheet-confirm');
+  confirmButton.focus();
+  confirmButton.dispatchEvent(makeEvent('keydown', { key: 'Tab' }));
+  same(document.activeElement, cancel, 'Tab from the last control wraps to the first');
+  cancel.dispatchEvent(makeEvent('keydown', { key: 'Tab', shiftKey: true }));
+  same(document.activeElement, confirmButton, 'Shift+Tab from the first wraps to the last');
+  document.body.focus();
+  document.body.dispatchEvent(makeEvent('keydown', { key: 'Tab' }));
+  assert.ok(sheetOf(document).contains(document.activeElement), 'Tab from the page goes back into the sheet');
+  document.body.focus();
+  document.body.dispatchEvent(makeEvent('keydown', { key: 'Escape' }));
+  await settle();
+  same(sheetOf(document), null, 'Escape closes it wherever the focus is');
+  same(document.activeElement, button);
+  assert.deepEqual(jobWrites(store), []);
+});
+
+test('jobs: confirming writes exactly the job doc, valid against the job schema', async () => {
+  const before = Date.now();
+  const mcp = stubMcp();
+  const { document, store } = await bootLive({ seed: jobSeed(), user: ownerUser(), hash: '#p-example-app', mcp: mcp.ns });
+  const job = await queueFrom(document, store, layerButton(document, 'mobile', 'L1'));
+  const sets = jobSets(store);
+  assert.equal(sets.length, 1);
+  assert.equal(sets[0].path, `jobs/${job.id}`, 'a new doc, created with set');
+  assert.deepEqual(Object.keys(job).sort(), ['confirmedAt', 'costEstimate', 'costShown', 'createdBy', 'executorKind', 'id', 'layer', 'params', 'project', 'status', 'system', 'type', 'updatedAt']);
+  assert.match(job.id, JOB_ID);
+  assert.equal(job.type, 'audit');
+  assert.equal(job.project, 'example-app');
+  assert.equal(job.system, 'mobile');
+  assert.equal(job.layer, 'L1');
+  assert.deepEqual(job.params, {});
+  assert.equal(job.executorKind, 'local', 'example-app does not allow cloud');
+  assert.equal(job.status, 'queued');
+  assert.equal(job.createdBy, OWNER_ID);
+  assert.equal(job.confirmedAt, job.updatedAt);
+  assert.equal(new Date(job.confirmedAt).toISOString(), job.confirmedAt);
+  assert.ok(Date.parse(job.confirmedAt) >= before - 1000);
+  assert.deepEqual(job.costEstimate, jobsLib.costEstimate({ type: 'audit', layer: 'L1' }));
+  assert.equal(job.costShown, job.costEstimate.note);
+  assert.deepEqual(isValidJob(job).errors, []);
+  same(sheetOf(document), null, 'the sheet closes on confirm');
+  assert.ok(rowFor(document, job.id), 'the new job shows in the table');
+  assert.deepEqual(mcp.calls, [], 'an executor without remote control is not nudged');
+});
+
+test('jobs: the cloud route calls create_session with the pinned prompt and stores the session id it returns', async () => {
+  const variants = [
+    [{ session_id: 'session-a' }, 'session-a'],
+    [{ id: 'session-b' }, 'session-b'],
+    [{ sessionId: 'session-c' }, 'session-c'],
+    [{}, null],
+    ['plain text', null],
+  ];
+  for (const [payload, expected] of variants) {
+    const mcp = stubMcp({ payload });
+    const { document, store } = await bootLive({ seed: jobSeed({ cloudAllowed: true }), user: ownerUser(), hash: '#p-example-app', mcp: mcp.ns });
+    const job = await queueFrom(document, store, layerButton(document, 'mobile', 'L1'));
+    assert.equal(job.executorKind, 'cloud');
+    assert.equal(mcp.calls.length, 1);
+    const [call] = mcp.calls;
+    assert.equal(call.server, REMOTE);
+    assert.equal(call.tool, 'create_session');
+    assert.deepEqual(Object.keys(call.input).sort(), ['prompt', 'source_url', 'title']);
+    assert.equal(call.input.prompt, `/rampart audit L1 --project example-app --system mobile --job ${job.id}`);
+    assert.equal(call.input.source_url, 'https://github.com/<owner>/example-app');
+    assert.ok(typeof call.input.title === 'string' && call.input.title.length > 0);
+    const updates = jobWrites(store).filter((w) => w.op === 'update');
+    if (expected) {
+      assert.equal(updates.length, 1, JSON.stringify(payload));
+      assert.equal(updates[0].path, `jobs/${job.id}`);
+      assert.deepEqual(Object.keys(updates[0].data).sort(), ['sessionId', 'updatedAt']);
+      assert.equal(updates[0].data.sessionId, expected);
+    } else {
+      assert.deepEqual(updates, [], `nothing stored for ${JSON.stringify(payload)}`);
+    }
+    const stored = await readDoc(store, `jobs/${job.id}`);
+    assert.equal(stored.status, 'queued');
+    assert.deepEqual(isValidJob(stored).errors, []);
+  }
+});
+
+test('jobs: a create_session rejection (or no mcp) keeps the job queued, tries once and says to start /rampart watch', async () => {
+  const cases = [
+    stubMcp({ reject: { code: 'tool_error', message: 'RAW-tool', retryable: true } }),
+    stubMcp({ reject: { code: 'server_not_connected', message: 'RAW-server' } }),
+    null,
+  ];
+  for (const mcp of cases) {
+    const { document, store, $, errors } = await bootLive({ seed: jobSeed({ cloudAllowed: true }), user: ownerUser(), hash: '#p-example-app', mcp: mcp && mcp.ns });
+    const job = await queueFrom(document, store, layerButton(document, 'mobile', 'L1'));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await settle();
+    if (mcp) assert.equal(mcp.calls.length, 1, 'never retried');
+    assert.equal(jobWrites(store).length, 1, 'only the job doc: it stays queued');
+    assert.equal((await readDoc(store, `jobs/${job.id}`)).status, 'queued');
+    assert.match(rowFor(document, job.id).textContent, /Queued · start \/rampart watch/);
+    assert.match($('toast').textContent, /\/rampart watch/);
+    assert.doesNotMatch($('toast').textContent, /RAW-|\[object/);
+    assert.deepEqual(errors, []);
+  }
+});
+
+test('jobs: the local route nudges an online remote-control executor with send_message, and never calls create_session', async () => {
+  const mcp = stubMcp({ payload: {} });
+  const { document, store } = await bootLive({ seed: jobSeed({ remoteControl: true }), user: ownerUser(), hash: '#p-example-app', mcp: mcp.ns });
+  const job = await queueFrom(document, store, layerButton(document, 'mobile', 'L1'));
+  assert.equal(job.executorKind, 'local');
+  assert.deepEqual(mcp.calls, [{
+    server: REMOTE, tool: 'send_message',
+    input: { session_id: 'session-placeholder', message: `/rampart watch --claim ${job.id}` },
+  }]);
+  assert.doesNotMatch(rowFor(document, job.id).textContent, /start \/rampart watch/);
+});
+
+test('jobs: the local route with no executor online calls nothing and shows the queued note; a refused nudge does too', async () => {
+  let mcp = stubMcp();
+  let page = await bootLive({ seed: jobSeed({ remoteControl: true, heartbeatAt: '2026-01-01T00:00:00Z' }), user: ownerUser(), hash: '#p-example-app', mcp: mcp.ns });
+  let button = layerButton(page.document, 'mobile', 'L1');
+  await press(button);
+  assert.match(sheetOf(page.document).textContent, /local executor offline/);
+  await press(page.document.getElementById('job-sheet-confirm'));
+  let job = jobSets(page.store)[0].data;
+  assert.deepEqual(mcp.calls, [], 'no executor online: no call at all');
+  assert.match(rowFor(page.document, job.id).textContent, /Queued · start \/rampart watch/);
+  assert.match(page.$('toast').textContent, /\/rampart watch/);
+
+  mcp = stubMcp({ reject: { code: 'server_unavailable', message: 'RAW', retryable: true } });
+  page = await bootLive({ seed: jobSeed({ remoteControl: true }), user: ownerUser(), hash: '#p-example-app', mcp: mcp.ns });
+  job = await queueFrom(page.document, page.store, layerButton(page.document, 'mobile', 'L1'));
+  assert.equal(mcp.calls.length, 1);
+  assert.equal(mcp.calls[0].tool, 'send_message');
+  assert.match(rowFor(page.document, job.id).textContent, /Queued · start \/rampart watch/);
+});
+
+test('jobs: an infra or host-backed job on a cloud-allowed project routes local and never calls create_session (Review Focus 5)', async () => {
+  const mcp = stubMcp();
+  const { document, store } = await bootLive({
+    seed: jobSeed({ cloudAllowed: true }), user: ownerUser(), hash: '#p-example-app~status.all', mcp: mcp.ns, engines: ['L1', 'L3', 'INFRA'],
+  });
+  for (const button of [layerButton(document, 'db', 'INFRA'), layerButton(document, 'db', 'L3'), verifyButton(document, 'a3f9c21be0d4')]) {
+    assert.ok(button, 'a job button');
+    await press(button);
+    assert.match(sheetOf(document).textContent, /local executor/);
+    assert.doesNotMatch(sheetOf(document).textContent, /cloud session/);
+    await press(document.getElementById('job-sheet-confirm'));
+  }
+  const jobs = jobSets(store).map((w) => w.data);
+  assert.equal(jobs.length, 3);
+  assert.deepEqual(jobs.map((j) => j.executorKind), ['local', 'local', 'local']);
+  assert.equal(mcp.calls.filter((c) => c.tool === 'create_session').length, 0);
+  // The same page does reach the cloud for the repo-backed system, so the check above is not vacuous.
+  await queueFrom(document, store, layerButton(document, 'mobile', 'L3'));
+  assert.equal(mcp.calls.filter((c) => c.tool === 'create_session').length, 1);
+  for (const job of jobSets(store).map((w) => w.data)) assert.deepEqual(isValidJob(job).errors, []);
+});
+
+test('jobs: "Verify still present" queues a verify job for the finding; fix and apply are disabled until Plan 4', async () => {
+  const mcp = stubMcp();
+  const { document, store } = await bootLive({ seed: jobSeed({ cloudAllowed: true }), user: ownerUser(), hash: '#p-example-app~status.all', mcp: mcp.ns });
+  const row = rowFor(document, 'b71e04c9d2a8');
+  const disabled = row.querySelectorAll('button').filter((b) => b.disabled && /Diagnose & fix|Apply reviewed patch/.test(b.textContent));
+  assert.equal(disabled.length, 2);
+  for (const b of disabled) assert.ok(b.hasAttribute('data-write'));
+  assert.match(row.textContent, /arrives with the fix flow \(Plan 4\)/);
+  const job = await queueFrom(document, store, verifyButton(document, 'b71e04c9d2a8'));
+  assert.deepEqual(Object.keys(job).sort(), ['confirmedAt', 'costEstimate', 'costShown', 'createdBy', 'executorKind', 'findingId', 'id', 'params', 'project', 'status', 'system', 'type', 'updatedAt']);
+  assert.equal(job.type, 'verify');
+  assert.equal(job.findingId, 'b71e04c9d2a8');
+  assert.equal(job.system, 'mobile');
+  assert.equal(job.executorKind, 'cloud');
+  assert.deepEqual(job.costEstimate, jobsLib.costEstimate({ type: 'verify', openVerified: 1 }));
+  assert.deepEqual(isValidJob(job).errors, []);
+  assert.equal(mcp.calls[0].input.prompt, `/rampart verify --project example-app --finding b71e04c9d2a8 --job ${job.id}`);
+  assert.equal(mcp.calls[0].input.source_url, 'https://github.com/<owner>/example-app');
+});
+
+test('jobs: rows show live status: claimed by the executor, running, done or failed with the summary, and a stale queued job', async () => {
+  const seed = jobSeed();
+  const base = seed.jobs['job-0001'];
+  const now = new Date().toISOString();
+  seed.jobs['job-claimed'] = { ...base, id: 'job-claimed', status: 'claimed', claimedBy: 'session-placeholder', claimedAt: now };
+  seed.jobs['job-running'] = { ...base, id: 'job-running', status: 'running', claimedBy: 'session-placeholder', startedAt: now };
+  seed.jobs['job-done'] = { ...base, id: 'job-done', status: 'done', resultSummary: '1 finding added', finishedAt: now };
+  seed.jobs['job-failed'] = { ...base, id: 'job-failed', status: 'failed', resultSummary: 'not created by the owner', finishedAt: now };
+  seed.jobs['job-stale'] = { ...base, id: 'job-stale', confirmedAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' };
+  const { document } = await bootLive({ seed, user: ownerUser(), hash: '#p-example-app' });
+  const status = (id) => rowFor(document, id).textContent;
+  assert.match(status('job-claimed'), /Claimed by machine-placeholder/);
+  assert.match(status('job-running'), /Running/);
+  assert.match(status('job-done'), /Done.*1 finding added/);
+  assert.match(status('job-failed'), /Failed.*not created by the owner/);
+  assert.match(status('job-stale'), /Queued · stale since \d{4}-\d{2}-\d{2}/);
+  assert.match(rowFor(document, 'job-stale').className, /is-stale/);
+  assert.doesNotMatch(status('job-0001'), /stale since/);
+  const requeue = rowFor(document, 'job-stale').querySelector('button[data-action="requeue"]');
+  assert.ok(requeue && requeue.hasAttribute('data-write'), 'the owner may requeue a stale job');
+  assert.equal(document.querySelectorAll('button[data-action="requeue"]').length, 1, 'only the stale one');
+});
+
+test('jobs: requeue re-confirms the same job with a fresh cost and time; it stays queued', async () => {
+  const seed = jobSeed();
+  seed.jobs['job-stale'] = { ...seed.jobs['job-0001'], id: 'job-stale', confirmedAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' };
+  const before = Date.now();
+  const { document, store } = await bootLive({ seed, user: ownerUser(), hash: '#p-example-app' });
+  await press(rowFor(document, 'job-stale').querySelector('button[data-action="requeue"]'));
+  const sheet = sheetOf(document);
+  assert.match(sheet.textContent, /Requeue/);
+  assert.ok(sheet.textContent.includes(jobsLib.costEstimate({ type: 'audit', layer: 'L1' }).note));
+  await press(document.getElementById('job-sheet-confirm'));
+  const writes = jobWrites(store);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].op, 'update');
+  assert.equal(writes[0].path, 'jobs/job-stale');
+  assert.deepEqual(Object.keys(writes[0].data).sort(), ['confirmedAt', 'costEstimate', 'costShown', 'updatedAt']);
+  assert.equal(writes[0].data.confirmedAt, writes[0].data.updatedAt);
+  assert.ok(Date.parse(writes[0].data.confirmedAt) >= before - 1000);
+  const stored = await readDoc(store, 'jobs/job-stale');
+  assert.equal(stored.status, 'queued');
+  assert.deepEqual(isValidJob(stored).errors, []);
+  assert.doesNotMatch(rowFor(document, 'job-stale').textContent, /stale since/);
+  assert.doesNotMatch(rowFor(document, 'job-stale').className, /is-stale/);
+  same(rowFor(document, 'job-stale').querySelector('button[data-action="requeue"]'), null);
 });

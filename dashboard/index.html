@@ -16,6 +16,7 @@
   --accent: #2B5E90;
   --accent-soft: #E2EBF4;
   --shadow-tint: rgba(21, 33, 43, 0.07);
+  --scrim: rgba(21, 33, 43, 0.45);
 
   /* Grades: fill and the text on it. */
   --grade-a: #1D7A4C; --grade-a-ink: #FFFFFF;
@@ -63,6 +64,7 @@
     --accent: #8DB9E6;
     --accent-soft: #1C2C3D;
     --shadow-tint: rgba(0, 0, 0, 0.32);
+    --scrim: rgba(0, 0, 0, 0.62);
     --grade-a: #62CC92; --grade-a-ink: #04261A;
     --grade-b: #5EC2C8; --grade-b-ink: #03282B;
     --grade-c: #EFC261; --grade-c-ink: #2E1E00;
@@ -98,6 +100,7 @@
   --accent: #8DB9E6;
   --accent-soft: #1C2C3D;
   --shadow-tint: rgba(0, 0, 0, 0.32);
+  --scrim: rgba(0, 0, 0, 0.62);
   --grade-a: #62CC92; --grade-a-ink: #04261A;
   --grade-b: #5EC2C8; --grade-b-ink: #03282B;
   --grade-c: #EFC261; --grade-c-ink: #2E1E00;
@@ -254,7 +257,12 @@ main { padding-block: 28px 56px; }
   font-size: 12px; line-height: 1.3; padding: 3px 9px; border-radius: 6px;
   border: 1px dashed var(--line-strong); background: transparent; color: var(--muted); cursor: copy;
 }
-.action:hover { border-color: var(--accent); color: var(--accent); }
+.action:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+/* In live mode the owner's buttons queue a job after a confirmation, so they are solid; the ones whose flow arrives in a
+   later version are disabled and say why beside them. */
+.action-job { border-style: solid; border-color: var(--accent); color: var(--accent); cursor: pointer; }
+.action-job:hover:not(:disabled) { background: var(--accent-soft); }
+.action:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* ---- tiles ---- */
 .carousel-nav { display: flex; gap: 8px; }
@@ -431,6 +439,42 @@ tr.is-closed td { color: var(--muted); }
 .decide-error { color: var(--bad); font-size: 12.5px; }
 .run-counts { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
+/* Finding actions and job status (live mode). */
+.finding-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0 2px; }
+.finding-actions-note { flex-basis: 100%; font-size: 12px; color: var(--muted); }
+.job-note { font-size: 12px; color: var(--muted); }
+.job-note code { padding: 1px 5px; border-radius: 5px; background: var(--sunk); }
+tr.is-stale .status-queued { color: var(--warn); background: var(--warn-bg); }
+.job-tools { margin-top: 6px; }
+
+/* The confirm sheet: a modal dialog over a scrim, centred, inside the safe-area gutters. */
+.sheet-scrim {
+  position: fixed; inset: 0; z-index: 30; display: grid; place-items: center;
+  padding-block: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--scrim);
+}
+.job-sheet {
+  width: 100%; max-width: 460px; max-height: 100%; overflow-y: auto; display: grid; gap: 14px;
+  padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink);
+  box-shadow: 0 18px 48px var(--shadow-tint);
+}
+.sheet-title { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+.sheet-sub { color: var(--muted); font-size: 13px; }
+.sheet-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 14px; margin: 0; font-size: 13px; }
+.sheet-facts dt { color: var(--muted); font-weight: 600; }
+.sheet-facts dd { margin: 0; overflow-wrap: anywhere; }
+.sheet-why { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
+.sheet-error { color: var(--bad); }
+.sheet-buttons { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.sheet-cancel, .sheet-confirm { padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.sheet-cancel { border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); }
+.sheet-cancel:hover { border-color: var(--accent); color: var(--accent); }
+.sheet-confirm { border: 1px solid var(--accent); background: var(--accent); color: var(--surface); }
+.sheet-confirm:hover:not(:disabled) { background: var(--surface); color: var(--accent); }
+.sheet-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* ---- empty state ---- */
 .empty {
   max-width: 640px; margin: 40px auto 0; display: grid; gap: 12px;
@@ -574,6 +618,124 @@ const RampartDashboard = (function () {
   const ANSWER_TIMEOUT_MS = 10 * 1000;
   const FRESHNESS_LABELS = { fresh: 'Fresh', aging: 'Aging', stale: 'Stale', never: 'Never run', absent: 'Not declared' };
   const DAY_MS = 24 * 60 * 60 * 1000;
+
+  // ---- jobs: ids, cost estimates and routing ----------------------------------------------
+
+  // Verbatim copies of scripts/jobs.cjs PAGE_FUNCTIONS (the page has no module loader). tests/dashboard-live.test.cjs
+  // compares each one with the original, so edit them there and copy them here.
+  const Jobs = (function () {
+    // A time as an ISO string. Throws on null, on anything that is not a valid time and on a year outside 0000-9999 (its ISO
+    // string would carry a sign or more digits, and an id built from it would be malformed).
+    function toIsoTime(now) {
+      if (now === null) throw new TypeError('now must be a valid time');
+      const d = now === undefined ? new Date() : new Date(now);
+      const iso = Number.isNaN(d.getTime()) ? '' : d.toISOString();
+      if (!/^\d{4}-/.test(iso)) throw new TypeError('now must be a valid time');
+      return iso;
+    }
+    
+    // A non-negative whole number, or the default when the value is absent.
+    function wholeCount(value, name, fallback) {
+      if (value === undefined || value === null) return fallback;
+      if (!Number.isInteger(value) || value < 0) throw new RangeError(`${name} must be a non-negative whole number`);
+      return value;
+    }
+    
+    // True for a github.com remote in the forms git uses: github.com/o/r, github.com:o/r, https://github.com/o/r,
+    // ssh://git@github.com/o/r and git@github.com:o/r.git. The host must be exactly github.com.
+    function isGithubRemote(remote) {
+      if (typeof remote !== 'string') return false;
+      const bare = remote.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^[^/@]*@/, '');
+      return /^github\.com[/:]/i.test(bare);
+    }
+    
+    // job-<YYYYMMDD-HHmmss>-<4 hex>, UTC. rand() gives an integer 0..65535; the default is crypto.getRandomValues when the
+    // runtime has it (Node 20 and every browser do), else Math.random.
+    function newJobId(now, rand) {
+      const iso = toIsoTime(now);
+      const pick =
+        rand ||
+        function () {
+          const c = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+          if (c && typeof c.getRandomValues === 'function') return c.getRandomValues(new Uint16Array(1))[0];
+          return Math.floor(Math.random() * 65536);
+        };
+      const n = pick();
+      if (!Number.isInteger(n) || n < 0 || n > 65535) throw new RangeError('rand must give a whole number from 0 to 65535');
+      const stamp = iso.slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
+      return `job-${stamp}-${n.toString(16).padStart(4, '0')}`;
+    }
+    
+    // The estimated number of subagents a job spawns, and a note that states the numbers. L1 runs scripts only; L2 is
+    // min(units, 10) x 5 classes x 2 verifiers; L3 is units x 5|10|classes by effort x 2; INFRA is probes + 2; verify is one agent per
+    // open verified finding; inventory is one. Defaults: 10 units, 15 classes, 6 probes, 0 open verified findings, medium effort.
+    function costEstimate(input) {
+      if (!input || typeof input !== 'object') throw new TypeError('costEstimate needs {type, layer, ...}');
+      const type = input.type;
+      const known = ['inventory', 'audit', 'verify', 'fix', 'apply', 'dashboard', 'doctor', 'import'];
+      if (!known.includes(type)) throw new RangeError(`unknown job type ${JSON.stringify(type)}`);
+      if (type === 'inventory') return { agents: 1, note: 'inventory: 1 agent (estimate)' };
+      if (type === 'verify') {
+        const open = wholeCount(input.openVerified, 'openVerified', 0);
+        return { agents: open, note: `verify: ${open} open verified findings, 1 agent each = ${open} agents (estimate)` };
+      }
+      if (type === 'fix') return { agents: 1, note: 'fix: 1 agent session (estimate)' };
+      if (type === 'apply') return { agents: 0, note: 'apply: applies a reviewed change, no agents (estimate)' };
+      if (type !== 'audit') return { agents: 0, note: `${type}: scripts only, no agents (estimate)` };
+    
+      const layer = input.layer;
+      if (layer === 'L1') return { agents: 0, note: 'L1: scripts only, ~1 min, 0 agents (estimate)' };
+      if (layer === 'INFRA') {
+        const probes = wholeCount(input.probes, 'probes', 6);
+        return { agents: probes + 2, note: `INFRA: ${probes} probes + 2 = ${probes + 2} agents (estimate)` };
+      }
+      if (layer === 'L2') {
+        const units = Math.min(wholeCount(input.units, 'units', 10), 10);
+        return { agents: units * 5 * 2, note: `L2: ${units} units × 5 classes × 2 verifiers = ${units * 5 * 2} agents (estimate)` };
+      }
+      if (layer === 'L3') {
+        const units = wholeCount(input.units, 'units', 10);
+        const effort = input.effort === undefined ? 'medium' : input.effort;
+        if (effort !== 'low' && effort !== 'medium' && effort !== 'high') throw new RangeError('effort must be low, medium or high');
+        const classes = effort === 'low' ? 5 : effort === 'medium' ? 10 : wholeCount(input.classes, 'classes', 15);
+        return { agents: units * classes * 2, note: `L3 (${effort}): ${units} units × ${classes} classes × 2 verifiers = ${units * classes * 2} agents (estimate)` };
+      }
+      throw new RangeError('layer must be L1, L2, L3 or INFRA for an audit');
+    }
+    
+    // Where a job runs. Cloud only when the project allows it, the system has no host (a host is reached from here), the repo is on
+    // github.com and the work is not INFRA or apply. Anything else, and anything unreadable, is local.
+    function route(args) {
+      const a = args || {};
+      const project = a.project || {};
+      const system = a.system || {};
+      if (a.type === 'apply') return { executorKind: 'local', reason: 'apply changes run locally' };
+      if (a.layer === 'INFRA') return { executorKind: 'local', reason: 'infra checks need the local network, so they run locally' };
+      if (system.host) return { executorKind: 'local', reason: 'this system is reached through a host, so it runs locally' };
+      if (system.executor === 'local') return { executorKind: 'local', reason: 'this system is set to run locally' };
+      if (project.cloudAllowed !== true) return { executorKind: 'local', reason: 'cloud is not allowed for this project' };
+      if (!isGithubRemote(system.repo && system.repo.remote)) return { executorKind: 'local', reason: 'cloud needs a repo on github.com' };
+      return { executorKind: 'cloud', reason: 'repo on github.com and the project allows cloud' };
+    }
+    
+    // The patch that claims a queued job. The recipe applies it with if_version, so a second executor loses the race.
+    function claimPatch(job, executorId, now) {
+      if (!job || typeof job !== 'object') throw new TypeError('claimPatch needs a job');
+      if (job.status !== 'queued') throw new Error(`job ${job.id} is ${job.status}, not queued`);
+      if (typeof executorId !== 'string' || executorId === '') throw new TypeError('claimPatch needs an executor id');
+      const at = toIsoTime(now);
+      return { status: 'claimed', claimedBy: executorId, claimedAt: at, updatedAt: at };
+    }
+    
+    // The patch for a job someone other than the owner queued: refused, never run.
+    function refusalPatch(job, now) {
+      if (!job || typeof job !== 'object') throw new TypeError('refusalPatch needs a job');
+      const at = toIsoTime(now);
+      return { status: 'failed', resultSummary: 'not created by the owner', finishedAt: at, updatedAt: at };
+    }
+
+    return { toIsoTime, wholeCount, isGithubRemote, newJobId, costEstimate, route, claimPatch, refusalPatch };
+  })();
 
   const own = (obj, key) => obj !== null && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, key);
   const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -920,6 +1082,10 @@ const RampartDashboard = (function () {
     userId: null, // the writer's user id, which signs a decision's `by`; read only when access is 'write'
     saving: new Set(), // finding ids with a decision write in flight (one at a time per finding)
     optimistic: new Map(), // finding id -> {status, disposition} shown while its write is in flight
+    user: null, // the user capability, kept for a writer: a job's createdBy is read from it when the job is confirmed
+    sheet: null, // the open confirm sheet: {scrim, dialog, opener, plan}
+    waiting: new Set(), // job ids queued here that no executor was reached for: their row says to start /rampart watch
+    jobWrites: new Set(), // job ids with a write in flight (one at a time per job)
   };
 
   function show(view) {
@@ -1020,21 +1186,45 @@ const RampartDashboard = (function () {
   // The declared layers of a system that can run in this version: a layer with no engine gets no Run button.
   const runnableLayers = (system, engines) => declaredLayers(system).filter((L) => list(engines).indexOf(L) !== -1);
 
+  // A layer's Run button. For the owner in live mode it queues an audit job after a confirmation; everywhere else (static
+  // mode, a viewer) it copies the command that runs the layer.
   function actionButton(layer, slug, systemId) {
-    const command = auditCommand(layer, slug, systemId);
+    if (canQueue()) {
+      return h('button', {
+        type: 'button',
+        class: 'action action-job',
+        'aria-label': `${ACTION_LABELS[layer]}: shows the cost, then queues the job`,
+        title: 'Queue this job',
+        'data-write': true,
+        'data-action': 'queue',
+        'data-type': 'audit',
+        'data-project': slug,
+        'data-system': systemId,
+        'data-layer': layer,
+        on: { click: onAction },
+      }, ACTION_LABELS[layer]);
+    }
     return h('button', {
       type: 'button',
       class: 'action',
       'aria-label': `${ACTION_LABELS[layer]}, copies the command`,
       title: 'Copy command',
-      'data-command': command,
-      on: {
-        click: (event) => {
-          event.stopPropagation();
-          copyCommand(event.currentTarget.getAttribute('data-command'), event.currentTarget);
-        },
-      },
+      'data-action': 'copy',
+      'data-command': auditCommand(layer, slug, systemId),
+      on: { click: onAction },
     }, ACTION_LABELS[layer]);
+  }
+
+  // The one click handler of every action button: copy, queue, requeue and the disabled ones. morph keeps a patched
+  // button's listeners (a copy button can become a queue button when access arrives), so it reads what to do from the
+  // element.
+  function onAction(event) {
+    event.stopPropagation();
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    const action = button.getAttribute('data-action');
+    if (action === 'copy') copyCommand(button.getAttribute('data-command'), button);
+    else if (action === 'queue' || action === 'requeue') openSheet(button);
   }
 
   function actionGroup(slug, system) {
@@ -1146,6 +1336,10 @@ const RampartDashboard = (function () {
 
   // Left and right arrows step through the tiles, unless a form control has the keys.
   function onKey(event) {
+    if (state.sheet) {
+      sheetKey(event);
+      return;
+    }
     if (state.view !== 'tiles' || event.defaultPrevented) return;
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -1271,7 +1465,34 @@ const RampartDashboard = (function () {
     return `${what}${d.reason ? `: ${d.reason}` : ''}${who ? ` (${who})` : ''}`;
   }
 
-  function findingDetails(f, disposition) {
+  // The owner's actions on a finding (live mode): "Verify still present" queues a verify job for an open or regressed one;
+  // fix and apply arrive with Plan 4 and are disabled, with the note beside them.
+  function findingActions(f, slug) {
+    const note = `fix-note-${f.id}`;
+    const later = (label) => h('button', {
+      type: 'button', class: 'action', disabled: true, 'data-write': true, 'aria-describedby': note, on: { click: onAction },
+    }, label);
+    return h('div', { class: 'finding-actions' },
+      isActive(f)
+        ? h('button', {
+          type: 'button',
+          class: 'action action-job',
+          'aria-label': 'Verify still present: shows the cost, then queues the job',
+          'data-write': true,
+          'data-action': 'queue',
+          'data-type': 'verify',
+          'data-project': slug,
+          'data-system': String(f.system),
+          'data-finding': String(f.id),
+          on: { click: onAction },
+        }, 'Verify still present')
+        : null,
+      later('Diagnose & fix'),
+      later('Apply reviewed patch'),
+      h('p', { class: 'finding-actions-note', id: note }, 'Each arrives with the fix flow (Plan 4).'));
+  }
+
+  function findingDetails(f, disposition, slug) {
     const v = isObject(f.verification) ? f.verification : null;
     const rows = [
       ['Rule', f.ruleId, 'mono'],
@@ -1290,6 +1511,7 @@ const RampartDashboard = (function () {
     return h('details', null,
       h('summary', null, f.title || f.ruleId || f.id),
       h('dl', { class: 'finding-details' }, rows.map(([k, value, cls]) => [h('dt', null, k), h('dd', cls ? { class: cls } : null, String(value))])),
+      canQueue() ? findingActions(f, slug) : null,
       canDecide() ? decisionForm(f, disposition) : null);
   }
 
@@ -1345,14 +1567,15 @@ const RampartDashboard = (function () {
   }
 
   // What the toast says when the DB refuses a decision, by error code (db.d.ts; an unknown code reads as unavailable).
-  function writeFailure(err) {
+  // `verb` is what the viewer does again: save (a decision) or try (a job).
+  function writeFailure(err, verb = 'save') {
     const code = isObject(err) && typeof err.code === 'string' ? err.code : null;
     if (code === 'not_granted' || code === 'capability_disabled' || code === 'capability_removed') return 'This page may not change the dashboard data.';
     if (code === 'revoked') return 'Access to the dashboard data was withdrawn. Reload the page.';
     if (code === 'invalid_argument' || code === 'transform_error') return 'The dashboard data refused the change.';
-    if (code === 'resource_exhausted') return 'Too many changes at once. Wait a moment, then save again.';
+    if (code === 'resource_exhausted') return `Too many changes at once. Wait a moment, then ${verb} again.`;
     if (code === 'quota_exceeded') return 'The dashboard data is full.';
-    return 'The dashboard data did not answer. Save again in a moment.';
+    return `The dashboard data did not answer. ${verb[0].toUpperCase()}${verb.slice(1)} again in a moment.`;
   }
 
   // The DB write. async, so a path the store's builder refuses (it throws) arrives as a rejection like any other.
@@ -1428,7 +1651,339 @@ const RampartDashboard = (function () {
     if (state.data && (state.view === 'tiles' || state.view === 'detail')) render(state.data);
   };
 
-  function findingRow(f, disposition) {
+  // ---- jobs (live mode, owner only) --------------------------------------------------------
+
+  // Job buttons follow the decision form's gate: live mode, write access (canWrite) and a known user id. Each one opens
+  // the confirm sheet, which shows the job's type, scope, cost estimate and route before its confirm button is enabled.
+  // Confirming writes jobs/<id> (or, for a requeue, re-confirms the same job), then reaches an executor through the
+  // viewer's Claude Code Remote connector: a cloud job starts a session with create_session; a local job nudges an online
+  // remote-control executor with send_message. When neither happens (no executor online, no connector, any refusal) the
+  // job stays queued and its row says to start /rampart watch. A refused call is never repeated.
+  const REMOTE = 'Claude Code Remote';
+  const STALE_MS = DAY_MS;
+  const canQueue = () => canDecide();
+
+  // What a job button asks for, read from its attributes (see morph: never from a closure).
+  function jobRequest(button) {
+    const attr = (name) => (button.hasAttribute(name) ? button.getAttribute(name) : undefined);
+    return {
+      mode: attr('data-action') === 'requeue' ? 'requeue' : 'new',
+      type: attr('data-type'),
+      slug: attr('data-project'),
+      systemId: attr('data-system'),
+      layer: attr('data-layer'),
+      findingId: attr('data-finding'),
+      jobId: attr('data-job'),
+    };
+  }
+
+  // Everything the sheet shows and the confirm writes, from the data on screen when the sheet opens; {error} when the
+  // project, system, finding or job is gone or no estimate can be made. A requeue keeps the job's own route.
+  function jobPlan(req) {
+    const entry = state.entries.find((e) => e.project.slug === req.slug);
+    if (!entry) return { error: 'This project is no longer in the dashboard data.' };
+    const project = entry.project;
+    let { type, systemId, layer, findingId } = req;
+    let job = null;
+    if (req.mode === 'requeue') {
+      job = list(entry.jobs).find((j) => isObject(j) && String(j.id) === req.jobId) || null;
+      if (!job) return { error: 'This job is no longer in the dashboard data.' };
+      if (job.status !== 'queued') return { error: `This job is ${job.status} now, so there is nothing to requeue.` };
+      type = job.type;
+      systemId = job.system;
+      layer = job.layer;
+      findingId = job.findingId;
+    }
+    const system = list(project.systems).find((s) => isObject(s) && String(s.id) === String(systemId)) || null;
+    const finding = findingId ? list(entry.findings).find((f) => isObject(f) && String(f.id) === findingId) || null : null;
+    if (type === 'audit' && !system) return { error: 'This system is no longer in the project.' };
+    if (type === 'verify' && !finding && !job) return { error: 'This finding is no longer in the dashboard data.' };
+    let estimate;
+    try {
+      const effort = layer === 'L3' ? known(['low', 'medium', 'high'], project.huntEffort, undefined) : undefined;
+      estimate = Jobs.costEstimate(type === 'verify' ? { type, openVerified: 1 } : { type, layer, effort });
+    } catch (err) {
+      return { error: 'No cost estimate can be made for this job, so it cannot be queued here.' };
+    }
+    const routed = job
+      ? { executorKind: job.executorKind === 'cloud' ? 'cloud' : 'local', reason: 'where it was first queued' }
+      : Jobs.route({ project, system, type, layer: layer || (finding ? finding.layer : undefined) });
+    return { mode: req.mode, type, slug: entry.project.slug, project, system, systemId, layer, findingId, job, estimate, route: routed };
+  }
+
+  const liveExecutors = () => (state.data && isObject(state.data.live) ? list(state.data.live.executors) : []);
+
+  // An online local executor that takes remote messages (the freshest), or null.
+  function remoteExecutor(now) {
+    let best = null;
+    for (const e of liveExecutors()) {
+      const t = isObject(e) ? timeOf(e.heartbeatAt) : null;
+      if (t === null || now - t > EXECUTOR_ONLINE_MS || e.remoteControl !== true || e.kind !== 'local' || typeof e.id !== 'string') continue;
+      if (!best || t > timeOf(best.heartbeatAt)) best = e;
+    }
+    return best;
+  }
+
+  const jobLabel = (type, layer) => (type === 'audit' ? `Audit ${layer}` : type === 'verify' ? 'Verify still present' : String(type));
+
+  function routeText(plan) {
+    if (plan.route.executorKind === 'cloud') return 'cloud session';
+    return `local executor ${executorOnline(liveExecutors(), Date.now()) ? 'online' : 'offline'}`;
+  }
+
+  function scopeText(plan) {
+    const named = (name, id) => (name && name !== id ? `${name} (${id})` : String(id));
+    return [
+      named(plan.project.name, plan.slug),
+      plan.systemId ? named(plan.system && plan.system.name, plan.systemId) : null,
+      plan.layer || null,
+      plan.findingId ? `finding ${plan.findingId}` : null,
+    ].filter(Boolean).join(' · ');
+  }
+
+  // The confirm sheet: a modal dialog. Focus moves into it; Escape and Cancel close it and return the focus to the button
+  // that opened it; a click on the scrim does nothing; only the confirm button queues, and it is enabled only once the
+  // type, scope, cost and route are on screen.
+  function openSheet(button) {
+    if (!canQueue() || state.sheet) return;
+    const plan = jobPlan(jobRequest(button));
+    const requeue = plan.mode === 'requeue';
+    const confirm = h('button', {
+      type: 'button', id: 'job-sheet-confirm', class: 'sheet-confirm', 'data-write': true, disabled: true, on: { click: onConfirm },
+    }, requeue ? 'Requeue job' : 'Queue job');
+    const cancel = h('button', { type: 'button', id: 'job-sheet-cancel', class: 'sheet-cancel', on: { click: () => closeSheet() } }, 'Cancel');
+    const facts = plan.error
+      ? h('p', { class: 'sheet-error', id: 'job-sheet-facts', role: 'alert' }, plan.error)
+      : h('dl', { class: 'sheet-facts', id: 'job-sheet-facts' },
+        h('dt', null, 'Job'), h('dd', null, jobLabel(plan.type, plan.layer)),
+        h('dt', null, 'Scope'), h('dd', null, scopeText(plan)),
+        h('dt', null, 'Cost'), h('dd', null, plan.estimate.note),
+        h('dt', null, 'Runs on'), h('dd', null, routeText(plan), h('span', { class: 'sheet-why' }, plan.route.reason)));
+    const dialog = h('div', {
+      class: 'job-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'job-sheet-title', 'aria-describedby': 'job-sheet-facts',
+    },
+    h('h2', { class: 'sheet-title', id: 'job-sheet-title' }, requeue ? 'Requeue this job?' : 'Queue this job?'),
+    h('p', { class: 'sheet-sub' }, requeue
+      ? 'It was queued over a day ago and no executor has taken it. Confirming it again records a fresh cost and time.'
+      : 'Nothing runs until you confirm. The cost is an estimate of the agents the job starts.'),
+    facts,
+    h('div', { class: 'sheet-buttons' }, cancel, confirm));
+    const scrim = h('div', { class: 'sheet-scrim' }, dialog);
+    document.body.appendChild(scrim);
+    state.sheet = { scrim, dialog, opener: button, plan };
+    if (!plan.error) confirm.disabled = false;
+    cancel.focus();
+  }
+
+  function closeSheet() {
+    const sheet = state.sheet;
+    if (!sheet) return;
+    state.sheet = null;
+    sheet.scrim.remove();
+    if (sheet.opener && document.contains(sheet.opener)) sheet.opener.focus();
+  }
+
+  // While the sheet is open every key on the page comes here (onKey): Escape closes it, wherever the focus is; Tab stays
+  // inside it, and brings the focus back in when a click on the scrim let it fall to the page.
+  function sheetKey(event) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeSheet();
+      return;
+    }
+    if (event.key !== 'Tab' || !state.sheet) return;
+    const stops = Array.from(state.sheet.dialog.querySelectorAll('button')).filter((b) => !b.disabled);
+    if (!stops.length) return;
+    const first = stops[0];
+    const last = stops[stops.length - 1];
+    if (!state.sheet.dialog.contains(document.activeElement)) {
+      event.preventDefault();
+      first.focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function onConfirm() {
+    const sheet = state.sheet;
+    if (!sheet || sheet.plan.error) return;
+    closeSheet();
+    if (!canQueue()) return;
+    const done = sheet.plan.mode === 'requeue' ? requeueJob(sheet.plan) : queueJob(sheet.plan);
+    done.catch(() => toast('Could not queue the job. Try again in a moment.', null, ERROR_TOAST_MS));
+  }
+
+  // One write at a time per job; async, so a path the store refuses arrives as a rejection.
+  async function writeJob(id, op, data) {
+    state.jobWrites.add(id);
+    try {
+      return await state.live.db.doc(`jobs/${id}`)[op](data);
+    } finally {
+      state.jobWrites.delete(id);
+    }
+  }
+
+  // A new job: {id, type, project, system?, layer?, findingId?, params, executorKind, status, createdBy, confirmedAt,
+  // costShown, costEstimate, updatedAt}, created with set, then sent on its way.
+  async function queueJob(plan) {
+    let createdBy = null;
+    try {
+      const id = await state.user.id();
+      createdBy = typeof id === 'string' && id !== '' ? id : null;
+    } catch (err) {
+      createdBy = null;
+    }
+    if (!createdBy) {
+      toast('Could not queue the job: the page could not tell who you are. Reload the page.', null, ERROR_TOAST_MS);
+      return;
+    }
+    const at = new Date().toISOString();
+    const job = { id: Jobs.newJobId(at), type: plan.type, project: plan.slug };
+    if (plan.systemId) job.system = plan.systemId;
+    if (plan.layer) job.layer = plan.layer;
+    if (plan.findingId) job.findingId = plan.findingId;
+    Object.assign(job, {
+      params: {},
+      executorKind: plan.route.executorKind,
+      status: 'queued',
+      createdBy,
+      confirmedAt: at,
+      costShown: plan.estimate.note,
+      costEstimate: { agents: plan.estimate.agents, note: plan.estimate.note },
+      updatedAt: at,
+    });
+    try {
+      await writeJob(job.id, 'set', job);
+    } catch (err) {
+      toast(`Could not queue the job. ${writeFailure(err, 'try')}`, null, ERROR_TOAST_MS);
+      return;
+    }
+    await dispatch(job, plan);
+  }
+
+  // A stale job confirmed again: the same doc gets a fresh confirmedAt, cost and updatedAt; it stays queued.
+  async function requeueJob(plan) {
+    const id = String(plan.job.id);
+    if (state.jobWrites.has(id)) return;
+    const at = new Date().toISOString();
+    const patch = { confirmedAt: at, costShown: plan.estimate.note, costEstimate: { agents: plan.estimate.agents, note: plan.estimate.note }, updatedAt: at };
+    const write = writeJob(id, 'update', patch);
+    rerender();
+    try {
+      await write;
+    } catch (err) {
+      toast(`Could not requeue ${id}. ${writeFailure(err, 'try')}`, null, ERROR_TOAST_MS);
+      return;
+    } finally {
+      rerender();
+    }
+    state.waiting.delete(id);
+    await dispatch(Object.assign({}, plan.job, patch), plan);
+  }
+
+  // Reach an executor for a queued job. Every refusal leaves it queued for /rampart watch; nothing is retried.
+  async function dispatch(job, plan) {
+    if (job.executorKind === 'cloud') {
+      await startCloudSession(job, plan);
+      return;
+    }
+    const executor = remoteExecutor(Date.now());
+    if (!executor) {
+      if (executorOnline(liveExecutors(), Date.now())) toast(`Queued ${job.id}. The local executor takes it on its next check.`);
+      else waitForWatch(job.id);
+      return;
+    }
+    const mcp = await capability('mcp');
+    if (!mcp) {
+      waitForWatch(job.id);
+      return;
+    }
+    try {
+      await mcp.callTool(REMOTE, 'send_message', { session_id: executor.id, message: `/rampart watch --claim ${job.id}` });
+    } catch (err) {
+      waitForWatch(job.id, err);
+      return;
+    }
+    toast(`Queued ${job.id} and sent it to the local executor`);
+  }
+
+  async function startCloudSession(job, plan) {
+    const remote = plan.system && isObject(plan.system.repo) ? plan.system.repo.remote : null;
+    const mcp = Jobs.isGithubRemote(remote) ? await capability('mcp') : null;
+    if (!mcp) {
+      waitForWatch(job.id);
+      return;
+    }
+    let result;
+    try {
+      result = await mcp.callTool(REMOTE, 'create_session', { title: sessionTitle(job), prompt: jobPrompt(job), source_url: sourceUrl(remote) });
+    } catch (err) {
+      waitForWatch(job.id, err);
+      return;
+    }
+    toast(`Queued ${job.id} and started a cloud session`);
+    const sessionId = sessionIdOf(result);
+    if (!sessionId) return;
+    try {
+      await writeJob(job.id, 'update', { sessionId, updatedAt: new Date().toISOString() });
+    } catch (err) {
+      // The session runs without it: the job doc only lacks the session id.
+    }
+  }
+
+  // The session id from create_session's result. The connector's result shape is not pinned down, so any of three names.
+  function sessionIdOf(result) {
+    const payload = isObject(result) ? result.payload : null;
+    if (!isObject(payload)) return null;
+    for (const key of ['session_id', 'id', 'sessionId']) {
+      if (typeof payload[key] === 'string' && payload[key] !== '') return payload[key];
+    }
+    return null;
+  }
+
+  function jobPrompt(job) {
+    if (job.type === 'verify') return `/rampart verify --project ${arg(job.project)} --finding ${arg(job.findingId)} --job ${arg(job.id)}`;
+    return `/rampart ${job.type} ${job.layer} --project ${arg(job.project)} --system ${arg(job.system)} --job ${arg(job.id)}`;
+  }
+
+  function sessionTitle(job) {
+    const what = job.type === 'verify' ? `verify ${job.findingId}` : `${job.type} ${job.layer}`;
+    return `Rampart ${what} · ${job.project}/${job.system}`;
+  }
+
+  // https:// and the remote without its scheme or user, an scp-style host:path turned into host/path, no trailing .git.
+  function sourceUrl(remote) {
+    const bare = String(remote).trim()
+      .replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+      .replace(/^[^/@]*@/, '')
+      .replace(/^(github\.com):/i, '$1/')
+      .replace(/\.git$/i, '')
+      .replace(/\/+$/, '');
+    return `https://${bare}`;
+  }
+
+  // What to tell the owner when the connector refused, for the refusals they can fix.
+  function connectorHint(err) {
+    const code = isObject(err) && typeof err.code === 'string' ? err.code : null;
+    if (code === 'server_not_connected') return `Add ${REMOTE} in claude.ai Settings → Connectors to start jobs from here. `;
+    if (code === 'needs_reauth') return `Reconnect ${REMOTE} in claude.ai Settings → Connectors. `;
+    if (code === 'not_in_manifest' || code === 'approval_required' || code === 'consent_required' || code === 'blocked_by_policy') {
+      return `This page may not use ${REMOTE} for you. `;
+    }
+    return '';
+  }
+
+  function waitForWatch(id, err) {
+    state.waiting.add(id);
+    rerender();
+    toast(`Queued ${id}. ${connectorHint(err)}To run it, start`, '/rampart watch', ERROR_TOAST_MS);
+  }
+
+  function findingRow(f, disposition, slug) {
     const sev = known(SEVERITIES, f.severity, null);
     const cls = known(CLASSES, f.class, null);
     const status = known(STATUSES, f.status, null);
@@ -1437,7 +1992,7 @@ const RampartDashboard = (function () {
       h('td', null, h('span', { class: `sev sev-${sev ? sev.toLowerCase() : 'unknown'}` }, sev ? SEVERITY_LABELS[sev] : String(f.severity))),
       h('td', null, h('span', { class: `cls cls-${cls || 'unknown'}` }, cls ? CLASS_LABELS[cls] : String(f.class))),
       h('td', { class: 'mono nowrap' }, String(f.system)),
-      h('td', { class: 'title-cell' }, findingDetails(f, disposition)),
+      h('td', { class: 'title-cell' }, findingDetails(f, disposition, slug)),
       h('td', { class: 'loc' }, formatLocation(f.location)),
       h('td', null, h('span', {
         class: `status status-${status || 'unknown'}`,
@@ -1453,7 +2008,7 @@ const RampartDashboard = (function () {
     const dispositions = isObject(entry.dispositions) ? entry.dispositions : {};
     return {
       rows: shown.length
-        ? shown.map((f) => findingRow(f, own(dispositions, f.id) ? dispositions[f.id] : null))
+        ? shown.map((f) => findingRow(f, own(dispositions, f.id) ? dispositions[f.id] : null, entry.project.slug))
         : [h('tr', { class: 'empty-row' }, h('td', { colspan: '8' }, all.length ? 'No findings match these filters.' : 'No findings recorded for this project.'))],
       count: `Showing ${shown.length} of ${plural(all.length, 'finding', 'findings')}`,
       filtered: !Object.keys(DEFAULT_FILTERS).every((k) => state.filters[k] === DEFAULT_FILTERS[k]),
@@ -1515,26 +2070,65 @@ const RampartDashboard = (function () {
       h('div', { class: 'table-wrap' }, h('table', { class: 'runs' }, h('thead', null, head), h('tbody', null, rows))));
   }
 
+  // A queued job is stale once its confirmation is over a day old: the owner may requeue it (confirm it again).
+  const isStale = (j, now) => j.status === 'queued' && timeOf(j.confirmedAt) !== null && now - timeOf(j.confirmedAt) > STALE_MS;
+
+  // The executor a job names, as a person reads it: its machine when the executors collection knows it.
+  function executorName(id, executors) {
+    const e = list(executors).find((x) => isObject(x) && x.id === id);
+    return e && e.machineId ? String(e.machineId) : String(id);
+  }
+
+  // A job's live status: queued (stale, or waiting for someone to start /rampart watch), claimed by an executor, running,
+  // done or failed with its summary. A stale job gets the owner's Requeue button.
+  function jobStatusCell(j, slug, executors, now) {
+    const status = known(JOB_STATUSES, j.status, null);
+    const stale = isStale(j, now);
+    const waiting = status === 'queued' && !stale &&
+      (state.waiting.has(String(j.id)) || (j.executorKind !== 'cloud' && !executorOnline(executors, now)));
+    let note = null;
+    if (stale) note = ` · stale since ${day(j.confirmedAt)}`;
+    else if (waiting) note = [' · start ', h('code', null, '/rampart watch')];
+    else if ((status === 'claimed' || status === 'running') && j.claimedBy) note = ` by ${executorName(j.claimedBy, executors)}`;
+    return h('td', null,
+      h('span', { class: `status status-${status || 'unknown'}` }, status ? JOB_STATUS_LABELS[status] : String(j.status)),
+      note ? h('span', { class: 'job-note' }, note) : null,
+      j.resultSummary && (status === 'done' || status === 'failed') ? h('span', { class: 'run-reason' }, String(j.resultSummary)) : null,
+      stale && canQueue()
+        ? h('div', { class: 'job-tools' }, h('button', {
+          type: 'button',
+          class: 'action action-job',
+          'aria-label': `Requeue ${j.id}: shows the cost, then confirms the job again`,
+          'data-write': true,
+          'data-action': 'requeue',
+          'data-project': slug,
+          'data-job': String(j.id),
+          disabled: state.jobWrites.has(String(j.id)),
+          on: { click: onAction },
+        }, 'Requeue'))
+        : null);
+  }
+
   // Live mode only (static page data has no jobs): the project's jobs from the DB, newest confirmation first, keyed by id.
   function jobsSection(entry) {
     if (!Array.isArray(entry.jobs)) return null;
     const jobs = entry.jobs.filter(isObject).slice().sort((a, b) =>
       (timeOf(b.confirmedAt) || 0) - (timeOf(a.confirmedAt) || 0) || String(a.id).localeCompare(String(b.id)));
     if (!jobs.length) return section('jobs', 'Jobs', null, h('p', { class: 'muted' }, 'No jobs for this project yet.'));
-    const head = h('tr', null, ['Job', 'Type', 'Scope', 'Status', 'Updated'].map((t) => h('th', { scope: 'col' }, t)));
+    const executors = state.data && isObject(state.data.live) ? state.data.live.executors : [];
+    const now = Date.now();
+    const head = h('tr', null, ['Job', 'Type', 'Scope', 'Runs on', 'Status', 'Updated'].map((t) => h('th', { scope: 'col' }, t)));
     const rows = jobs.map((j) => {
-      const status = known(JOB_STATUSES, j.status, null);
       const scope = [j.system, j.layer, j.findingId].filter(Boolean).map(String).join(' · ');
-      return h('tr', { 'data-key': String(j.id) },
+      return h('tr', { 'data-key': String(j.id), class: isStale(j, now) ? 'is-stale' : null },
         h('td', { class: 'id' }, String(j.id)),
         h('td', null, String(j.type || '—')),
         h('td', { class: 'mono nowrap' }, scope || '—'),
-        h('td', null,
-          h('span', { class: `status status-${status || 'unknown'}` }, status ? JOB_STATUS_LABELS[status] : String(j.status)),
-          j.resultSummary ? h('span', { class: 'run-reason' }, String(j.resultSummary)) : null),
+        h('td', null, j.executorKind === 'cloud' ? 'Cloud' : j.executorKind === 'local' ? 'Local' : '—'),
+        jobStatusCell(j, entry.project.slug, executors, now),
         h('td', { class: 'nowrap' }, j.updatedAt ? h('time', { datetime: j.updatedAt, title: j.updatedAt }, stamp(j.updatedAt)) : '—'));
     });
-    return section('jobs', 'Jobs', 'Newest first.',
+    return section('jobs', 'Jobs', 'Newest first. A job queued over a day ago is stale; requeue it to confirm it again.',
       h('div', { class: 'table-wrap' }, h('table', { class: 'jobs' }, h('thead', null, head), h('tbody', null, rows))));
   }
 
@@ -1894,7 +2488,9 @@ const RampartDashboard = (function () {
       }
     }
     state.userId = userId;
+    state.user = writable ? user : null;
     setAccess(writable ? 'write' : 'read');
+    if (!canQueue()) closeSheet();
     if (state.view === 'tiles' || state.view === 'detail') render(state.data);
     if (owner) await recordOwner(db, user);
   }
