@@ -147,10 +147,6 @@ function fromTrivy(report, ctx) {
     });
   });
 
-  // The id of a package location hashes the package, not the lockfile it was found in. When a report covers several
-  // targets, the ruleId names the target so the same package in two lockfiles stays two findings.
-  const manyTargets = new Set(list(report.Results).filter(isObject).map((r) => r.Target).filter(isText)).size > 1;
-
   return [...groups.values()].map((g) => {
     const advisories = [...g.advisories.values()].sort(
       (a, b) => RANK[b.severity] - RANK[a.severity] || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
@@ -163,7 +159,9 @@ function fromTrivy(report, ctx) {
     if (g.target) location.path = g.target;
     return toolFinding(c, {
       source: 'trivy',
-      ruleId: `trivy/pkg/${g.pkg}${manyTargets && g.target ? `@${g.target}` : ''}`,
+      // The id of a package location hashes the package, not the lockfile it was found in, so the ruleId always names the
+      // target: the same package in two lockfiles stays two findings, and an id does not change when a repo gains a lockfile.
+      ruleId: `trivy/pkg/${g.pkg}${g.target ? `@${g.target}` : ''}`,
       title: `Vulnerable dependency ${g.pkg}${versions.length ? ` ${versions.join(', ')}` : ''} (${count})`,
       severity: maxSeverity(advisories.map((a) => a.severity)),
       confidence: 'HIGH',

@@ -156,12 +156,12 @@ test('fromTrivy makes one finding per (Target, PkgName) and every one validates'
   const findings = fromTrivy(fixture('trivy.json'), CTX);
   assert.equal(findings.length, 2);
   assertAllValid(findings);
-  assert.deepEqual(findings.map((f) => f.ruleId).sort(), ['trivy/pkg/lodash', 'trivy/pkg/minimist']);
+  assert.deepEqual(findings.map((f) => f.ruleId).sort(), ['trivy/pkg/lodash@package-lock.json', 'trivy/pkg/minimist@package-lock.json']);
 });
 
 test('fromTrivy lodash: max severity, sorted cve list, cwe union, location and evidence', () => {
   const findings = fromTrivy(deepFreeze(fixture('trivy.json')), CTX);
-  const lodash = byRule(findings, 'trivy/pkg/lodash');
+  const lodash = byRule(findings, 'trivy/pkg/lodash@package-lock.json');
   assert.equal(lodash.source, 'trivy');
   assert.equal(lodash.severity, 'CRITICAL');
   assert.equal(lodash.confidence, 'HIGH');
@@ -177,13 +177,12 @@ test('fromTrivy lodash: max severity, sorted cve list, cwe union, location and e
   assert.equal(lodash.recommendation, 'Upgrade lodash to 4.17.21');
   assert.equal(
     lodash.id,
-    findingId({ project: 'example-app', system: 'mobile', ruleId: 'trivy/pkg/lodash', location: { package: 'lodash', ecosystem: 'npm' } }),
+    findingId({ project: 'example-app', system: 'mobile', ruleId: 'trivy/pkg/lodash@package-lock.json', location: { package: 'lodash', ecosystem: 'npm' } }),
   );
-  assert.ok(findings.every((f) => !f.ruleId.includes('@')), 'a single-target report keeps the plain ruleId');
 });
 
 test('fromTrivy minimist: a single advisory keeps its own severity and reads in the singular', () => {
-  const minimist = byRule(fromTrivy(fixture('trivy.json'), CTX), 'trivy/pkg/minimist');
+  const minimist = byRule(fromTrivy(fixture('trivy.json'), CTX), 'trivy/pkg/minimist@package-lock.json');
   assert.equal(minimist.severity, 'MEDIUM');
   assert.deepEqual(minimist.externalIds.cve, ['CVE-2020-7598']);
   assert.deepEqual(minimist.cwe, ['CWE-1321']);
@@ -195,9 +194,9 @@ test('fromTrivy minimist: a single advisory keeps its own severity and reads in 
 test('fromTrivy severity is the max whatever the order, and UNKNOWN counts as LOW', () => {
   const report = fixture('trivy.json');
   const vulns = report.Results[0].Vulnerabilities;
-  const forwards = byRule(fromTrivy(report, CTX), 'trivy/pkg/lodash');
+  const forwards = byRule(fromTrivy(report, CTX), 'trivy/pkg/lodash@package-lock.json');
   vulns.reverse();
-  const backwards = byRule(fromTrivy(report, CTX), 'trivy/pkg/lodash');
+  const backwards = byRule(fromTrivy(report, CTX), 'trivy/pkg/lodash@package-lock.json');
   assert.equal(forwards.severity, 'CRITICAL');
   assert.equal(backwards.severity, 'CRITICAL');
   assert.deepEqual(backwards.externalIds.cve, forwards.externalIds.cve);
@@ -265,19 +264,35 @@ test('fromTrivy gives the same package in two lockfiles of one ecosystem two dif
   assertAllValid(findings);
 });
 
-test('fromTrivy names the target in the ruleId only when the report has more than one distinct target', () => {
-  const one = fixture('trivy.json');
-  // Two Results for the same Target (say a lang-pkgs and a secret result) are still one target.
-  one.Results.push({ Target: 'package-lock.json', Class: 'secret', Type: 'npm' });
-  assert.deepEqual(fromTrivy(one, CTX).map((f) => f.ruleId).sort(), ['trivy/pkg/lodash', 'trivy/pkg/minimist']);
+test('fromTrivy always names the target in the ruleId, so an id never changes when a repo gains a lockfile', () => {
+  const before = fromTrivy(fixture('trivy.json'), CTX);
+  const grown = fixture('trivy.json');
+  grown.Results.push({ ...clone(grown.Results[0]), Target: 'web/package-lock.json' });
+  grown.Results.push({ Target: 'api/package-lock.json', Class: 'lang-pkgs', Type: 'npm' }); // no vulnerabilities of its own
+  const after = fromTrivy(grown, CTX);
+  for (const old of before) {
+    assert.ok(old.ruleId.endsWith('@package-lock.json'), `${old.ruleId} names its target`);
+    const same = after.find((f) => f.ruleId === old.ruleId);
+    assert.ok(same, `${old.ruleId} is still reported`);
+    assert.equal(same.id, old.id, `${old.ruleId} keeps its id`);
+  }
+  assert.equal(after.length, 4);
+});
 
-  // A second target counts even when it has no vulnerabilities of its own: the ruleId depends on the layout of the scan.
-  const two = fixture('trivy.json');
-  two.Results.push({ Target: 'web/package-lock.json', Class: 'lang-pkgs', Type: 'npm' });
+test('fromTrivy counts two Results for one Target once, and leaves the suffix off when a Result has no Target', () => {
+  const same = fixture('trivy.json');
+  // Say a lang-pkgs result and a secret result for the same lockfile: the packages are grouped, not doubled.
+  same.Results.push({ Target: 'package-lock.json', Class: 'secret', Type: 'npm' });
   assert.deepEqual(
-    fromTrivy(two, CTX).map((f) => f.ruleId).sort(),
+    fromTrivy(same, CTX).map((f) => f.ruleId).sort(),
     ['trivy/pkg/lodash@package-lock.json', 'trivy/pkg/minimist@package-lock.json'],
   );
+
+  const bare = { Results: [{ Type: 'npm', Vulnerabilities: fixture('trivy.json').Results[0].Vulnerabilities }] };
+  const findings = fromTrivy(bare, CTX);
+  assert.deepEqual(findings.map((f) => f.ruleId).sort(), ['trivy/pkg/lodash', 'trivy/pkg/minimist']);
+  assert.equal(findings[0].location.path, undefined);
+  assertAllValid(findings);
 });
 
 test('fromTrivy counts a repeated advisory once and says so when there is no fix', () => {
