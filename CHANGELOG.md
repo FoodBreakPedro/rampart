@@ -11,7 +11,7 @@ Fixes from the whole-branch review of alpha.1.
 - **No credentials in project addresses.** The store refuses a `live.url` with a user, password or token before the host, and a `host.ssh` written `user:pass@host`, naming the field and never the value.
 - **Narrower git pre-approvals.** The skill pre-approves `git config user.name`, `git remote get-url` and `git rev-parse` instead of every git command. The `--repo` check reads the remote through `inventory-scan.cjs <folder> --remote`, which removes credentials from it.
 - **The dashboard trend is right.** The score snapshot keeps the trend it was saved with, and the dashboard shows it, so a tile no longer reads "0.0, no change" right after every job.
-- **Installable as its own marketplace.** `.claude-plugin/marketplace.json` lists the plugin, so `/plugin marketplace add <owner>/rampart` and `/plugin install rampart@rampart` can work. `npm run validate` checks both manifests.
+- **Installable as its own marketplace.** `.claude-plugin/marketplace.json` lists the plugin, so `/plugin marketplace add FoodBreakPedro/rampart` and `/plugin install rampart@rampart` can work. `npm run validate` checks both manifests.
 - A rotated history leak marked fixed stays fixed when gitleaks reports it again, since the history cannot un-leak.
 - Finding text (title, evidence, exploit scenario, preconditions, recommendation) is redacted as it enters the store.
 - A JWT right after a URL-encoded character (`Bearer%20…`, `token%3D…`) is redacted.

@@ -34,17 +34,17 @@ The rest of v0.1 arrives in three more plans:
 
 ## Install
 
-`<owner>` is a placeholder until the repository's public home is settled. The repository is its own marketplace (`.claude-plugin/marketplace.json`, named `rampart`, with the one `rampart` plugin at its root). Add it as a marketplace, then install the plugin from it:
+The repository lives at https://github.com/FoodBreakPedro/rampart. The repository is its own marketplace (`.claude-plugin/marketplace.json`, named `rampart`, with the one `rampart` plugin at its root). Add it as a marketplace, then install the plugin from it:
 
 ```
-/plugin marketplace add <owner>/rampart
+/plugin marketplace add FoodBreakPedro/rampart
 /plugin install rampart@rampart
 ```
 
 On Claude Code 2.1.275 or later the same install works in one step:
 
 ```
-/plugin install rampart --marketplace <owner>/rampart
+/plugin install rampart --marketplace FoodBreakPedro/rampart
 ```
 
 For development, load a local checkout for one session instead of installing it:

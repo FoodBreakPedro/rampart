@@ -37,7 +37,7 @@ test('I7: the repository is its own marketplace, listing the rampart plugin at i
   const validate = JSON.parse(read('package.json')).scripts.validate;
   assert.match(validate, /claude plugin validate \.claude-plugin\/plugin\.json --strict/);
   assert.match(validate, /claude plugin validate \.claude-plugin\/marketplace\.json --strict/);
-  assert.match(read('README.md'), /\/plugin marketplace add <owner>\/rampart\n\/plugin install rampart@rampart/);
+  assert.match(read('README.md'), /\/plugin marketplace add [A-Za-z0-9_.-]+\/rampart\r?\n\/plugin install rampart@rampart/);
 });
 
 test('I5: the skill pre-approves only the narrow git commands, and no recipe runs git in another form', () => {

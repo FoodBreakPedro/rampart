@@ -12,7 +12,7 @@ const { checkHeaders } = require('../scripts/l1-headers.cjs');
 const CLI = path.join(__dirname, '..', 'scripts', 'l1-headers.cjs');
 const SLUG = 'example-app';
 const SYSTEM = 'db'; // the fixture system that has a live.url; 'mobile' has none
-const USER_AGENT = 'Rampart/0.1 (+https://github.com/<owner>/rampart)';
+const USER_AGENT = 'Rampart/0.1 (+https://github.com/FoodBreakPedro/rampart)';
 const ZERO = { added: 0, updated: 0, unchanged: 0, regressed: 0 };
 
 // Cookie values the servers send. Not one of them may end up in a stored file.

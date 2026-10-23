@@ -34,7 +34,7 @@ const { resolveSystem, firstLine, markFailed, UsageError, runCli } = common;
 const RAW_NAME = 'headers.json';
 const DEFAULT_TIMEOUT_MS = 15 * 1000;
 const MAX_TIMEOUT_MS = 2 ** 31 - 1; // what setTimeout can hold
-const USER_AGENT = 'Rampart/0.1 (+https://github.com/<owner>/rampart)';
+const USER_AGENT = 'Rampart/0.1 (+https://github.com/FoodBreakPedro/rampart)';
 const ACCEPT = 'text/html,*/*';
 // A comma starts a new cookie only when a name= follows, so the comma in Expires=Wed, 21 Oct 2026 ... stays put (as in the rubric).
 const COOKIE_BOUNDARY = /,(?=\s*[^;,\s=]+=)/;
