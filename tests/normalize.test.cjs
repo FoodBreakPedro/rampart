@@ -59,7 +59,7 @@ test('fromGitleaks makes one finding per report entry and every one validates', 
 test('fromGitleaks fills in the documented fields', () => {
   const [aws, pat] = fromGitleaks(fixture('gitleaks.json'), CTX);
   assert.equal(aws.source, 'gitleaks');
-  assert.equal(aws.ruleId, 'gitleaks/aws-access-token');
+  assert.equal(aws.ruleId, 'gitleaks/aws-access-token@3f1c9a7e5b2d');
   assert.equal(aws.severity, 'HIGH');
   assert.equal(aws.confidence, 'MEDIUM');
   assert.deepEqual(aws.cwe, ['CWE-798']);
@@ -69,9 +69,9 @@ test('fromGitleaks fills in the documented fields', () => {
   assert.equal(aws.externalIds.cve, null);
   assert.equal(
     aws.id,
-    findingId({ project: 'example-app', system: 'mobile', ruleId: 'gitleaks/aws-access-token', location: { path: 'src/config/aws.js', symbol: null } }),
+    findingId({ project: 'example-app', system: 'mobile', ruleId: 'gitleaks/aws-access-token@3f1c9a7e5b2d', location: { path: 'src/config/aws.js', symbol: null } }),
   );
-  assert.equal(pat.ruleId, 'gitleaks/github-pat');
+  assert.equal(pat.ruleId, 'gitleaks/github-pat@9d8c7b6a5f4e');
   assert.equal(pat.title, 'Possible GitHub Personal Access Token in scripts/deploy.sh');
   assert.equal(pat.location.commit, '9d8c7b6a5f4e');
 });
@@ -92,17 +92,40 @@ test('fromGitleaks never copies Secret, Match, Line, Author, Email or Message in
   }
 });
 
-test('fromGitleaks ids survive line drift and a rewritten commit', () => {
+test('fromGitleaks ids survive line drift, and follow the commit', () => {
   const before = fromGitleaks(fixture('gitleaks.json'), CTX);
-  const moved = fixture('gitleaks.json');
-  moved[0].StartLine += 40;
-  moved[0].EndLine += 40;
-  moved[0].Commit = 'ffffffffffffffffffffffffffffffffffffffff';
-  const after = fromGitleaks(moved, CTX);
-  assert.equal(after[0].id, before[0].id);
-  assert.equal(after[0].location.commit, 'ffffffffffff');
-  assert.equal(after[0].location.line, undefined, 'no line number is recorded');
-  assert.equal(after[1].id, before[1].id);
+
+  const drifted = fixture('gitleaks.json');
+  drifted[0].StartLine += 40;
+  drifted[0].EndLine += 40;
+  const afterDrift = fromGitleaks(drifted, CTX);
+  assert.equal(afterDrift[0].id, before[0].id, 'the same leak at another line is the same finding');
+  assert.equal(afterDrift[0].location.line, undefined, 'no line number is recorded');
+  assert.equal(afterDrift[1].id, before[1].id);
+
+  const rewritten = fixture('gitleaks.json');
+  rewritten[0].Commit = 'ffffffffffffffffffffffffffffffffffffffff';
+  const afterRewrite = fromGitleaks(rewritten, CTX);
+  assert.equal(afterRewrite[0].location.commit, 'ffffffffffff');
+  assert.equal(afterRewrite[0].ruleId, 'gitleaks/aws-access-token@ffffffffffff');
+  assert.notEqual(afterRewrite[0].id, before[0].id, 'a leak in another commit is another finding');
+  assert.equal(afterRewrite[1].id, before[1].id);
+});
+
+test('fromGitleaks gives the same rule in the same file at two commits two distinct ids, and re-normalizing changes nothing', () => {
+  const first = fixture('gitleaks.json')[0];
+  const second = { ...first, Commit: '0123456789abcdef0123456789abcdef01234567', Date: '2026-05-01T08:00:00Z' };
+  const report = [first, second];
+  const findings = fromGitleaks(report, CTX);
+  assert.equal(findings.length, 2);
+  assert.deepEqual(findings.map((f) => f.ruleId), ['gitleaks/aws-access-token@3f1c9a7e5b2d', 'gitleaks/aws-access-token@0123456789ab']);
+  assert.deepEqual(findings.map((f) => f.location.path), ['src/config/aws.js', 'src/config/aws.js']);
+  assert.notEqual(findings[0].id, findings[1].id);
+  assertAllValid(findings);
+
+  const again = fromGitleaks(clone(report), CTX);
+  assert.deepEqual(again.map((f) => f.id), findings.map((f) => f.id));
+  assert.deepEqual(again, findings);
 });
 
 test('fromGitleaks ids depend on project, system, rule and file', () => {
@@ -121,6 +144,7 @@ test('fromGitleaks handles an entry with no commit (a --no-git scan) without inv
   report[0].Commit = '';
   const [f] = fromGitleaks(report, CTX);
   assert.deepEqual(f.location, { path: 'src/config/aws.js', symbol: null });
+  assert.equal(f.ruleId, 'gitleaks/aws-access-token', 'a working-tree entry has no commit to name');
   assert.equal(f.evidence, 'gitleaks rule aws-access-token matched in the working tree; value not recorded');
   assertAllValid([f]);
 });
@@ -220,7 +244,7 @@ test('fromTrivy returns [] when Results is missing, or when a target has no Vuln
   assert.deepEqual(fromTrivy({ Results: [{ Target: 'package-lock.json', Type: 'npm', Vulnerabilities: null }] }, CTX), []);
 });
 
-test('fromTrivy groups by target as well as package; with several targets the ruleId names the target', () => {
+test('fromTrivy groups by target as well as package, and names the target in the ruleId and the location', () => {
   const report = fixture('trivy.json');
   const lock = report.Results[0];
   report.Results.push({
@@ -320,6 +344,20 @@ test('fromTrivy picks the highest fix, including from a multi-branch FixedVersio
     }],
   };
   assert.equal(fromTrivy(report, CTX)[0].recommendation, 'Upgrade lodash to 4.17.21');
+});
+
+test('fromTrivy ranks a prerelease below its release when picking the fix', () => {
+  const v = fixture('trivy.json').Results[0].Vulnerabilities;
+  const pick = (a, b) => fromTrivy({
+    Results: [{ Target: 'package-lock.json', Type: 'npm', Vulnerabilities: [{ ...v[0], FixedVersion: a }, { ...v[1], FixedVersion: b }] }],
+  }, CTX)[0].recommendation;
+  assert.equal(pick('1.2.3', '1.2.3-beta.1'), 'Upgrade lodash to 1.2.3');
+  assert.equal(pick('1.2.3-beta.1', '1.2.3'), 'Upgrade lodash to 1.2.3');
+  assert.equal(pick('1.2.3-beta.1', '1.2.2'), 'Upgrade lodash to 1.2.3-beta.1', 'a newer core still wins');
+  assert.equal(pick('2.0.0-beta.2', '2.0.0-beta.10'), 'Upgrade lodash to 2.0.0-beta.10');
+  assert.equal(pick('2.0.0-rc.1', '2.0.0-beta.9'), 'Upgrade lodash to 2.0.0-rc.1');
+  // A distro revision such as -5ubuntu1 is not a prerelease: the later revision still wins.
+  assert.equal(pick('1:2.3.4-5', '1:2.3.5-1'), 'Upgrade lodash to 1:2.3.5-1');
 });
 
 test('fromTrivy keeps evidence short for a package with many advisories but lists every cve', () => {
@@ -459,9 +497,39 @@ test('fromNpmAudit keeps a mixed entry (own advisory plus a dependency) and note
   assert.ok(qs.evidence.endsWith('; also reached via side-dep'));
 });
 
-test('fromNpmAudit returns [] for an empty report', () => {
+test('fromNpmAudit returns [] only for a well-formed empty report, vulnerabilities: {}', () => {
   assert.deepEqual(fromNpmAudit(fixture('npm-audit.empty.json'), CTX), []);
-  assert.deepEqual(fromNpmAudit({ auditReportVersion: 2 }, CTX), []);
+  assert.deepEqual(fromNpmAudit({ auditReportVersion: 2, vulnerabilities: {} }, CTX), []);
+});
+
+test('fromNpmAudit throws when vulnerabilities is missing or not a plain object, instead of reporting a clean audit', () => {
+  const malformed = [
+    {},
+    { auditReportVersion: 2 },
+    { auditReportVersion: 2, vulnerabilities: null },
+    { auditReportVersion: 2, vulnerabilities: [] },
+    { auditReportVersion: 2, vulnerabilities: 'x' },
+    { auditReportVersion: 2, vulnerabilities: 0 },
+  ];
+  for (const report of malformed) {
+    assert.throws(() => fromNpmAudit(report, CTX), { name: 'TypeError', message: /vulnerabilities/ }, JSON.stringify(report));
+  }
+});
+
+test('fromNpmAudit follows a cycle to the advisory behind it and reports only the package that carries it', () => {
+  const advisory = { source: 9, name: 'c', title: 'Bad thing in c', url: 'https://github.com/advisories/GHSA-aaaa-bbbb-cccc', severity: 'high', cwe: ['CWE-20'], range: '<2' };
+  const report = {
+    auditReportVersion: 2,
+    vulnerabilities: {
+      a: { name: 'a', severity: 'high', isDirect: true, via: ['b'], effects: [], range: '*', nodes: [''], fixAvailable: true },
+      b: { name: 'b', severity: 'high', isDirect: false, via: ['a', 'c'], effects: ['a'], range: '*', nodes: [], fixAvailable: true },
+      c: { name: 'c', severity: 'high', isDirect: false, via: [advisory], effects: ['b'], range: '<2', nodes: [], fixAvailable: true },
+    },
+  };
+  const findings = fromNpmAudit(report, CTX);
+  assert.deepEqual(findings.map((f) => f.ruleId), ['npm-audit/pkg/c']);
+  assert.deepEqual(findings[0].externalIds.cve, ['GHSA-aaaa-bbbb-cccc']);
+  assertAllValid(findings);
 });
 
 test('fromNpmAudit refuses an error report or an older format instead of reporting a clean audit', () => {

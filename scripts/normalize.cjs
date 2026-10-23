@@ -74,8 +74,10 @@ function toolFinding(c, f) {
 // ---- gitleaks -----------------------------------------------------------------------------
 
 // report: the JSON array gitleaks writes with --report-format json (older versions write null when nothing matched).
-// One finding per entry. The commit is kept (shortened) but not the line, and neither is part of the id, so the id of a
-// leak survives line drift. Two leaks of the same rule in the same file share an id by design.
+// One finding per entry. The line is not recorded, so the id of a leak survives line drift. The shortened commit is
+// recorded and, when there is one, named in the ruleId (gitleaks/<RuleID>@<commit12>): the same rule in the same file at
+// two commits is two findings. A working-tree entry (no commit) gets the plain gitleaks/<RuleID>. Two leaks of one rule
+// in one file in one commit still share an id.
 function fromGitleaks(report, ctx) {
   const c = context(ctx, 'fromGitleaks');
   if (report === null || report === undefined) return [];
@@ -88,7 +90,7 @@ function fromGitleaks(report, ctx) {
     const location = short ? { path: File, symbol: null, commit: short } : { path: File, symbol: null };
     return toolFinding(c, {
       source: 'gitleaks',
-      ruleId: `gitleaks/${RuleID}`,
+      ruleId: `gitleaks/${RuleID}${short ? `@${short}` : ''}`,
       title: `Possible ${isText(Description) ? Description : RuleID} in ${File}`,
       severity: 'HIGH',
       confidence: 'MEDIUM',
@@ -105,21 +107,48 @@ function fromGitleaks(report, ctx) {
 
 // ---- trivy --------------------------------------------------------------------------------
 
-// The highest version in a list of FixedVersion strings. A string may name several fixes ("4.17.21, 3.10.1"); only the
-// numeric parts are compared, which is enough to pick an upgrade target.
-function highestVersion(fixes) {
-  const numbers = (v) => (v.match(/\d+/g) || []).map(Number);
-  const compare = (a, b) => {
-    const x = numbers(a);
-    const y = numbers(b);
-    for (let i = 0; i < Math.max(x.length, y.length); i++) {
-      const d = (x[i] ?? 0) - (y[i] ?? 0);
-      if (d) return d;
-    }
-    return 0;
+// A version split into its numeric parts and, for a semver prerelease (a "-" followed by a letter: 1.2.3-beta.1), the
+// prerelease identifiers. A distro revision such as 1:2.3.4-5ubuntu1 is not a prerelease; its digits just count.
+function parseVersion(v) {
+  const at = v.search(/-[A-Za-z]/);
+  return {
+    numbers: ((at < 0 ? v : v.slice(0, at)).match(/\d+/g) || []).map(Number),
+    pre: at < 0 ? null : v.slice(at + 1).split('.'),
   };
+}
+
+// Negative, zero or positive like a sort comparator. A release outranks its own prereleases.
+function compareVersions(a, b) {
+  const x = parseVersion(a);
+  const y = parseVersion(b);
+  for (let i = 0; i < Math.max(x.numbers.length, y.numbers.length); i++) {
+    const d = (x.numbers[i] ?? 0) - (y.numbers[i] ?? 0);
+    if (d) return d;
+  }
+  if (!x.pre || !y.pre) return x.pre ? -1 : y.pre ? 1 : 0;
+  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i];
+    const q = y.pre[i];
+    if (p === undefined) return -1;
+    if (q === undefined) return 1;
+    const pNumeric = /^\d+$/.test(p);
+    const qNumeric = /^\d+$/.test(q);
+    if (pNumeric && qNumeric) {
+      const d = Number(p) - Number(q);
+      if (d) return d;
+    } else if (pNumeric !== qNumeric) {
+      return pNumeric ? -1 : 1;
+    } else if (p !== q) {
+      return p < q ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+// The highest version in a list of FixedVersion strings. A string may name several fixes ("4.17.21, 3.10.1").
+function highestVersion(fixes) {
   const tokens = fixes.flatMap((fix) => fix.split(',')).map((t) => t.trim()).filter((t) => /\d/.test(t));
-  return tokens.reduce((best, t) => (best === undefined || compare(t, best) > 0 ? t : best), undefined);
+  return tokens.reduce((best, t) => (best === undefined || compareVersions(t, best) > 0 ? t : best), undefined);
 }
 
 // report: the JSON of `trivy fs --format json`. One finding per (Target, PkgName): a package with three advisories is one
@@ -210,7 +239,11 @@ function fromNpmAudit(report, ctx) {
   if (report.vulnerabilities === undefined && report.advisories !== undefined) {
     throw new TypeError('fromNpmAudit: unsupported npm audit report version (expected auditReportVersion 2)');
   }
-  const vulnerabilities = isObject(report.vulnerabilities) ? report.vulnerabilities : {};
+  // Only `vulnerabilities: {}` is a clean audit. A missing key or any other type is a malformed report, not an empty one.
+  if (!isObject(report.vulnerabilities)) {
+    throw new TypeError('fromNpmAudit: report.vulnerabilities must be an object (a missing or non-object value is a malformed report)');
+  }
+  const vulnerabilities = report.vulnerabilities;
 
   const reachesAdvisory = (name, seen) => {
     if (seen.has(name)) return false;
