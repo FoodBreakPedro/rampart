@@ -633,14 +633,14 @@ const RampartDashboard = (function () {
       if (!/^\d{4}-/.test(iso)) throw new TypeError('now must be a valid time');
       return iso;
     }
-    
+
     // A non-negative whole number, or the default when the value is absent.
     function wholeCount(value, name, fallback) {
       if (value === undefined || value === null) return fallback;
       if (!Number.isInteger(value) || value < 0) throw new RangeError(`${name} must be a non-negative whole number`);
       return value;
     }
-    
+
     // True for a github.com remote in the forms git uses: github.com/o/r, github.com:o/r, https://github.com/o/r,
     // ssh://git@github.com/o/r and git@github.com:o/r.git. The host must be exactly github.com.
     function isGithubRemote(remote) {
@@ -648,7 +648,7 @@ const RampartDashboard = (function () {
       const bare = remote.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^[^/@]*@/, '');
       return /^github\.com[/:]/i.test(bare);
     }
-    
+
     // job-<YYYYMMDD-HHmmss>-<4 hex>, UTC. rand() gives an integer 0..65535; the default is crypto.getRandomValues when the
     // runtime has it (Node 20 and every browser do), else Math.random.
     function newJobId(now, rand) {
@@ -665,7 +665,7 @@ const RampartDashboard = (function () {
       const stamp = iso.slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
       return `job-${stamp}-${n.toString(16).padStart(4, '0')}`;
     }
-    
+
     // The estimated number of subagents a job spawns, and a note that states the numbers. L1 runs scripts only; L2 is
     // min(units, 10) x 5 classes x 2 verifiers; L3 is units x 5|10|classes by effort x 2; INFRA is probes + 2; verify is one agent per
     // open verified finding; inventory is one. Defaults: 10 units, 15 classes, 6 probes, 0 open verified findings, medium effort.
@@ -682,7 +682,7 @@ const RampartDashboard = (function () {
       if (type === 'fix') return { agents: 1, note: 'fix: 1 agent session (estimate)' };
       if (type === 'apply') return { agents: 0, note: 'apply: applies a reviewed change, no agents (estimate)' };
       if (type !== 'audit') return { agents: 0, note: `${type}: scripts only, no agents (estimate)` };
-    
+
       const layer = input.layer;
       if (layer === 'L1') return { agents: 0, note: 'L1: scripts only, ~1 min, 0 agents (estimate)' };
       if (layer === 'INFRA') {
@@ -702,7 +702,7 @@ const RampartDashboard = (function () {
       }
       throw new RangeError('layer must be L1, L2, L3 or INFRA for an audit');
     }
-    
+
     // Where a job runs. Cloud only when the project allows it, the system has no host (a host is reached from here), the repo is on
     // github.com and the work is not INFRA or apply. Anything else, and anything unreadable, is local.
     function route(args) {
@@ -717,7 +717,7 @@ const RampartDashboard = (function () {
       if (!isGithubRemote(system.repo && system.repo.remote)) return { executorKind: 'local', reason: 'cloud needs a repo on github.com' };
       return { executorKind: 'cloud', reason: 'repo on github.com and the project allows cloud' };
     }
-    
+
     // The patch that claims a queued job. The recipe applies it with if_version, so a second executor loses the race.
     function claimPatch(job, executorId, now) {
       if (!job || typeof job !== 'object') throw new TypeError('claimPatch needs a job');
@@ -726,7 +726,7 @@ const RampartDashboard = (function () {
       const at = toIsoTime(now);
       return { status: 'claimed', claimedBy: executorId, claimedAt: at, updatedAt: at };
     }
-    
+
     // The patch for a job someone other than the owner queued: refused, never run.
     function refusalPatch(job, now) {
       if (!job || typeof job !== 'object') throw new TypeError('refusalPatch needs a job');
@@ -1705,30 +1705,38 @@ const RampartDashboard = (function () {
     } catch (err) {
       return { error: 'No cost estimate can be made for this job, so it cannot be queued here.' };
     }
-    const routed = job
-      ? { executorKind: job.executorKind === 'cloud' ? 'cloud' : 'local', reason: 'where it was first queued' }
-      : Jobs.route({ project, system, type, layer: layer || (finding ? finding.layer : undefined) });
+    // A requeue routes again on the data on screen now (R30a): the project may have withdrawn cloud since it was queued.
+    const routed = Jobs.route({ project, system, type, layer: layer || (finding ? finding.layer : undefined) });
     return { mode: req.mode, type, slug: entry.project.slug, project, system, systemId, layer, findingId, job, estimate, route: routed };
   }
 
   const liveExecutors = () => (state.data && isObject(state.data.live) ? list(state.data.live.executors) : []);
 
-  // An online local executor that takes remote messages (the freshest), or null.
-  function remoteExecutor(now) {
+  // The freshest online local executor (kind 'local', heartbeat under 5 minutes), or null; with remoteOnly, one that also
+  // takes remote messages (remoteControl). A cloud session is never a local executor.
+  function localExecutor(now, remoteOnly) {
     let best = null;
     for (const e of liveExecutors()) {
       const t = isObject(e) ? timeOf(e.heartbeatAt) : null;
-      if (t === null || now - t > EXECUTOR_ONLINE_MS || e.remoteControl !== true || e.kind !== 'local' || typeof e.id !== 'string') continue;
+      if (t === null || now - t > EXECUTOR_ONLINE_MS || e.kind !== 'local' || typeof e.id !== 'string') continue;
+      if (remoteOnly && e.remoteControl !== true) continue;
       if (!best || t > timeOf(best.heartbeatAt)) best = e;
     }
     return best;
   }
 
+  const remoteExecutor = (now) => localExecutor(now, true);
+  const localExecutorOnline = (now) => localExecutor(now, false) !== null;
+
   const jobLabel = (type, layer) => (type === 'audit' ? `Audit ${layer}` : type === 'verify' ? 'Verify still present' : String(type));
 
+  // "cloud session", or "local executor <machine>" naming the local executor that would take it (the one a nudge goes
+  // to first), or "local executor offline".
   function routeText(plan) {
     if (plan.route.executorKind === 'cloud') return 'cloud session';
-    return `local executor ${executorOnline(liveExecutors(), Date.now()) ? 'online' : 'offline'}`;
+    const now = Date.now();
+    const e = remoteExecutor(now) || localExecutor(now, false);
+    return `local executor ${e ? String(e.machineId || e.id) : 'offline'}`;
   }
 
   function scopeText(plan) {
@@ -1865,12 +1873,31 @@ const RampartDashboard = (function () {
     await dispatch(job, plan);
   }
 
-  // A stale job confirmed again: the same doc gets a fresh confirmedAt, cost and updatedAt; it stays queued.
+  // A stale job confirmed again (R30a): the job is read again first and left alone unless it is still queued; then the same
+  // doc gets a fresh confirmedAt, cost, route (executorKind) and updatedAt, stays queued, and is sent on its fresh route.
   async function requeueJob(plan) {
     const id = String(plan.job.id);
     if (state.jobWrites.has(id)) return;
+    let current;
+    try {
+      const snap = await state.live.db.doc(`jobs/${id}`).get();
+      current = snap && snap.exists ? snap.data() : null;
+    } catch (err) {
+      toast(`Could not requeue ${id}. ${writeFailure(err, 'try')}`, null, ERROR_TOAST_MS);
+      return;
+    }
+    if (!isObject(current) || current.status !== 'queued') {
+      toast(isObject(current) ? `Not requeued: ${id} is ${current.status} now.` : `Not requeued: ${id} is no longer in the dashboard data.`, null, ERROR_TOAST_MS);
+      return;
+    }
     const at = new Date().toISOString();
-    const patch = { confirmedAt: at, costShown: plan.estimate.note, costEstimate: { agents: plan.estimate.agents, note: plan.estimate.note }, updatedAt: at };
+    const patch = {
+      confirmedAt: at,
+      costShown: plan.estimate.note,
+      costEstimate: { agents: plan.estimate.agents, note: plan.estimate.note },
+      executorKind: plan.route.executorKind,
+      updatedAt: at,
+    };
     const write = writeJob(id, 'update', patch);
     rerender();
     try {
@@ -1882,10 +1909,11 @@ const RampartDashboard = (function () {
       rerender();
     }
     state.waiting.delete(id);
-    await dispatch(Object.assign({}, plan.job, patch), plan);
+    await dispatch(Object.assign({ id }, current, patch), plan);
   }
 
-  // Reach an executor for a queued job. Every refusal leaves it queued for /rampart watch; nothing is retried.
+  // Reach an executor for a queued job. Every refusal leaves it queued for /rampart watch; nothing is retried. A cloud job
+  // whose session could not be started is switched to local first (R33), since a local watch leaves cloud jobs alone.
   async function dispatch(job, plan) {
     if (job.executorKind === 'cloud') {
       await startCloudSession(job, plan);
@@ -1893,7 +1921,7 @@ const RampartDashboard = (function () {
     }
     const executor = remoteExecutor(Date.now());
     if (!executor) {
-      if (executorOnline(liveExecutors(), Date.now())) toast(`Queued ${job.id}. The local executor takes it on its next check.`);
+      if (localExecutorOnline(Date.now())) toast(`Queued ${job.id}. The local executor takes it on its next check.`);
       else waitForWatch(job.id);
       return;
     }
@@ -1913,16 +1941,24 @@ const RampartDashboard = (function () {
 
   async function startCloudSession(job, plan) {
     const remote = plan.system && isObject(plan.system.repo) ? plan.system.repo.remote : null;
+    const fallBack = async (err) => {
+      try {
+        await writeJob(job.id, 'update', { executorKind: 'local', updatedAt: new Date().toISOString() });
+      } catch (writeErr) {
+        // The job keeps executorKind cloud; the note below still tells the owner what to do.
+      }
+      waitForWatch(job.id, err, true);
+    };
     const mcp = Jobs.isGithubRemote(remote) ? await capability('mcp') : null;
     if (!mcp) {
-      waitForWatch(job.id);
+      await fallBack();
       return;
     }
     let result;
     try {
       result = await mcp.callTool(REMOTE, 'create_session', { title: sessionTitle(job), prompt: jobPrompt(job), source_url: sourceUrl(remote) });
     } catch (err) {
-      waitForWatch(job.id, err);
+      await fallBack(err);
       return;
     }
     toast(`Queued ${job.id} and started a cloud session`);
@@ -1947,7 +1983,7 @@ const RampartDashboard = (function () {
 
   function jobPrompt(job) {
     if (job.type === 'verify') return `/rampart verify --project ${arg(job.project)} --finding ${arg(job.findingId)} --job ${arg(job.id)}`;
-    return `/rampart ${job.type} ${job.layer} --project ${arg(job.project)} --system ${arg(job.system)} --job ${arg(job.id)}`;
+    return `/rampart ${job.type} ${arg(job.layer)} --project ${arg(job.project)} --system ${arg(job.system)} --job ${arg(job.id)}`;
   }
 
   function sessionTitle(job) {
@@ -1977,10 +2013,29 @@ const RampartDashboard = (function () {
     return '';
   }
 
-  function waitForWatch(id, err) {
+  const MCP_CODES = Object.freeze([
+    'needs_reauth', 'server_not_connected', 'selection_required', 'server_not_found', 'server_unavailable', 'not_in_manifest',
+    'blocked_by_policy', 'self_only', 'approval_required', 'tool_error', 'bad_request', 'cancelled', 'rate_limited',
+    'upstream_error', 'not_granted', 'capability_disabled', 'capability_removed', 'transform_error', 'consent_required',
+    'user_changed',
+  ]);
+
+  // A rejection that does not prove the call never ran: server_unavailable, upstream_error, and (mcp.d.ts) any code this
+  // page does not know, which reads as upstream_error.
+  function outcomeUnknown(err) {
+    const code = isObject(err) && typeof err.code === 'string' ? err.code : null;
+    return code === null || code === 'server_unavailable' || code === 'upstream_error' || MCP_CODES.indexOf(code) === -1;
+  }
+
+  // The job stays queued and its row says to start /rampart watch. For a cloud start whose outcome is unknown the toast
+  // says a session may have started anyway (the executors' claim keeps a double run safe: the second claim loses).
+  function waitForWatch(id, err, cloud) {
     state.waiting.add(id);
     rerender();
-    toast(`Queued ${id}. ${connectorHint(err)}To run it, start`, '/rampart watch', ERROR_TOAST_MS);
+    const hint = cloud && err !== undefined && outcomeUnknown(err)
+      ? `${REMOTE} did not confirm the cloud session, so one may have started anyway; whichever claims the job first runs it. `
+      : connectorHint(err);
+    toast(`Queued ${id}. ${hint}To run it, start`, '/rampart watch', ERROR_TOAST_MS);
   }
 
   function findingRow(f, disposition, slug) {
@@ -2085,7 +2140,7 @@ const RampartDashboard = (function () {
     const status = known(JOB_STATUSES, j.status, null);
     const stale = isStale(j, now);
     const waiting = status === 'queued' && !stale &&
-      (state.waiting.has(String(j.id)) || (j.executorKind !== 'cloud' && !executorOnline(executors, now)));
+      (state.waiting.has(String(j.id)) || (j.executorKind !== 'cloud' && !localExecutorOnline(now)));
     let note = null;
     if (stale) note = ` · stale since ${day(j.confirmedAt)}`;
     else if (waiting) note = [' · start ', h('code', null, '/rampart watch')];
