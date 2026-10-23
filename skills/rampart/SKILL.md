@@ -9,7 +9,9 @@ allowed-tools:
   - AskUserQuestion
   - Agent(rampart:inventory-mapper, rampart:explore)
   - Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/*.cjs" *)
-  - Bash(git *)
+  - Bash(git config user.name)
+  - Bash(git remote get-url *)
+  - Bash(git rev-parse *)
   - Bash(ls *)
   - Bash(date *)
 ---
