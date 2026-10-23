@@ -154,7 +154,10 @@ test('(c) any other exit code is a skipped run naming the code, never a crash or
   assert.deepEqual(counts, { added: 0, updated: 0, unchanged: 0, regressed: 0 });
   assert.deepEqual(readRun(run), run);
   assert.deepEqual(store.readFindings(SLUG), [], 'a report from a failed run is not ingested');
-  if (fs.existsSync(rawFile(run))) noSecrets(fs.readFileSync(rawFile(run), 'utf8'), 'raw/gitleaks.json');
+  assert.ok(fs.existsSync(rawFile(run)), 'the report the failed run left is kept under raw/');
+  const raw = fs.readFileSync(rawFile(run), 'utf8');
+  assert.ok(raw.includes('aws-access-token'), 'it is still the report');
+  noSecrets(raw, 'raw/gitleaks.json');
 });
 
 test('(c) the first line of stderr is appended to the reason, redacted', () => {
@@ -166,6 +169,30 @@ test('(c) the first line of stderr is appended to the reason, redacted', () => {
   assert.ok(!run.reason.includes(TOKEN_IN_STDERR));
   assert.ok(!run.reason.includes('second line'));
   assert.match(run.reason, /\[REDACTED\]/);
+});
+
+test('(c) exit 1 with a zero-finding report is a skipped run, not a clean one: gitleaks also exits 1 when the scan fails', () => {
+  process.env.FAKE_EXIT = '1';
+  process.env.FAKE_REPORT = 'gitleaks.empty.json';
+  process.env.FAKE_STDERR = `fatal: detected dubious ownership, token ${TOKEN_IN_STDERR}\nsecond line stays out`;
+  const { run, counts } = scanSecrets({ project: SLUG, system: 'mobile' });
+  assert.equal(run.status, 'skipped');
+  assert.match(run.reason, /^gitleaks exited 1 but reported no findings; the scan may have failed: fatal: detected dubious ownership, token /);
+  assert.ok(!run.reason.includes(TOKEN_IN_STDERR));
+  assert.ok(!run.reason.includes('second line'));
+  assert.deepEqual(counts, { added: 0, updated: 0, unchanged: 0, regressed: 0 });
+  assert.deepEqual(readRun(run), run);
+  assert.deepEqual(store.readFindings(SLUG), []);
+
+  const viaCli = cli(['--project', SLUG, '--system', 'mobile', '--json']);
+  assert.equal(viaCli.code, 2, viaCli.stderr);
+  assert.equal(JSON.parse(viaCli.stdout).run.status, 'skipped');
+});
+
+test('(c) the same empty report with exit 0 is still a clean, done run', () => {
+  process.env.FAKE_EXIT = '0';
+  process.env.FAKE_REPORT = 'gitleaks.empty.json';
+  assert.equal(scanSecrets({ project: SLUG, system: 'mobile' }).run.status, 'done');
 });
 
 test('(d) no RAMPART_GITLEAKS and nothing on PATH is a skipped run, "gitleaks not found"', () => {
@@ -271,7 +298,7 @@ test('a report entry without a RuleID and File is a skipped run', () => {
 
 test('a UTF-8 BOM at the start of the report does not matter', () => {
   const withBom = path.join(home, 'bom.json');
-  fs.writeFileSync(withBom, `﻿${fs.readFileSync(fixturePath('gitleaks.json'), 'utf8')}`);
+  fs.writeFileSync(withBom, `\uFEFF${fs.readFileSync(fixturePath('gitleaks.json'), 'utf8')}`);
   const { run, counts } = scanSecrets({ project: SLUG, system: 'mobile', input: withBom });
   assert.equal(run.status, 'done');
   assert.equal(counts.added, 2);
@@ -309,6 +336,24 @@ test('cli: --json prints {run, counts} and nothing else', () => {
   assert.equal(out.run.status, 'done');
   assert.equal(out.counts.added, 2);
   noSecrets(r.stdout, 'cli json');
+});
+
+test('cli: --repo with a space in the path reaches gitleaks as one argument, end to end', () => {
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'rampart cli repo '));
+  try {
+    assert.ok(other.includes(' '));
+    const r = cli(['--project', SLUG, '--system', 'mobile', '--repo', other, '--json']);
+    assert.equal(r.code, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.run.status, 'done');
+    assert.equal(out.counts.added, 2);
+    const detect = argvCalls().find((argv) => argv[0] === 'detect');
+    assert.equal(detect[detect.indexOf('--source') + 1], other);
+    assert.equal(detect.length, 11, 'no argument was split');
+    assert.notEqual(other, repo);
+  } finally {
+    fs.rmSync(other, { recursive: true, force: true });
+  }
 });
 
 test('cli: --input and --json work together and call no binary', () => {

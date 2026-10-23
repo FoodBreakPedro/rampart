@@ -77,7 +77,8 @@ function toolVersion(bin) {
   }
 }
 
-// Run gitleaks over repo, writing its report to reportFile. Returns {skip: reason} or {version}.
+// Run gitleaks over repo, writing its report to reportFile. Returns {skip: reason}, or {reportText, version, code, stderr}
+// for an exit of 0 or 1 with a report.
 function detect(bin, repo, reportFile, timeoutMs, scrub) {
   fs.mkdirSync(path.dirname(reportFile), { recursive: true });
   const args = [
@@ -88,6 +89,7 @@ function detect(bin, repo, reportFile, timeoutMs, scrub) {
   try {
     result = runTool(bin, args, { timeoutMs });
   } catch (err) {
+    scrub(); // normally nothing is there; if something is, it does not stay unredacted
     return { skip: err.code === 'ENOENT' ? 'gitleaks not found' : `gitleaks could not be started (${err.code || err.name})` };
   }
   const reportText = scrub(); // whatever gitleaks left behind is redacted in place, whatever the exit code was
@@ -97,14 +99,14 @@ function detect(bin, repo, reportFile, timeoutMs, scrub) {
     return { skip: withDetail(reason, result.stderr) };
   }
   if (reportText === null) return { skip: withDetail(`gitleaks wrote no report (exit ${result.code})`, result.stderr) };
-  return { reportText, version: toolVersion(bin) };
+  return { reportText, version: toolVersion(bin), code: result.code, stderr: result.stderr };
 }
 
 // The report as findings. Messages name what is wrong and never quote the report, which may hold a credential.
 function toFindings(reportText, ctx) {
   let report;
   try {
-    report = JSON.parse(reportText.replace(/^﻿/, ''));
+    report = JSON.parse(reportText.replace(/^\uFEFF/, ''));
   } catch {
     throw new TypeError('gitleaks report is not valid JSON');
   }
@@ -136,6 +138,8 @@ function scanSecrets({ project, system, repoPath, input, timeoutMs = DEFAULT_TIM
   try {
     let reportText;
     let version;
+    let exitCode; // gitleaks' own, absent for --input
+    let stderr = '';
     if (target.reportText !== undefined) {
       reportText = target.reportText;
       store.writeRaw(project, run.runId, RAW_NAME, reportText);
@@ -144,7 +148,7 @@ function scanSecrets({ project, system, repoPath, input, timeoutMs = DEFAULT_TIM
       if (!bin) return skipped('gitleaks not found');
       const outcome = detect(bin, target.repo, reportFile, timeoutMs, scrub);
       if (outcome.skip) return skipped(outcome.skip);
-      ({ reportText, version } = outcome);
+      ({ reportText, version, code: exitCode, stderr } = outcome);
     }
 
     let findings;
@@ -153,6 +157,11 @@ function scanSecrets({ project, system, repoPath, input, timeoutMs = DEFAULT_TIM
     } catch (err) {
       if (err instanceof TypeError) return skipped(err.message);
       throw err;
+    }
+    // gitleaks exits 1 for leaks, but also when the scan itself fails (a source that is not a git repo, dubious ownership),
+    // sometimes leaving an empty or partial report. Exit 1 with nothing in the report is not evidence of a clean history.
+    if (exitCode === LEAKS_EXIT && findings.length === 0) {
+      return skipped(withDetail('gitleaks exited 1 but reported no findings; the scan may have failed', stderr));
     }
     const counts = store.upsertFindings(project, findings, run.runId);
     const tool = version ? { name: 'gitleaks', version } : { name: 'gitleaks' };
