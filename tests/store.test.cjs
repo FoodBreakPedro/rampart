@@ -96,6 +96,49 @@ test('writeProject throws on an invalid project, listing the errors, and writes 
   assert.ok(!fs.existsSync(path.join(path.dirname(home), 'escape')));
 });
 
+// I4: credentials typed where an address belongs. Built from parts, so no credential-shaped literal sits in the repository.
+const PW = ['hunter', '2hunter', '2x'].join('');
+const withLive = (url) => { const p = project(); p.systems[1].live = { url }; return p; };
+const withSsh = (ssh) => { const p = project(); p.systems[1].host = { ...p.systems[1].host, ssh }; return p; };
+
+test('I4: writeProject refuses a live.url with userinfo, naming the path and never the value, and writes nothing', () => {
+  for (const url of [`https://admin:${PW}@staging.example.invalid/`, `http://${PW}@staging.example.invalid`, ` https://a:${PW}@x.invalid`]) {
+    assert.throws(
+      () => store.writeProject(withLive(url)),
+      (e) => /systems\[1\]\.live\.url: must not contain credentials/.test(e.message) && !e.message.includes(PW) && !(e instanceof RangeError),
+      url.replace(PW, '<pw>')
+    );
+  }
+  assert.equal(store.readProject(SLUG), null);
+  for (const url of ['https://staging.example.invalid/', 'https://staging.example.invalid/login?next=@home', 'http://127.0.0.1:3000']) {
+    assert.equal(store.writeProject(withLive(url)).systems[1].live.url, url, `${url} is clean`);
+  }
+});
+
+test('I4: writeProject refuses a host.ssh with a password, and keeps user@host, a port and an ssh:// form', () => {
+  for (const ssh of [`deploy:${PW}@192.0.2.10`, `ssh://deploy:${PW}@192.0.2.10:22`]) {
+    assert.throws(
+      () => store.writeProject(withSsh(ssh)),
+      (e) => /systems\[1\]\.host\.ssh: must not contain a password/.test(e.message) && !e.message.includes(PW),
+      ssh.replace(PW, '<pw>')
+    );
+  }
+  assert.equal(store.readProject(SLUG), null);
+  for (const ssh of ['deploy@192.0.2.10', 'deploy@192.0.2.10:2222', 'ssh://deploy@host.example.invalid:22', 'host.example.invalid']) {
+    assert.equal(store.writeProject(withSsh(ssh)).systems[1].host.ssh, ssh, `${ssh} is clean`);
+  }
+});
+
+test('I4: CLI project-save exits 1 for a credential in live.url, naming the path, and never prints the value', () => {
+  const file = path.join(home, 'with creds.json');
+  fs.writeFileSync(file, JSON.stringify(withLive(`https://admin:${PW}@staging.example.invalid/`)));
+  const r = cli('project-save', file);
+  assert.equal(r.status, 1, 'rejected data, so the inventory recipe asks again');
+  assert.match(r.stderr, /systems\[1\]\.live\.url/);
+  assert.ok(!r.stderr.includes(PW) && !r.stdout.includes(PW));
+  assert.equal(store.readProject(SLUG), null);
+});
+
 test('listProjects lists only directories that hold a project.json, sorted', () => {
   assert.deepEqual(store.listProjects(), []);
   store.writeProject(project({ slug: 'zeta-app' }));
@@ -491,6 +534,93 @@ test('a write that fails leaves findings.jsonl as it was and no temp file behind
   assert.deepEqual(tmpFiles(projectPath()), []);
 });
 
+test('T5: a rename refused with EPERM, EACCES or EBUSY (a Windows file lock) is retried, and the write lands', () => {
+  store.upsertFindings(SLUG, [finding()], RUN);
+  for (const code of ['EPERM', 'EACCES', 'EBUSY']) {
+    let calls = 0;
+    const real = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      calls += 1;
+      if (calls < 3) throw Object.assign(new Error(`locked (${code})`), { code });
+      return real(from, to);
+    };
+    try {
+      store.upsertFindings(SLUG, [finding({ id: ID_B, title: `seen under ${code}` })], RUN);
+    } finally {
+      fs.renameSync = real;
+    }
+    assert.equal(calls, 3, `${code}: two refusals, then the rename`);
+    assert.equal(store.readFindings(SLUG).find((f) => f.id === ID_B).title, `seen under ${code}`);
+    assert.deepEqual(tmpFiles(projectPath()), []);
+  }
+});
+
+test('T5: a lock that outlasts the retries fails the write after five tries, leaving the file as it was and no temp file', () => {
+  const { renameWithRetry, RENAME_TRIES } = require('../scripts/lib/atomic.cjs');
+  const waits = [];
+  let calls = 0;
+  const locked = () => { calls += 1; throw Object.assign(new Error('locked'), { code: 'EPERM' }); };
+  assert.throws(() => renameWithRetry('a', 'b', { rename: locked, wait: (ms) => waits.push(ms) }), /locked/);
+  assert.equal(calls, RENAME_TRIES);
+  assert.equal(RENAME_TRIES, 5);
+  assert.deepEqual(waits, [20, 40, 60, 80], 'bounded: 200 ms in all');
+  calls = 0;
+  assert.throws(() => renameWithRetry('a', 'b', { rename: () => { calls += 1; throw Object.assign(new Error('gone'), { code: 'ENOENT' }); }, wait: () => {} }), /gone/);
+  assert.equal(calls, 1, 'any other error is not retried');
+
+  store.upsertFindings(SLUG, [finding()], RUN);
+  const before = readText(projectPath('findings.jsonl'));
+  const real = fs.renameSync;
+  fs.renameSync = () => { throw Object.assign(new Error('still locked'), { code: 'EBUSY' }); };
+  try {
+    assert.throws(() => store.upsertFindings(SLUG, [finding({ id: ID_B })], RUN), /still locked/);
+  } finally {
+    fs.renameSync = real;
+  }
+  assert.equal(readText(projectPath('findings.jsonl')), before);
+  assert.deepEqual(tmpFiles(projectPath()), []);
+});
+
+test('T5: upsert redacts the free text of incoming findings before it compares or stores them', () => {
+  const planted = ['plantedsecret', '12345'].join('');
+  const dirty = finding({
+    title: `Leak via PASSWORD=${planted}`, evidence: `token: ${planted}`, exploitScenario: `use secret=${planted}`,
+    preconditions: `api_key="${planted}"`, recommendation: `Rotate PASSWORD=${planted}`,
+  });
+  assert.equal(store.upsertFindings(SLUG, [dirty], RUN).added, 1);
+  const stored = readText(projectPath('findings.jsonl'));
+  assert.ok(!stored.includes(planted), 'no text field keeps the value');
+  const row = store.readFindings(SLUG)[0];
+  for (const key of ['title', 'evidence', 'exploitScenario', 'preconditions', 'recommendation']) {
+    assert.match(row[key], /\[REDACTED\]/, key);
+  }
+  assert.deepEqual(store.upsertFindings(SLUG, [dirty], RUN), { added: 0, updated: 0, unchanged: 1, regressed: 0 }, 'the same report again is unchanged');
+});
+
+test('ruling (M3): a gitleaks history finding marked fixed stays fixed when gitleaks reports it again', () => {
+  const hit = finding({
+    id: ID_B, system: 'mobile', layer: 'L1', source: 'gitleaks', class: 'tool', ruleId: 'gitleaks/generic-api-key@abc123def456',
+    title: 'Possible API key in src/config.ts', location: { path: 'src/config.ts', symbol: null, commit: 'abc123def456' },
+  });
+  const workingTree = finding({ ...hit, id: ID_C, ruleId: 'gitleaks/generic-api-key', location: { path: 'src/config.ts', symbol: null } });
+  store.upsertFindings(SLUG, [hit, workingTree], RUN);
+  store.setDisposition(SLUG, ID_B, { status: 'fixed', reason: 'rotated', by: 'pedro' });
+  store.setDisposition(SLUG, ID_C, { status: 'fixed', reason: 'removed', by: 'pedro' });
+  const before = store.readFindings(SLUG).find((f) => f.id === ID_B);
+  tick();
+  const counts = store.upsertFindings(SLUG, [hit, workingTree], '2026-10-24T09-30-00Z');
+  assert.deepEqual(counts, { added: 0, updated: 0, unchanged: 1, regressed: 1 });
+  const after = Object.fromEntries(store.readFindings(SLUG).map((f) => [f.id, f]));
+  assert.equal(after[ID_B].status, 'fixed', 'history cannot un-leak: fixed means rotated');
+  assert.ok(after[ID_B].lastSeen > before.lastSeen, 'lastSeen moves');
+  assert.equal(store.readDispositions(SLUG)[ID_B].reason, 'rotated', 'the record is the person\'s');
+  assert.equal(after[ID_C].status, 'regressed', 'a working-tree hit (no commit) still regresses');
+  const other = finding({ ...hit, id: '3'.repeat(12), source: 'trivy', location: { path: 'src/config.ts', symbol: null, commit: 'abc123def456' } });
+  store.upsertFindings(SLUG, [other], RUN);
+  store.setDisposition(SLUG, other.id, { status: 'fixed', reason: 'bumped', by: 'pedro' });
+  assert.equal(store.upsertFindings(SLUG, [other], RUN).regressed, 1, 'another source regresses as before');
+});
+
 test('a corrupt findings.jsonl line is reported by line number without echoing its content', () => {
   fs.mkdirSync(projectPath(), { recursive: true });
   fs.writeFileSync(projectPath('findings.jsonl'), '{"id":"a3f9c21be0d4"}\n\nPASSWORD=abcdefghij {oops\n');
@@ -878,6 +1008,24 @@ test('scores.jsonl: appendScore adds one line each and stamps at; readScores ret
   for (const bad of [null, [], 'x']) assert.throws(() => store.appendScore(SLUG, bad), TypeError);
 });
 
+test('T5: a torn last line in scores.jsonl (an append cut short) is left out, and the next append drops it', () => {
+  store.appendScore(SLUG, { kind: 'project', score: 50, grade: 'D' });
+  fs.appendFileSync(projectPath('scores.jsonl'), '{"kind":"project","sco');
+  assert.deepEqual(store.readScores(SLUG).map((r) => r.score), [50], 'readers are not blocked');
+  store.appendScore(SLUG, { kind: 'project', score: 61, grade: 'C' });
+  assert.deepEqual(store.readScores(SLUG).map((r) => r.score), [50, 61]);
+  assert.ok(readText(projectPath('scores.jsonl')).endsWith('\n'));
+  assert.equal(readText(projectPath('scores.jsonl')).split('\n').length, 3, 'two lines and the final newline');
+
+  fs.appendFileSync(projectPath('scores.jsonl'), '{"kind":"project","score":70}');
+  assert.deepEqual(store.readScores(SLUG).map((r) => r.score), [50, 61, 70], 'a whole last line without a newline is read');
+  store.appendScore(SLUG, { kind: 'project', score: 72 });
+  assert.deepEqual(store.readScores(SLUG).map((r) => r.score), [50, 61, 70, 72], 'and gets its newline before the next one');
+
+  fs.writeFileSync(projectPath('scores.jsonl'), '{"score":1}\n{"sco\n{"score":2}\n');
+  assert.throws(() => store.readScores(SLUG), /line 2 is not valid JSON/, 'a broken line in the middle is still corruption');
+});
+
 // ---- CLI ----------------------------------------------------------------------------------
 
 const cli = (...args) =>
@@ -992,6 +1140,22 @@ test('CLI findings filters by --source, --system, --since and --new-since, all A
 
   store.setDisposition(SLUG, ID_C, { status: 'false_positive', reason: 'triage: fixture', by: 'rampart' });
   assert.deepEqual(ids('--source', 'gitleaks', '--status', 'open'), [ID_B]);
+});
+
+test('I1: CLI findings --class keeps one class, so a later audit can list every untriaged secrets hit', () => {
+  store.upsertFindings(SLUG, [finding(), gitleaksHit(ID_B), gitleaksHit(ID_C)], RUN); // A is verified; B and C are tool
+  const ids = (...args) => JSON.parse(cli('findings', SLUG, ...args, '--ids', '--json').stdout).sort();
+  assert.deepEqual(ids('--class', 'tool'), [ID_B, ID_C]);
+  assert.deepEqual(ids('--class', 'verified'), [ID_A]);
+  assert.deepEqual(ids('--class', 'hardening'), []);
+  store.setClass(SLUG, ID_C, 'verified', 'triage: real');
+  tick();
+  store.upsertFindings(SLUG, [gitleaksHit(ID_B), gitleaksHit(ID_C)], RUN); // a later scan: nothing new
+  assert.deepEqual(ids('--source', 'gitleaks', '--system', 'mobile', '--class', 'tool', '--status', 'open'), [ID_B], 'B is still offered');
+  const bad = cli('findings', SLUG, '--class', 'Tool');
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /--class must be one of verified, tool, hardening/);
+  assert.equal(cli('findings', SLUG, '--class', '').status, 2);
 });
 
 test('CLI findings --ids prints one id per line, and --id fetches one record', () => {

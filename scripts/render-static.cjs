@@ -3,16 +3,16 @@
 // ~/.rampart/dashboard.html. The page reads the <script id="rampart-data" type="application/json"> slot on load.
 //   buildData(now) -> {generatedAt, machineId, projects: [{project, score, findings, runs, dispositions}]}
 //   renderStatic(outPath?) -> the absolute path written
-// Every string in the data goes through redact() first. The store keeps finding text as it was reported, and this page is
-// the copy most likely to be shared, so it is the last place a credential can be stopped. In the slot every "<" is written
-// as <, so no text in the data can close the script element; JSON.parse reads it back unchanged.
+// Every string in the data goes through redact() first. The store redacts finding text as it arrives, but other fields
+// (a run's reason, a disposition) come from elsewhere, and this page is the copy most likely to be shared, so it is the last
+// place a credential can be stopped. In the slot every "<" is written as <, so no text in the data can close the
+// script element; JSON.parse reads it back unchanged.
 // The template is the artifact page, which the artifact host wraps in a document skeleton when it publishes it. The local
 // file gets the same skeleton here, so it renders in standards mode with the same reset.
 // CLI: node scripts/render-static.cjs [--out <path>] [--open]. Prints the path. --open hands the file to the OS opener
 // (RAMPART_OPENER overrides it; tests use it), and a missing or failing opener is a note on stderr, never a failed render.
 // Exit 0 ok, 2 bad arguments, 1 anything else (a corrupt store, say).
 
-const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const util = require('node:util');
@@ -20,6 +20,7 @@ const store = require('./store.cjs');
 const { scoreProject } = require('./score.cjs');
 const { machineId, rampartHome } = require('./lib/paths.cjs');
 const { redact } = require('./lib/redact.cjs');
+const { writeAtomic } = require('./lib/atomic.cjs');
 const exec = require('./lib/exec.cjs');
 
 const TEMPLATE = path.join(__dirname, '..', 'dashboard', 'index.html');
@@ -77,19 +78,7 @@ function fillTemplate(template, data) {
   return `${SKELETON_HEAD}${page}${SKELETON_TAIL}`;
 }
 
-// Temp file next to the target, then a rename, so a reader never sees half a page.
-function writeAtomic(file, text) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-  try {
-    fs.writeFileSync(tmp, text);
-    fs.renameSync(tmp, file);
-  } catch (err) {
-    fs.rmSync(tmp, { force: true });
-    throw err;
-  }
-}
-
+// The page is written through a temp file and a rename (lib/atomic.cjs), so a reader never sees half a page.
 function renderStatic(outPath) {
   const file = outPath ? path.resolve(outPath) : path.join(rampartHome(), 'dashboard.html');
   const html = fillTemplate(fs.readFileSync(TEMPLATE, 'utf8'), buildData());

@@ -7,13 +7,13 @@
 // temp file in the same directory plus a rename, so a crash never leaves half a file.
 // CLI: node scripts/store.cjs <verb> ... (see USAGE). Exit 0 ok, 1 data rejected or not found, 2 usage error.
 
-const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { rampartHome, machineId, projectDir, runDir, newRunId } = require('./lib/paths.cjs');
 const { validate, loadSchema } = require('./lib/validate.cjs');
 const { redact } = require('./lib/redact.cjs');
+const { writeAtomic } = require('./lib/atomic.cjs');
 
 const SLUG_RE = /^[a-z0-9-]{2,40}$/;
 const RUN_ID_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$/;
@@ -29,6 +29,8 @@ const MUTABLE = [
   'title', 'severity', 'confidence', 'cwe', 'location', 'evidence', 'exploitScenario',
   'preconditions', 'recommendation', 'verification', 'externalIds', 'class', 'pack',
 ];
+// A finding's free text: redacted on the way in (upsertFindings).
+const TEXT_FIELDS = ['title', 'evidence', 'exploitScenario', 'preconditions', 'recommendation'];
 
 const now = () => new Date().toISOString();
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -52,23 +54,10 @@ function checkRunId(runId) {
 const projectFile = (slug, name) => path.join(projectDir(checkSlug(slug)), name);
 const runFile = (slug, runId) => path.join(runDir(checkSlug(slug), checkRunId(runId)), 'run.json');
 
-// Write to a temp file next to the target, then rename over it. A failed write removes the temp file.
-function writeAtomic(file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-  try {
-    fs.writeFileSync(tmp, data);
-    fs.renameSync(tmp, file);
-  } catch (err) {
-    fs.rmSync(tmp, { force: true });
-    throw err;
-  }
-}
-
 // Text of a file with any BOM removed, or null when it does not exist.
 function readOptional(file) {
   try {
-    return fs.readFileSync(file, 'utf8').replace(/^﻿/, '');
+    return fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
   } catch (err) {
     if (err.code === 'ENOENT') return null;
     throw err;
@@ -86,20 +75,34 @@ function readJson(file, fallback) {
   }
 }
 
+// One row per line. A last line with no newline after it that does not parse is a torn append (appendScore is the one write
+// that is not atomic, and a crash can cut it short): it is left out rather than blocking every reader, and the next
+// appendScore drops it. A line that does not parse anywhere else is corruption and throws.
 function readJsonl(file) {
   const text = readOptional(file);
   if (text === null) return [];
   const rows = [];
-  text.split(/\r?\n/).forEach((line, i) => {
+  const lines = text.split(/\r?\n/);
+  lines.forEach((line, i) => {
     if (!line.trim()) return;
     try {
       rows.push(JSON.parse(line));
     } catch {
+      if (i === lines.length - 1) return; // the text did not end with a newline: a torn last line
       throw new Error(`${path.basename(file)} line ${i + 1} is not valid JSON`);
     }
   });
   return rows;
 }
+
+const parses = (text) => {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const toJson = (value) => `${JSON.stringify(value, null, 2)}\n`;
 const toJsonl = (rows) => rows.map((row) => `${JSON.stringify(row)}\n`).join('');
@@ -135,12 +138,37 @@ function listProjects() {
 
 const readProject = (slug) => readJson(projectFile(slug, 'project.json'), null);
 
+// Where a project holds a credential in a field meant for an address: a live.url with userinfo (scheme://user:pass@host, or
+// a token as the user) or a host.ssh with a password (user:pass@host). Returns the paths, as the validator names them.
+function credentialPaths(project) {
+  const found = [];
+  (Array.isArray(project.systems) ? project.systems : []).forEach((s, i) => {
+    if (!isObject(s)) return;
+    const url = isObject(s.live) ? s.live.url : undefined;
+    if (typeof url === 'string' && /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i.test(url.trim())) {
+      found.push(`systems[${i}].live.url: must not contain credentials (user:password@ or token@ before the host)`);
+    }
+    const ssh = isObject(s.host) ? s.host.ssh : undefined;
+    if (typeof ssh === 'string') {
+      const target = ssh.trim().replace(/^ssh:\/\//i, '');
+      const at = target.lastIndexOf('@');
+      if (at !== -1 && target.slice(0, at).includes(':')) {
+        found.push(`systems[${i}].host.ssh: must not contain a password (write user@host)`);
+      }
+    }
+  });
+  return found;
+}
+
 // Stamps updated (always) and created (when absent: the stored one if the project exists, else now), validates,
-// writes. The caller's object is left alone.
+// writes. The caller's object is left alone. A credential in live.url or host.ssh is refused like any invalid field: the
+// message names the path, never the value, and nothing is written.
 function writeProject(project) {
   const stamp = now();
   const probe = isObject(project) ? { ...project, created: project.created || stamp, updated: stamp } : project;
   assertValid('project', probe, 'project');
+  const credentials = credentialPaths(probe);
+  if (credentials.length) throw new Error(`project is invalid: ${credentials.join('; ')}`);
   const slug = checkSlug(probe.slug);
   const created = project.created || (readProject(slug) || {}).created || stamp;
   const saved = { ...probe, created };
@@ -153,15 +181,30 @@ function writeProject(project) {
 const readFindings = (slug) => readJsonl(projectFile(slug, 'findings.jsonl'));
 const writeFindings = (slug, rows) => writeAtomic(projectFile(slug, 'findings.jsonl'), toJsonl(rows));
 
+// A copy of a finding with its free-text fields redacted, so a credential a tool or a model wrote into one never lands.
+function redactText(finding) {
+  const out = { ...finding };
+  for (const key of TEXT_FIELDS) if (typeof out[key] === 'string') out[key] = redact(out[key]);
+  return out;
+}
+
+// A gitleaks history hit (it names a commit) that was marked fixed: see upsertFindings.
+const isRotatedHistoryLeak = (f) =>
+  f.status === 'fixed' && f.source === 'gitleaks' && isObject(f.location) && typeof f.location.commit === 'string' && f.location.commit !== '';
+
 // Merge incoming findings into findings.jsonl by id. runId is checked and named in the disposition of a regressed
 // finding; a finding itself has no field for it.
 // A promotion survives re-scans: if the stored class is 'verified' and the incoming one is 'tool' (the scanner
 // re-reporting what triage already confirmed), the stored class and evidence are kept. Other class changes follow
 // the incoming finding.
-// When a fixed finding reappears, its record in dispositions.json becomes 'regressed' too, so the file never says
-// 'fixed' for a regressed finding.
+// When a fixed finding reappears it becomes 'regressed', and its record in dispositions.json becomes 'regressed' too, so the
+// file never says 'fixed' for a regressed finding. One exception (ruling, final review M3): a gitleaks finding pinned to a
+// commit stays fixed when gitleaks reports it again. gitleaks reads the whole history, which cannot un-leak, so for such a
+// finding "fixed" means the credential was rotated; it only gets a new lastSeen and counts as unchanged. A secret committed
+// again lands at another commit, which is another id and so a new finding.
 // A finding whose only difference is verification.run counts as unchanged, but the stored verification still moves to the
 // incoming one, so it always names the latest run that saw the finding.
+// The free-text fields (TEXT_FIELDS) of every incoming finding are redacted before they are compared or stored.
 function upsertFindings(slug, findings, runId) {
   checkSlug(slug);
   checkRunId(runId);
@@ -174,12 +217,12 @@ function upsertFindings(slug, findings, runId) {
   const byId = new Map(readFindings(slug).map((f) => [f.id, f]));
   const regressed = [];
   // The same id twice in one batch is one sighting; the later copy wins.
-  for (const incoming of new Map(findings.map((f) => [f.id, f])).values()) {
+  for (const incoming of new Map(findings.map((f) => [f.id, redactText(f)])).values()) {
     const cur = byId.get(incoming.id);
     if (!cur) {
       byId.set(incoming.id, { ...incoming, status: 'open', firstSeen: stamp, lastSeen: stamp });
       counts.added++;
-    } else if (cur.status === 'false_positive' || cur.status === 'accepted_risk') {
+    } else if (cur.status === 'false_positive' || cur.status === 'accepted_risk' || isRotatedHistoryLeak(cur)) {
       cur.lastSeen = stamp;
       counts.unchanged++;
     } else {
@@ -376,11 +419,18 @@ function writeConfig(obj) {
   return obj;
 }
 
+// Append one snapshot line. A file that does not end with a newline is first put right (atomically): a last line that parses
+// gets its newline, and a torn one (an append a crash cut short) is dropped, so the new line never glues onto it.
 function appendScore(slug, snapshot) {
   const file = projectFile(slug, 'scores.jsonl');
   if (!isObject(snapshot)) throw new TypeError('snapshot must be an object');
   const row = { ...snapshot, at: snapshot.at || now() };
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  const text = readOptional(file);
+  if (text && !text.endsWith('\n')) {
+    const cut = text.lastIndexOf('\n') + 1;
+    writeAtomic(file, parses(text.slice(cut)) ? `${text}\n` : text.slice(0, cut));
+  }
   fs.appendFileSync(file, toJsonl([row]));
   return row;
 }
@@ -396,15 +446,15 @@ const USAGE = [
   '  projects',
   '  project <slug>                (--json adds machineId: this machine\'s key in repo.paths)',
   '  project-save <file.json>',
-  '  findings <slug> [--status <status>] [--source <source>] [--system <id>] [--since <iso>] [--new-since <iso>]',
-  '                  [--id <id>] [--ids]',
+  '  findings <slug> [--status <status>] [--source <source>] [--system <id>] [--class <class>] [--since <iso>]',
+  '                  [--new-since <iso>] [--id <id>] [--ids]',
   '  disposition <slug> <id> <status> --reason "<text>" [--by <name>]',
   '  set-class <slug> <id> <class> --note "<text>"',
 ].join('\n');
 
-const VALUE_FLAGS = ['status', 'reason', 'by', 'note', 'source', 'system', 'since', 'new-since', 'id'];
+const VALUE_FLAGS = ['status', 'reason', 'by', 'note', 'source', 'system', 'class', 'since', 'new-since', 'id'];
 const BOOLEAN_FLAGS = ['json', 'ids'];
-const FINDING_FILTERS = ['status', 'source', 'system', 'since', 'new-since', 'id'];
+const FINDING_FILTERS = ['status', 'source', 'system', 'class', 'since', 'new-since', 'id'];
 const FINDING_ID_RE = /^[0-9a-f]{12}$/;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T|$)/;
 const VERBS = {
@@ -455,9 +505,11 @@ function findingFilter(flags) {
     if (flags[name] === '') throw new UsageError(`--${name} needs a value`);
   }
   const { status, source, system, id } = flags;
+  const cls = flags.class;
   if (status !== undefined && !FINDING_STATUSES.includes(status)) {
     throw new UsageError(`--status must be one of ${FINDING_STATUSES.join(', ')}`);
   }
+  if (cls !== undefined && !CLASSES.includes(cls)) throw new UsageError(`--class must be one of ${CLASSES.join(', ')}`);
   const sources = loadSchema('finding').properties.source.enum;
   if (source !== undefined && !sources.includes(source)) throw new UsageError(`--source must be one of ${sources.join(', ')}`);
   if (id !== undefined && !FINDING_ID_RE.test(id)) throw new UsageError('--id must be a finding id (12 hex characters)');
@@ -468,6 +520,7 @@ function findingFilter(flags) {
     (status === undefined || f.status === status) &&
     (source === undefined || f.source === source) &&
     (system === undefined || f.system === system) &&
+    (cls === undefined || f.class === cls) &&
     (id === undefined || f.id === id) &&
     (since === null || atOrAfter(f.lastSeen, since)) &&
     (newSince === null || atOrAfter(f.firstSeen, newSince));

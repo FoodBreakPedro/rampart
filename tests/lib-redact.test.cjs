@@ -28,9 +28,18 @@ test('a JWT inside a URL is replaced', () => {
   assert.equal(redact(`https://x.test/auth/${JWT}/done`), 'https://x.test/auth/[REDACTED]/done');
 });
 
+test('T3: a JWT right after a URL-encoded character is replaced (Bearer%20<jwt>, token%3D<jwt>)', () => {
+  assert.equal(redact(`Authorization: Bearer%20${JWT}`), 'Authorization: Bearer%20[REDACTED]');
+  assert.equal(redact(`https://x.test/cb?state=token%3D${JWT}&next=/`), 'https://x.test/cb?state=token%3D[REDACTED]&next=/');
+  assert.equal(redact(`next=%2F${JWT}`), 'next=%2F[REDACTED]');
+  assert.equal(redact(`abc${JWT}`), `abc${JWT}`, 'still never inside an ordinary base64url run');
+});
+
 test('redaction stays fast on pathological input', () => {
   const inputs = {
     'eyJ x 66667 (200 KB)': 'eyJ'.repeat(66667),
+    '%3DeyJ x 33334 (200 KB)': '%3DeyJ'.repeat(33334),
+    '%3DeyJa. x 25000': '%3DeyJa.'.repeat(25000),
     'secret x 33334': 'secret'.repeat(33334),
     'password=" x 20000': 'password="'.repeat(20000),
     'bearer x 28572': 'Bearer '.repeat(28572),
