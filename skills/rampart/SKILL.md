@@ -30,6 +30,7 @@ This is the front desk. Its whole purpose is to work out which job the user want
    | audit or scan L1; secrets, dependencies, security headers | audit L1 | [audit](${CLAUDE_SKILL_DIR}/jobs/audit.md) |
    | doctor; what is installed, what is missing | doctor | [doctor](${CLAUDE_SKILL_DIR}/jobs/doctor.md) |
    | dashboard, with or without `--static`; the score sheet page | dashboard | [dashboard](${CLAUDE_SKILL_DIR}/jobs/dashboard.md) |
+   | watch, with `--once` or `--claim <jobId>`; run the jobs the live dashboard queued | watch | [watch](${CLAUDE_SKILL_DIR}/jobs/watch.md) |
 
    These are not in this version: L2, L3 and INFRA audits and `verify` (they arrive with the hunt engine, Plan 2); the live claude.ai dashboard, `watch` and `schedule` (Plan 3); `fix`, `import` and `evals` (Plan 4); `apply` and `refresh-packs` (later). For one of them, say in one line that it is not available yet and when it arrives, start nothing, and open the menu below. A question about Rampart itself (how it keeps you safe, how a score is worked out) is answered from the notes and paths below, with no menu.
 2. **Otherwise, open with the menu.** First run `node "${CLAUDE_PLUGIN_ROOT}/scripts/store.cjs" projects` (empty output means no projects yet). Then call AskUserQuestion once, single select, `header: "Job"`, `question: "What would you like to do?"`, offering exactly these four options and never others (the tool adds its own free-text entry):
