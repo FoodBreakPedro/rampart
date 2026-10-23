@@ -13,8 +13,11 @@
 // the version, and only an exit code of 0 yields one. A tool that is found but cannot be asked (cut off, exits non-zero, or
 // cannot be started: Node will not start a .cmd or .bat without a shell, and none is used here) is still found, with version null.
 //
-// diagnose() is synchronous and never throws for anything missing, unreadable or malformed. The claude-security plugin is
-// detected from <config dir>/plugins/installed_plugins.json (CLAUDE_CONFIG_DIR, else ~/.claude); nothing else in there is read.
+// diagnose() is synchronous and never throws for anything missing, unreadable or malformed. The claude-security plugin counts as
+// present when either file in the Claude config dir (CLAUDE_CONFIG_DIR, else ~/.claude) says so: plugins/installed_plugins.json
+// has a "claude-security@..." key under "plugins", or settings.json has an "enabledPlugins" entry with such a key set to true
+// (how a plugin switched on by the host shows up). claudeSecuritySource says which one answered, installed_plugins.json first.
+// Nothing else in either file is read.
 
 const fs = require('node:fs');
 const os = require('node:os');
@@ -31,6 +34,7 @@ const VERSION_RE = /\d+\.\d+(?:\.\d+)?/;
 const PACKS_DIR = path.join(__dirname, '..', 'packs');
 const PACK_TEMPLATE = '_template.md';
 const CLAUDE_SECURITY_PREFIX = 'claude-security@';
+const BYTE_ORDER_MARK = 0xfeff; // a UTF-8 BOM at the start of a JSON file does not matter
 const USAGE = 'usage: node scripts/doctor.cjs [--json]';
 
 // In report order. env is the RAMPART_* variable that overrides the PATH lookup (none for the tools no scanner starts through an
@@ -77,16 +81,27 @@ function probe({ name, env, versionArgs }, timeoutMs) {
 
 // ---- plugins, store, packs ------------------------------------------------------------------
 
-// True when the Claude Code plugin registry lists a claude-security plugin (any marketplace).
-function hasClaudeSecurity() {
+// The object under `field` of a JSON file in the Claude config dir, or null when the file is missing, unreadable, not JSON, or
+// has anything but an object there. Never throws.
+function readClaudeConfig(relativeFile, field) {
   try {
     const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-    const text = fs.readFileSync(path.join(configDir, 'plugins', 'installed_plugins.json'), 'utf8').replace(/^﻿/, '');
-    const { plugins } = JSON.parse(text);
-    return isObject(plugins) && Object.keys(plugins).some((key) => key.startsWith(CLAUDE_SECURITY_PREFIX));
+    const text = fs.readFileSync(path.join(configDir, ...relativeFile), 'utf8');
+    const value = JSON.parse(text.charCodeAt(0) === BYTE_ORDER_MARK ? text.slice(1) : text)[field];
+    return isObject(value) ? value : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+const hasClaudeSecurityKey = (map, accept) => map !== null && Object.keys(map).some((key) => key.startsWith(CLAUDE_SECURITY_PREFIX) && accept(map[key]));
+
+// Where the claude-security plugin was found: 'installed' (the plugin registry lists it, from any marketplace), 'settings'
+// (settings.json enables it, the value being true: false and anything else means off), or null.
+function claudeSecuritySource() {
+  if (hasClaudeSecurityKey(readClaudeConfig(['plugins', 'installed_plugins.json'], 'plugins'), () => true)) return 'installed';
+  if (hasClaudeSecurityKey(readClaudeConfig(['settings.json'], 'enabledPlugins'), (enabled) => enabled === true)) return 'settings';
+  return null;
 }
 
 function storeInfo() {
@@ -126,14 +141,15 @@ function diagnose({ nodeVersion = process.versions.node, timeoutMs = PROBE_TIMEO
   const node = { version: nodeVersion, ok: Number.parseInt(nodeVersion, 10) >= MIN_NODE_MAJOR };
   const tools = {};
   for (const tool of TOOLS) tools[tool.name] = probe(tool, timeoutMs);
-  const claudeSecurity = hasClaudeSecurity();
+  const source = claudeSecuritySource();
+  const claudeSecurity = source !== null;
   const degraded = [];
   if (!node.ok) degraded.push(`Node ${node.version} is below ${MIN_NODE_MAJOR}`);
   for (const tool of TOOLS) if (!tools[tool.name].found) degraded.push(tool.missing);
   return {
     node,
     tools,
-    plugins: { claudeSecurity },
+    plugins: { claudeSecurity, claudeSecuritySource: source },
     store: storeInfo(),
     packs: countPacks(PACKS_DIR),
     engines: { l2l3Unattended: 'rampart', l2l3Attended: claudeSecurity ? 'claude-security' : 'rampart' },
@@ -153,6 +169,9 @@ function parseCli(argv) {
   }
 }
 
+// How the plugins line names where claude-security was found.
+const CLAUDE_SECURITY_LABEL = { installed: 'installed (installed_plugins.json)', settings: 'enabled (settings.json)' };
+
 function plural(n, word) {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
@@ -168,7 +187,7 @@ function format(report) {
     '',
     ...table,
     '',
-    `plugins: claude-security ${plugins.claudeSecurity ? 'installed' : 'not installed'}`,
+    `plugins: claude-security ${CLAUDE_SECURITY_LABEL[plugins.claudeSecuritySource] || 'not installed'}`,
     `store: ${store.home} (${store.exists ? plural(store.projects, 'project') : 'not created yet'})`,
     `packs: ${packs.dir} (${packs.exists ? plural(packs.count, 'pack') : 'directory not found'})`,
     `engines: L2/L3 unattended runs use ${engines.l2l3Unattended}; attended runs use ${engines.l2l3Attended}`,

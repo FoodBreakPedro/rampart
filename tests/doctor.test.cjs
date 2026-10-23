@@ -78,7 +78,7 @@ test('with an empty PATH every tool is reported missing, one sentence each, and 
   assert.ok(report.degraded.length >= 6);
   for (const name of TOOLS) assert.ok(report.degraded.includes(MISSING[name]), MISSING[name]);
   assert.equal(report.degraded.length, TOOLS.length);
-  assert.equal(report.plugins.claudeSecurity, false);
+  assert.deepEqual(report.plugins, { claudeSecurity: false, claudeSecuritySource: null });
   assert.deepEqual(report.engines, { l2l3Unattended: 'rampart', l2l3Attended: 'rampart' });
 });
 
@@ -111,7 +111,7 @@ test('a node below 18 is not ok and is the first degraded line', () => {
 test('claudeSecurity is true when installed_plugins.json has a claude-security@ key, and the attended engine follows', () => {
   writeInstalledPlugins(path.join(fakeHome, '.claude'), { 'other@market': entry, 'claude-security@x': entry });
   const report = diagnose();
-  assert.equal(report.plugins.claudeSecurity, true);
+  assert.deepEqual(report.plugins, { claudeSecurity: true, claudeSecuritySource: 'installed' });
   assert.deepEqual(report.engines, { l2l3Unattended: 'rampart', l2l3Attended: 'claude-security' });
 });
 
@@ -141,10 +141,12 @@ test('claudeSecurity is false, never an error, for a missing, empty, unparseable
   assert.equal(diagnose().plugins.claudeSecurity, false, 'a directory instead of a file');
 });
 
+const BOM = String.fromCharCode(0xfeff); // a UTF-8 byte order mark, as some editors leave at the start of a JSON file
+
 test('a leading BOM in installed_plugins.json is ignored', () => {
   const dir = path.join(fakeHome, '.claude');
   fs.mkdirSync(path.join(dir, 'plugins'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'plugins', 'installed_plugins.json'), `﻿${JSON.stringify({ plugins: { 'claude-security@x': entry } })}`);
+  fs.writeFileSync(path.join(dir, 'plugins', 'installed_plugins.json'), BOM + JSON.stringify({ plugins: { 'claude-security@x': entry } }));
   assert.equal(diagnose().plugins.claudeSecurity, true);
 });
 
@@ -155,6 +157,82 @@ test('CLAUDE_CONFIG_DIR, when set, replaces ~/.claude', () => {
   assert.equal(diagnose().plugins.claudeSecurity, false, '~/.claude is ignored once CLAUDE_CONFIG_DIR is set');
   writeInstalledPlugins(elsewhere, { 'claude-security@x': entry });
   assert.equal(diagnose().plugins.claudeSecurity, true);
+});
+
+// ---- the claude-security plugin enabled in settings.json --------------------------------------
+
+function writeSettings(dir, content) {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'settings.json'), typeof content === 'string' ? content : JSON.stringify(content));
+}
+
+test('claudeSecurity is true, source "settings", when settings.json enables a claude-security@ plugin', () => {
+  writeSettings(path.join(fakeHome, '.claude'), { theme: 'dark', enabledPlugins: { 'other@market': true, 'claude-security@claude-plugins-official': true } });
+  const report = diagnose();
+  assert.deepEqual(report.plugins, { claudeSecurity: true, claudeSecuritySource: 'settings' });
+  assert.deepEqual(report.engines, { l2l3Unattended: 'rampart', l2l3Attended: 'claude-security' });
+});
+
+test('an enabledPlugins entry set to false (or to anything but true) does not count', () => {
+  const dir = path.join(fakeHome, '.claude');
+  for (const value of [false, null, 'true', 1, {}, []]) {
+    writeSettings(dir, { enabledPlugins: { 'claude-security@claude-plugins-official': value } });
+    assert.deepEqual(diagnose().plugins, { claudeSecurity: false, claudeSecuritySource: null }, JSON.stringify(value));
+  }
+  assert.equal(diagnose().engines.l2l3Attended, 'rampart');
+});
+
+test('settings.json needs a key that starts with "claude-security@" under "enabledPlugins"', () => {
+  const dir = path.join(fakeHome, '.claude');
+  writeSettings(dir, { enabledPlugins: { 'claude-security-extra@x': true, 'my-claude-security@x': true, 'other@market': true } });
+  assert.equal(diagnose().plugins.claudeSecurity, false);
+  writeSettings(dir, { 'claude-security@x': true });
+  assert.equal(diagnose().plugins.claudeSecurity, false, 'a key outside "enabledPlugins" does not count');
+  writeSettings(dir, { enabledPlugins: ['claude-security@x'] });
+  assert.equal(diagnose().plugins.claudeSecurity, false, 'a list is not a map of plugins');
+});
+
+test('an unreadable or odd settings.json is false, never an error', () => {
+  const dir = path.join(fakeHome, '.claude');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const text of ['', '{not json', 'null', '[]', '"claude-security@x"', '{"enabledPlugins":null}', '{"enabledPlugins":"claude-security@x"}']) {
+    writeSettings(dir, text);
+    assert.deepEqual(diagnose().plugins, { claudeSecurity: false, claudeSecuritySource: null }, JSON.stringify(text));
+  }
+  fs.rmSync(path.join(dir, 'settings.json'));
+  fs.mkdirSync(path.join(dir, 'settings.json')); // a directory where the file should be
+  assert.equal(diagnose().plugins.claudeSecurity, false, 'a directory instead of a file');
+});
+
+test('a leading BOM in settings.json is ignored', () => {
+  writeSettings(path.join(fakeHome, '.claude'), BOM + JSON.stringify({ enabledPlugins: { 'claude-security@x': true } }));
+  assert.deepEqual(diagnose().plugins, { claudeSecurity: true, claudeSecuritySource: 'settings' });
+});
+
+test('either file is enough, installed_plugins.json is named first, and a broken one does not hide the other', () => {
+  const dir = path.join(fakeHome, '.claude');
+  writeInstalledPlugins(dir, { 'claude-security@x': entry });
+  writeSettings(dir, { enabledPlugins: { 'claude-security@x': true } });
+  assert.equal(diagnose().plugins.claudeSecuritySource, 'installed', 'both say yes');
+
+  writeSettings(dir, { enabledPlugins: { 'claude-security@x': false } });
+  assert.deepEqual(diagnose().plugins, { claudeSecurity: true, claudeSecuritySource: 'installed' }, 'installed, though settings turns it off');
+
+  writeSettings(dir, '{not json');
+  assert.deepEqual(diagnose().plugins, { claudeSecurity: true, claudeSecuritySource: 'installed' }, 'settings unreadable');
+
+  fs.writeFileSync(path.join(dir, 'plugins', 'installed_plugins.json'), '{not json');
+  writeSettings(dir, { enabledPlugins: { 'claude-security@x': true } });
+  assert.deepEqual(diagnose().plugins, { claudeSecurity: true, claudeSecuritySource: 'settings' }, 'installed_plugins.json unreadable');
+});
+
+test('CLAUDE_CONFIG_DIR, when set, replaces ~/.claude for settings.json too', () => {
+  const elsewhere = path.join(tmp, 'elsewhere');
+  writeSettings(path.join(fakeHome, '.claude'), { enabledPlugins: { 'claude-security@x': true } });
+  process.env.CLAUDE_CONFIG_DIR = elsewhere;
+  assert.equal(diagnose().plugins.claudeSecurity, false, '~/.claude/settings.json is ignored once CLAUDE_CONFIG_DIR is set');
+  writeSettings(elsewhere, { enabledPlugins: { 'claude-security@x': true } });
+  assert.deepEqual(diagnose().plugins, { claudeSecurity: true, claudeSecuritySource: 'settings' });
 });
 
 // ---- tool overrides and versions ------------------------------------------------------------
@@ -298,7 +376,7 @@ test('--json prints one parseable document with the documented keys and exits 0'
   assert.equal(stderr, '');
   const report = JSON.parse(stdout);
   assert.deepEqual(Object.keys(report), ['node', 'tools', 'plugins', 'store', 'packs', 'engines', 'degraded']);
-  assert.equal(report.plugins.claudeSecurity, false);
+  assert.deepEqual(report.plugins, { claudeSecurity: false, claudeSecuritySource: null });
   assert.equal(report.degraded.length >= 6, true);
   assert.equal(report.store.home, rampartHome);
 });
@@ -322,7 +400,7 @@ test('the human output is a table, the store, packs and engines lines, and the d
   assert.match(lines.find((l) => l.startsWith('trivy ')), /^trivy\s+no\s+-\s+-$/);
   assert.ok(stdout.includes(`node ${process.versions.node}`));
   assert.match(stdout, /^node .*\bok\b/m);
-  assert.match(stdout, /^plugins: claude-security installed$/m);
+  assert.match(stdout, /^plugins: claude-security installed \(installed_plugins\.json\)$/m);
   assert.ok(stdout.includes(`store: ${rampartHome} (not created yet)`));
   assert.match(stdout, /^packs: /m);
   assert.match(stdout, /^engines: .*unattended.*rampart.*attended.*claude-security/m);
@@ -330,6 +408,13 @@ test('the human output is a table, the store, packs and engines lines, and the d
   assert.ok(stdout.includes(`- ${MISSING.trivy}`));
   assert.equal(stdout.includes(MISSING.gitleaks), false);
   assert.ok(stdout.endsWith('\n') && !stdout.endsWith('\n\n'));
+});
+
+test('the human output says where claude-security was found, or that it was not', () => {
+  assert.match(cli([]).stdout, /^plugins: claude-security not installed$/m);
+  writeSettings(path.join(fakeHome, '.claude'), { enabledPlugins: { 'claude-security@claude-plugins-official': true } });
+  assert.match(cli([]).stdout, /^plugins: claude-security enabled \(settings\.json\)$/m);
+  assert.deepEqual(JSON.parse(cli(['--json']).stdout).plugins, { claudeSecurity: true, claudeSecuritySource: 'settings' });
 });
 
 test('when nothing is degraded the output says so', () => {
