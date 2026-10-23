@@ -315,6 +315,59 @@ test('a UTF-8 BOM at the start of the report does not matter', () => {
   assert.equal(counts.added, 2);
 });
 
+// A report written without --redact (gitleaks' default) carries each value in Secret, Match and Line. These two values are
+// outside redact()'s prefix and keyword lists, so only dropping those fields keeps them out of the store. They are built here,
+// not committed in a fixture, so this repository holds no token-shaped string.
+const UNLISTED_TOKEN = `glpat-${'Zq7Xw2Vr9Ks4Lm8Np3Tb'}`;
+const UNLISTED_VALUE = `${'Hx81kQzv'}${'Wp0rT3nB'}${'cY6sDm2L'}`;
+function unredactedReport(file) {
+  fs.writeFileSync(file, JSON.stringify([
+    {
+      RuleID: 'gitlab-pat', Description: 'GitLab Personal Access Token', File: 'ci/release.sh', Commit: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+      StartLine: 3, Match: `GL=${UNLISTED_TOKEN}`, Secret: UNLISTED_TOKEN, Line: `export GL=${UNLISTED_TOKEN}`,
+      Author: 'Someone Real', Email: 'someone.real@example.invalid',
+    },
+    {
+      RuleID: 'generic-api-key', Description: 'Generic API Key', File: 'src/settings.py', Commit: 'b1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+      StartLine: 9, Match: `credential = "${UNLISTED_VALUE}"`, Secret: UNLISTED_VALUE, Line: `credential = "${UNLISTED_VALUE}"`,
+      Author: 'Someone Real', Email: 'someone.real@example.invalid',
+    },
+  ], null, 2));
+  return file;
+}
+const noUnlisted = (text, label) => {
+  for (const value of [UNLISTED_TOKEN, UNLISTED_VALUE, 'someone.real@example.invalid', 'Someone Real']) {
+    assert.ok(!text.includes(value), `${label} holds ${value.slice(0, 6)}...`);
+  }
+};
+
+test('C1: an --input report without --redact is stored without Secret, Match, Line, Author or Email, whatever the token format', () => {
+  const { run, counts } = scanSecrets({ project: SLUG, system: 'mobile', input: unredactedReport(path.join(home, 'unredacted gitleaks.json')) });
+  assert.equal(run.status, 'done');
+  assert.equal(counts.added, 2);
+  const raw = JSON.parse(fs.readFileSync(rawFile(run), 'utf8'));
+  assert.deepEqual(raw.map((e) => e.RuleID), ['gitlab-pat', 'generic-api-key'], 'still the report');
+  for (const entry of raw) {
+    for (const field of ['Secret', 'Match', 'Line', 'Author', 'Email']) assert.ok(!(field in entry), `${field} is dropped`);
+  }
+  for (const [file, text] of everyStoredText()) noUnlisted(text, file);
+});
+
+test('C1: a real run that leaves an unredacted report is stored the same way, and so is one that does not parse', () => {
+  process.env.FAKE_REPORT = unredactedReport(path.join(home, 'tool report.json'));
+  const done = scanSecrets({ project: SLUG, system: 'mobile' });
+  assert.equal(done.run.status, 'done');
+  assert.equal(done.counts.added, 2);
+  const truncated = path.join(home, 'truncated.json');
+  fs.writeFileSync(truncated, fs.readFileSync(process.env.FAKE_REPORT, 'utf8').slice(0, 400));
+  assert.ok(fs.readFileSync(truncated, 'utf8').includes(UNLISTED_TOKEN), 'the cut still holds the value');
+  process.env.FAKE_REPORT = truncated;
+  const broken = scanSecrets({ project: SLUG, system: 'mobile' });
+  assert.equal(broken.run.status, 'skipped');
+  assert.match(fs.readFileSync(rawFile(broken.run), 'utf8'), /"Match": "\[REMOVED\]"/);
+  for (const [file, text] of everyStoredText()) noUnlisted(text, file);
+});
+
 test('a project, system or repo path that does not resolve is a RangeError and leaves no run behind', () => {
   assert.throws(() => scanSecrets({ project: 'no-such-app', system: 'mobile' }), RangeError);
   assert.throws(() => scanSecrets({ project: 'Bad Slug!', system: 'mobile' }), RangeError);

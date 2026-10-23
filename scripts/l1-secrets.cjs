@@ -5,9 +5,13 @@
 // Exit 0: the run is done. Exit 2: the run was skipped (gitleaks missing, failed or timed out, or the report was
 // unusable) or the arguments were bad. Exit 1: anything unexpected.
 //
-// gitleaks exits 0 when the history is clean and 1 when it found leaks; both are a finished scan. Any other exit code,
-// a timeout, or a missing binary is a skipped run with the reason recorded, never a crash and never a false "clean".
-// Nothing from a report except counts and file paths is ever printed, and the stored copy of the report is redacted.
+// gitleaks exits 0 when the history is clean and 1 when it found leaks; both are a finished scan, except that exit 1 with
+// no findings in the report is a skipped run (gitleaks also exits 1 when the scan itself fails). Any other exit code, a
+// timeout, or a missing binary is a skipped run with the reason recorded, never a crash and never a false "clean".
+// Nothing from a report except counts and file paths is ever printed. The stored copy of the report (from gitleaks or from
+// --input) loses the fields that hold the matched value and the author (CREDENTIAL_FIELDS) before it is written, and the
+// store redacts what is left: redact() alone knows only some token formats, and a report written without --redact carries
+// the value in Match and Line as well as in Secret.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -24,6 +28,34 @@ const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 const VERSION_TIMEOUT_MS = 10 * 1000;
 const CLEAN_EXIT = 0;
 const LEAKS_EXIT = 1;
+// gitleaks report fields that hold the matched value (Secret, Match, Line) or a person (Author, Email). They are dropped from
+// the stored copy of every report; nothing reads them (the normalizer uses RuleID, Description, File and Commit).
+const CREDENTIAL_FIELDS = ['Secret', 'Match', 'Line', 'Author', 'Email'];
+// The same fields as "Key": "value" in a report that does not parse (a truncated file), up to the closing quote or the end.
+const CREDENTIAL_FIELD_TEXT = new RegExp(String.raw`"(${CREDENTIAL_FIELDS.join('|')})"\s*:\s*"(?:[^"\\]|\\[\s\S])*(?:"|$)`, 'g');
+
+// ---- the stored copy ----------------------------------------------------------------------
+
+// A copy of value with every CREDENTIAL_FIELDS key removed, at any depth.
+function withoutCredentialFields(value) {
+  if (Array.isArray(value)) return value.map(withoutCredentialFields);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).filter(([key]) => !CREDENTIAL_FIELDS.includes(key)).map(([key, v]) => [key, withoutCredentialFields(v)])
+  );
+}
+
+// The report text as it is kept under raw/: parsed and written back without the credential fields, or, for text that is not
+// JSON, with those fields' string values cut out. The store then redacts the result as it writes it.
+function storedReport(text) {
+  let parsed;
+  try {
+    parsed = parseReport(text, 'gitleaks');
+  } catch {
+    return text.replace(CREDENTIAL_FIELD_TEXT, '"$1": "[REMOVED]"');
+  }
+  return `${JSON.stringify(withoutCredentialFields(parsed), null, 2)}\n`;
+}
 
 // ---- scan ---------------------------------------------------------------------------------
 
@@ -84,7 +116,8 @@ function scanSecrets({ project, system, repoPath, input, timeoutMs = DEFAULT_TIM
   const run = store.createRun(project, { job: 'audit', layers: ['L1'], systems: [system], executor: 'local' });
   const reportFile = path.join(runDir(project, run.runId), 'raw', RAW_NAME);
   const skipped = (reason) => common.skipped(run, reason);
-  // Re-write the report at reportFile through the store, which redacts it. Returns the original text, or null if absent.
+  // Re-write the report at reportFile through the store, without its credential fields and redacted. Returns the original
+  // text, or null if absent.
   const scrub = () => {
     let text;
     try {
@@ -93,7 +126,7 @@ function scanSecrets({ project, system, repoPath, input, timeoutMs = DEFAULT_TIM
       if (err.code === 'ENOENT') return null;
       throw err;
     }
-    store.writeRaw(project, run.runId, RAW_NAME, text);
+    store.writeRaw(project, run.runId, RAW_NAME, storedReport(text));
     return text;
   };
 
@@ -104,7 +137,7 @@ function scanSecrets({ project, system, repoPath, input, timeoutMs = DEFAULT_TIM
     let stderr = '';
     if (target.reportText !== undefined) {
       reportText = target.reportText;
-      store.writeRaw(project, run.runId, RAW_NAME, reportText);
+      store.writeRaw(project, run.runId, RAW_NAME, storedReport(reportText));
     } else {
       const bin = which('gitleaks', 'RAMPART_GITLEAKS');
       if (!bin) return skipped('gitleaks not found');
@@ -156,4 +189,4 @@ if (require.main === module) {
   }, process.argv.slice(2));
 }
 
-module.exports = { scanSecrets };
+module.exports = { scanSecrets, storedReport };

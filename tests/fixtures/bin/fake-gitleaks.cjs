@@ -4,7 +4,7 @@
 //   gitleaks detect ... --report-path <file> ...  -> writes a fixture to <file> and exits; --source and the rest are ignored.
 // Behaviour is steered by environment variables:
 //   FAKE_EXIT       exit code (default 1, the "leaks found" code)
-//   FAKE_REPORT     fixture in tests/fixtures to copy to the report path (default gitleaks.json)
+//   FAKE_REPORT     fixture in tests/fixtures (or an absolute path) to copy to the report path (default gitleaks.json)
 //   FAKE_NO_REPORT  set to write no report at all
 //   FAKE_STDERR     text written to stderr
 //   FAKE_SLEEP_MS   wait this long before doing anything else (for timeout tests)
@@ -25,7 +25,8 @@ function finish() {
   }
   const at = argv.indexOf('--report-path');
   if (at !== -1 && !env.FAKE_NO_REPORT) {
-    const fixture = path.join(__dirname, '..', env.FAKE_REPORT || 'gitleaks.json');
+    const name = env.FAKE_REPORT || 'gitleaks.json';
+    const fixture = path.isAbsolute(name) ? name : path.join(__dirname, '..', name);
     fs.writeFileSync(argv[at + 1], fs.readFileSync(fixture));
   }
   if (env.FAKE_STDERR) process.stderr.write(`${env.FAKE_STDERR}\n`);
