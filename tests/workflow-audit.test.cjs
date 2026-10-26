@@ -58,7 +58,9 @@ test('the LOW class list and fileKey are identical to hunt-io', () => {
 // ---- behaviour (the script body evaluated with stub workflow globals) ---------------------
 
 // Runs the script with stub globals. respond(agentType, label, prompt) gives each agent's result (null = died).
-async function run(args, respond) {
+// firstStage picks what the pipeline hands its first stage: 'documented' (item, item, index), 'map' (item, index) or
+// 'undefined-prev' (undefined, item, index); the script must find its item under each.
+async function run(args, respond, { firstStage = 'documented' } = {}) {
   const calls = [];
   const logs = [];
   const agent = async (prompt, opts = {}) => {
@@ -70,7 +72,11 @@ async function run(args, respond) {
     Promise.all(items.map(async (item, i) => {
       let prev = item;
       try {
-        for (const stage of stages) prev = await stage(prev, item, i);
+        for (const [n, stage] of stages.entries()) {
+          if (n === 0 && firstStage === 'map') prev = await stage(item, i);
+          else if (n === 0 && firstStage === 'undefined-prev') prev = await stage(undefined, item, i);
+          else prev = await stage(prev, item, i);
+        }
         return prev;
       } catch {
         return null;
@@ -235,4 +241,34 @@ test('no candidate title appears in a log line or the return value', async () =>
   assert.ok(!JSON.stringify(result).includes(TITLE));
   assert.equal(result.candidates, 4);
   assert.equal(result.votes, 12);
+});
+
+// ---- Task 13 (R36) -------------------------------------------------------------------------
+
+test('the hunt stage finds its item whichever arguments the pipeline passes it', async () => {
+  const base = await run(codeArgs(), nothingFound);
+  for (const firstStage of ['map', 'undefined-prev']) {
+    const { result, calls } = await run(codeArgs(), nothingFound, { firstStage });
+    assert.deepEqual(huntersOf(calls).map((c) => c.label).sort(), huntersOf(base.calls).map((c) => c.label).sort(), firstStage);
+    assert.deepEqual(result, base.result, firstStage);
+  }
+  const verified = await run(codeArgs({ units: [codeArgs().units[0]], classes: [CLASSES[0]] }), (type) =>
+    type === 'rampart:hunter' ? { unit: 'app/api/users', classId: 'authz-scoping', candidates: [{ ref: 'c1', title: TITLE, severity: 'LOW' }] } : { verdict: 'confirmed' },
+  { firstStage: 'map' });
+  assert.equal(verifiersOf(verified.calls).length, 2, 'its candidates are still verified');
+  assert.deepEqual(verified.result.failedUnits, []);
+});
+
+test('args given as a JSON string are parsed (and logged); a string that does not parse dispatches nothing', async () => {
+  const base = await run(codeArgs(), nothingFound);
+  const parsed = await run(JSON.stringify(codeArgs()), nothingFound);
+  assert.deepEqual(parsed.result, base.result);
+  assert.equal(huntersOf(parsed.calls).length, huntersOf(base.calls).length);
+  assert.ok(parsed.logs.some((l) => /args/.test(l) && /parsed/.test(l)));
+  assert.ok(!base.logs.some((l) => /parsed/.test(l)));
+  for (const bad of ['{not json', '"a string"', '[1, 2]']) {
+    const r = await run(bad, nothingFound);
+    assert.deepEqual(r.result, { started: false, reason: 'bad-args' }, bad);
+    assert.equal(r.calls.length, 0, bad);
+  }
 });

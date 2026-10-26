@@ -54,7 +54,21 @@ const VERDICT_SCHEMA = {
   required: ['verdict'],
 };
 
-const input = args || {};
+// args normally arrives as the object hunt-io init printed; a caller that passed it as a JSON string gets it parsed. Anything
+// that is not an object afterwards dispatches nothing.
+let input = args || {};
+if (typeof input === 'string') {
+  try {
+    input = JSON.parse(input);
+    log('args arrived as a JSON string; parsed it');
+  } catch {
+    input = null;
+  }
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    log('args is a string that does not parse to an object; nothing dispatched');
+    return { started: false, reason: 'bad-args' };
+  }
+}
 if (typeof input.runDir !== 'string' || !input.runDir.startsWith('/')) throw new Error('args.runDir must be an absolute path');
 const runDir = input.runDir.replace(/\/+$/, '');
 const system = (input.systems || [])[0] || {};
@@ -166,42 +180,43 @@ log(`hunting ${items.length} unit-class pair${items.length === 1 ? '' : 's'} ove
 
 let candidates = 0;
 
-const outcomes = await pipeline(
-  items,
-  (item) =>
-    agent(hunterPrompt(item.unit, item.cls, item.key), {
-      agentType: 'rampart:hunter',
-      label: `hunt:${item.unit.unit}:${item.cls.classId}`,
-      phase: 'Hunt',
-      schema: HUNTER_SCHEMA,
-    }),
-  async (result, item) => {
-    if (!result) {
-      log(`hunt ${item.unit.unit} ${item.cls.classId}: no result; the unit is failed and not re-hunted`);
-      return { returned: false };
-    }
-    const seen = new Set();
-    const cands = [];
-    for (const c of result.candidates || []) {
-      if (!c || !REF_RE.test(c.ref) || seen.has(c.ref)) continue;
-      seen.add(c.ref);
-      cands.push({
-        candidateRef: `${item.key}#${c.ref}`,
-        key: item.key,
-        ref: c.ref,
-        severity: c.severity,
-        file: `${runDir}/candidates/${item.key}.json`,
-        classText: classText(item.cls),
-      });
-    }
-    const extra = (result.candidates || []).length - cands.length;
-    if (extra) log(`${item.key}: ${extra} candidate entr${extra === 1 ? 'y' : 'ies'} with a missing or repeated ref not verified`);
-    candidates += cands.length;
-    if (cands.length) log(`${item.key}: ${cands.length} candidate${cands.length === 1 ? '' : 's'} to verify`);
-    await parallel(cands.map((c) => () => verify(c)));
-    return { returned: true };
-  },
-);
+// One stage per item: the hunter, then its candidates' verifiers. The stage takes its item from the second argument (the
+// documented (prev, item, index) form), and falls back to the first when the second is not one of ours, so it works whichever
+// form the pipeline uses.
+const isItem = (v) => v !== null && typeof v === 'object' && typeof v.key === 'string' && v.unit && v.cls;
+const outcomes = await pipeline(items, async (first, second) => {
+  const item = isItem(second) ? second : first;
+  const result = await agent(hunterPrompt(item.unit, item.cls, item.key), {
+    agentType: 'rampart:hunter',
+    label: `hunt:${item.unit.unit}:${item.cls.classId}`,
+    phase: 'Hunt',
+    schema: HUNTER_SCHEMA,
+  });
+  if (!result) {
+    log(`hunt ${item.unit.unit} ${item.cls.classId}: no result; the unit is failed and not re-hunted`);
+    return { returned: false };
+  }
+  const seen = new Set();
+  const cands = [];
+  for (const c of result.candidates || []) {
+    if (!c || !REF_RE.test(c.ref) || seen.has(c.ref)) continue;
+    seen.add(c.ref);
+    cands.push({
+      candidateRef: `${item.key}#${c.ref}`,
+      key: item.key,
+      ref: c.ref,
+      severity: c.severity,
+      file: `${runDir}/candidates/${item.key}.json`,
+      classText: classText(item.cls),
+    });
+  }
+  const extra = (result.candidates || []).length - cands.length;
+  if (extra) log(`${item.key}: ${extra} candidate entr${extra === 1 ? 'y' : 'ies'} with a missing or repeated ref not verified`);
+  candidates += cands.length;
+  if (cands.length) log(`${item.key}: ${cands.length} candidate${cands.length === 1 ? '' : 's'} to verify`);
+  await parallel(cands.map((c) => () => verify(c)));
+  return { returned: true };
+});
 
 const failedUnits = [];
 let returned = 0;
