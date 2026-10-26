@@ -427,11 +427,13 @@ function initRun(slug, { system: systemId, layer, effort = 'medium', repo: repoO
     units = packs.flatMap((p) => coverage.unitsForHost(system, p));
   } else {
     repoRoot = resolveRepo(ctx, repoOverride);
-    if (layer === 'L3') units = coverage.unitsForRepo(repoRoot);
+    if (layer === 'L3') units = coverage.unitsForRepo(repoRoot, { paths: true });
     else {
       const scope = diffScope(repoRoot, { base, defaultBranch: system.repo && system.repo.defaultBranch });
       if (scope.empty) return { empty: true, base: scope.base, message: `nothing to scan: no changed files against ${scope.base}` };
-      units = scope.units;
+      // The hunter of an L2 unit reads the unit's changed files that still exist (the ones diffScope counted).
+      const kept = scope.files.filter((f) => f.status !== 'D' && !coverage.isIgnored(f.path)).map((f) => f.path).sort(byString);
+      units = scope.units.map((u) => ({ ...u, paths: kept.filter((p) => coverage.unitOf(p) === u.id) }));
     }
     if (effort !== 'high') units = units.filter((u) => u.reachable);
     if (effort === 'low') classes = classes.filter((c) => LOW_CLASSES.includes(c.classId));
@@ -448,7 +450,8 @@ function initRun(slug, { system: systemId, layer, effort = 'medium', repo: repoO
   const hunters = infra
     ? [{ key: infraKey(systemId), system: systemId, unit: null, units: units.map((u) => u.id), classId: null, pack: null, packVersion: null }]
     : units.flatMap((u) => classes.map((c) => ({ key: hunterKey(u.id, c.classId), system: systemId, unit: u.id, classId: c.classId, pack: c.pack, packVersion: c.packVersion })));
-  writeAtomic(path.join(dir, 'units.json'), toJson({ layer, effort, system: systemId, repoRoot, units, classes, hunters }));
+  const unitsDoc = units.map(({ paths, ...u }) => u);
+  writeAtomic(path.join(dir, 'units.json'), toJson({ layer, effort, system: systemId, repoRoot, units: unitsDoc, classes, hunters }));
   return {
     runId: id,
     runDir: dir,
@@ -458,8 +461,8 @@ function initRun(slug, { system: systemId, layer, effort = 'medium', repo: repoO
       repoRoot,
       systems: [{ id: systemId, type: system.type, kind: infra ? 'host' : 'code' }],
       layer,
-      units: units.map((u) => ({ system: systemId, unit: u.id, files: Number.isInteger(u.files) ? u.files : null })),
-      classes: classes.map(({ pack, packVersion, classId, text }) => ({ pack, packVersion, classId, text })),
+      units: units.map((u) => ({ system: systemId, unit: u.id, files: Number.isInteger(u.files) ? u.files : null, ...(Array.isArray(u.paths) ? { paths: u.paths } : {}) })),
+      classes: classes.map(({ pack, packVersion, classId, title, text }) => ({ pack, packVersion, classId, title, text })),
       runDir: dir,
       effort,
     },
@@ -569,7 +572,7 @@ function assemble(slug, runId) {
 
 // For the INFRA verify-only workflow: the candidates a prober wrote, after ingesting.
 function listCandidates(slug, runId) {
-  return ingest(slug, runId).candidates.map((c) => ({ candidateRef: `${c.hunter.agent}#${c.ref}`, file: `candidates/${c.hunter.agent}.json`, severity: c.severity, title: c.title }));
+  return ingest(slug, runId).candidates.map((c) => ({ candidateRef: `${c.hunter.agent}#${c.ref}`, file: `candidates/${c.hunter.agent}.json`, severity: c.severity, classId: c.classId, title: c.title }));
 }
 
 // ---- the command line ---------------------------------------------------------------------

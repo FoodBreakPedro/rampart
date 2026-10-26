@@ -369,6 +369,7 @@ test('list prints one row per candidate with its ref, file, severity and title',
     candidateRef: `${keyOf('app/api/export', 'bulk-export')}#c1`,
     file: `candidates/${keyOf('app/api/export', 'bulk-export')}.json`,
     severity: 'HIGH',
+    classId: 'bulk-export',
     title: "Export route returns every tenant's rows",
   }]);
 });
@@ -394,9 +395,22 @@ test('init prints the workflow args and plans every class on every unit at high 
   assert.deepEqual(a.systems, [{ id: SYS, type: 'web-nextjs', kind: 'code' }]);
   assert.deepEqual(a.units.map((u) => u.unit).sort(), ['.', 'app/api/export', 'app/api/invoices', 'app/api/users', 'lib']);
   assert.ok(a.units.every((u) => u.system === SYS && Number.isInteger(u.files)));
+  const doc0 = () => JSON.parse(fs.readFileSync(path.join(out.runDir, 'units.json'), 'utf8'));
+  // R32: each unit carries its repo-relative files (same walk and ignore rules as the unit count); units.json does not.
+  assert.deepEqual(Object.fromEntries(a.units.map((u) => [u.unit, u.paths])), {
+    '.': ['middleware.ts', 'package.json'],
+    'app/api/export': ['app/api/export/route.ts'],
+    'app/api/invoices': ['app/api/invoices/route.ts'],
+    'app/api/users': ['app/api/users/route.ts'],
+    lib: ['lib/auth.ts', 'lib/db.ts'],
+  });
+  assert.ok(a.units.every((u) => u.paths.length === u.files));
+  assert.ok(doc0().units.every((u) => !('paths' in u)));
   assert.equal(a.classes.length, 14);
   const authz = a.classes.find((c) => c.classId === 'authz-scoping');
-  assert.deepEqual(Object.keys(authz).sort(), ['classId', 'pack', 'packVersion', 'text']);
+  assert.deepEqual(Object.keys(authz).sort(), ['classId', 'pack', 'packVersion', 'text', 'title']);
+  assert.equal(typeof authz.title, 'string');
+  assert.equal(authz.title, doc0().classes.find((c) => c.classId === 'authz-scoping').title);
   assert.match(authz.text, /\*\*Look for:\*\*/);
   assert.match(authz.text, /\*\*Confirm by:\*\*/);
   assert.match(authz.text, /\*\*Disprove by:\*\*/);
@@ -477,7 +491,23 @@ test('init at L2 on an empty diff reports empty and leaves no run directory', ()
     git('commit', '-q', '-m', 'feature');
     const r2 = cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L2', '--effort', 'medium', '--repo', repo, '--base', 'main');
     assert.equal(r2.status, 0, r2.stderr);
-    assert.deepEqual(JSON.parse(r2.stdout).args.units.map((u) => u.unit), ['app/api/y']);
+    assert.deepEqual(JSON.parse(r2.stdout).args.units.map((u) => [u.unit, u.paths]), [['app/api/y', ['app/api/y/route.ts']]]);
+    // R32: a deleted file is not among a unit's paths; the changed files that remain are.
+    fs.mkdirSync(path.join(repo, 'app', 'api', 'z'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'app', 'api', 'z', 'a.ts'), 'a\n');
+    fs.writeFileSync(path.join(repo, 'app', 'api', 'z', 'b.ts'), 'b\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'z');
+    git('checkout', '-q', 'main');
+    git('merge', '-q', '--ff-only', 'feature');
+    git('checkout', '-q', '-b', 'feature2');
+    fs.rmSync(path.join(repo, 'app', 'api', 'z', 'a.ts'));
+    fs.writeFileSync(path.join(repo, 'app', 'api', 'z', 'b.ts'), 'b2\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'delete a, change b');
+    const r3 = cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L2', '--effort', 'medium', '--repo', repo, '--base', 'main');
+    assert.equal(r3.status, 0, r3.stderr);
+    assert.deepEqual(JSON.parse(r3.stdout).args.units.map((u) => [u.unit, u.files, u.paths]), [['app/api/z', 1, ['app/api/z/b.ts']]]);
     const run = JSON.parse(fs.readFileSync(path.join(JSON.parse(r2.stdout).runDir, 'run.json'), 'utf8'));
     assert.match(run.revision.commit, /^[0-9a-f]{40}$/);
     assert.equal(run.revision.dirty, false);
@@ -492,6 +522,7 @@ test('INFRA: init plans one prober for all probes; assemble covers observed prob
   assert.equal(r.status, 0, r.stderr);
   const out = JSON.parse(r.stdout);
   assert.deepEqual(out.args.systems, [{ id: 'db', type: 'supabase', kind: 'host' }]);
+  assert.ok(out.args.units.every((u) => !('paths' in u)), 'INFRA units carry no paths');
   const doc = JSON.parse(fs.readFileSync(path.join(out.runDir, 'units.json'), 'utf8'));
   assert.equal(doc.hunters.length, 1);
   assert.equal(doc.hunters[0].key, 'db__infra-prober');

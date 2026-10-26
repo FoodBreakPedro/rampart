@@ -14,6 +14,7 @@
 //                                        The `packs` given to markCovered and gaps must be this layer-scoped set.
 //   unitsForRepo(repoPath, opts)         [{id, kind: 'dir', files, reachable}] sorted by id; ignored paths produce no units.
 //                                        reachable is false for tests|test|__tests__|fixtures|docs|scripts roots (background only).
+//                                        opts.paths: also keep each unit's repo-relative files, sorted, as `paths`.
 //   unitsForHost(system, pack)           one {id: 'probe:<probeId>', kind: 'probe', reachable: true} per pack probe.
 //   markCovered(ledger, {...})           the ledger with the given units stamped (pure; the input is not changed).
 //   gaps(ledger, {...})                  the units that still need a hunt: never covered, status failed, or covered against an
@@ -70,8 +71,8 @@ function packVersionsFor(system, layer) {
 
 const isReachable = (unitId) => !BACKGROUND_ROOTS.has(unitId.split('/')[0]);
 
-function unitsForRepo(repoPath, { maxDepth = DEFAULT_MAX_DEPTH, ignore = DEFAULT_IGNORE } = {}) {
-  const counts = new Map();
+function unitsForRepo(repoPath, { maxDepth = DEFAULT_MAX_DEPTH, ignore = DEFAULT_IGNORE, paths = false } = {}) {
+  const files = new Map();
   const walk = (rel) => {
     for (const entry of fs.readdirSync(path.join(repoPath, rel), { withFileTypes: true })) {
       const next = rel ? `${rel}/${entry.name}` : entry.name;
@@ -79,14 +80,16 @@ function unitsForRepo(repoPath, { maxDepth = DEFAULT_MAX_DEPTH, ignore = DEFAULT
       if (entry.isDirectory()) walk(next);
       else if (entry.isFile()) {
         const id = unitOf(next, maxDepth);
-        counts.set(id, (counts.get(id) || 0) + 1);
+        if (!files.has(id)) files.set(id, []);
+        files.get(id).push(next);
       }
     }
   };
   walk('');
-  return [...counts.entries()]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([id, files]) => ({ id, kind: 'dir', files, reachable: isReachable(id) }));
+  const byString = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  return [...files.entries()]
+    .sort(([a], [b]) => byString(a, b))
+    .map(([id, list]) => ({ id, kind: 'dir', files: list.length, reachable: isReachable(id), ...(paths ? { paths: list.sort(byString) } : {}) }));
 }
 
 function unitsForHost(system, pack) {
