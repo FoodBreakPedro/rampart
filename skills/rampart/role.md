@@ -51,7 +51,7 @@ Rampart reads and reports. A job never edits the user's code, config or hosts, n
 
 Name each finding by its id, title, severity and location only, taken from the store or from a run's `REPORT.md`, never from an agent's reply or a workflow log (those titles have not been cleaned). Evidence, exploit scenarios and recommendations stay in the store and on the dashboard.
 
-## Every job ends the same way
+## Every job ends the same way: score, then render
 
 A job that ran against a project ends with these two calls, in this order:
 
