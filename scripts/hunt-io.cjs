@@ -652,8 +652,10 @@ function assemble(slug, runId) {
   if (failedUnits.length) ledger = coverage.markCovered(ledger, { system: doc.system, layer: doc.layer, units: failedUnits, runId, packs, status: 'failed', effort });
   store.writeCoverage(slug, ledger);
   writeAtomic(path.join(dir, 'units.json'), toJson({ ...doc, units }));
-  // The run's own finding list (ids only): the report reads it, since a finding's lastSeen moves on with every later run.
-  writeAtomic(path.join(dir, 'findings.json'), toJson({ verified: findings.map((f) => f.id), closed: closedIds }));
+  // The run's own finding list (ids only): the report reads it, since a finding's lastSeen moves on with every later run. The
+  // candidate ids the verifiers rejected or left undecided are kept beside it, as the record of what the tally did with each.
+  const idsOf = (bucket) => bucket.map((e) => e.candidate.candidateId);
+  writeAtomic(path.join(dir, 'findings.json'), toJson({ verified: findings.map((f) => f.id), closed: closedIds, rejected: idsOf(t.rejected), undecided: idsOf(t.undecided) }));
 
   const counts = {
     added: upserted.added, updated: upserted.updated, unchanged: upserted.unchanged,

@@ -33,7 +33,7 @@ Not part of the dashboard DB: what one run leaves on the machine that ran it, un
 - `candidates/<hunterKey>.json`: one JSON array per hunter (`[]` when it found nothing), `hunterKey` = `<fileKey(unit)>__<classId>`; for INFRA one file per system, `<fileKey(system)>__infra-prober.json`. Stored form: `candidate-schema.json`.
 - `votes/<hunterKey>__<ref>__<n>.json`: one JSON object per verifier vote (`vote-schema.json`).
 - `observations.json` (INFRA): what each probe printed, scrubbed, and the probes skipped with their reasons; `raw/probe-<id>.txt` holds each probe's scrubbed output.
-- `findings.json`: the ids this run upserted as verified and the ids it closed, written by `assemble`.
+- `findings.json`: `{verified, closed, rejected, undecided}`: the ids this run upserted as verified and the ids it closed, and the candidate ids the verifiers rejected or left undecided (never findings), written by `assemble`.
 - `invalid.json`: agent entries hunt-io could not use, with the reason (never their content).
 - `REPORT.md`: the human report (`report-spec.md`).
 - `verify.json` (verify runs): the findings re-judged and the outcome of each; their one-element `candidates/<id>__verify.json` and `votes/<id>__verify__c1__1.json` follow the same names.

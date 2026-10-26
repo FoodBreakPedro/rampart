@@ -258,7 +258,8 @@ test('a later run re-seeing a finding keeps it in the older report; a finding fi
 test('findings.json from assemble decides the list, closed ones are listed with their status', () => {
   const { runId, dir } = setup({ findings: [finding(), finding({ id: 'bbbbbbbbbbbb', title: 'Closed one' }), finding({ id: 'cccccccccccc', title: 'Unlisted' })] });
   store.setDisposition(SLUG, 'bbbbbbbbbbbb', { status: 'fixed', reason: 'not reproduced in run x', by: 'rampart' });
-  fs.writeFileSync(path.join(dir, 'findings.json'), JSON.stringify({ verified: ['aaaaaaaaaaaa'], closed: ['bbbbbbbbbbbb'] }));
+  // R51 (M1): rejected and undecided candidate ids are kept too; they are candidates, never listed as findings
+  fs.writeFileSync(path.join(dir, 'findings.json'), JSON.stringify({ verified: ['aaaaaaaaaaaa'], closed: ['bbbbbbbbbbbb'], rejected: ['cccccccccccc'], undecided: ['dddddddddddd'] }));
   const md = renderReport(SLUG, runId);
   assert.match(md, /Record access not scoped/);
   assert.match(md, /Closed one.*[fixed]/);

@@ -373,8 +373,20 @@ test('assemble writes findings.json with the ids it upserted and the ids it clos
   putVote(s, 'app/api/users', 'authz-scoping', 'c1', 1, 'confirm');
   const res = hio.assemble(SLUG, s.runId);
   const doc = JSON.parse(fs.readFileSync(path.join(s.dir, 'findings.json'), 'utf8'));
-  assert.deepEqual(doc, { verified: res.findings, closed: ['a'.repeat(12)] });
+  assert.deepEqual(doc, { verified: res.findings, closed: ['a'.repeat(12)], rejected: [], undecided: [] });
   assert.equal(doc.verified.length, 1);
+});
+
+test('R51 (M1): findings.json keeps the candidate ids the verifiers rejected and left undecided', () => {
+  const s = setup();
+  putCandidates(s, 'app/api/users', 'authz-scoping', 'medium-idor');
+  putCandidates(s, 'app/api/export', 'bulk-export', 'high-export');
+  putVote(s, 'app/api/users', 'authz-scoping', 'c1', 1, 'reject');
+  putVote(s, 'app/api/export', 'bulk-export', 'c1', 1, 'confirm');
+  hio.assemble(SLUG, s.runId);
+  const byTitle = Object.fromEntries(hio.readCandidates(SLUG, s.runId).map((c) => [c.hunter.agent, c.candidateId]));
+  const doc = JSON.parse(fs.readFileSync(path.join(s.dir, 'findings.json'), 'utf8'));
+  assert.deepEqual(doc, { verified: [], closed: [], rejected: [byTitle[keyOf('app/api/users', 'authz-scoping')]], undecided: [byTitle[keyOf('app/api/export', 'bulk-export')]] });
 });
 
 test('all units failed: the run finishes failed with a reason, never clean', () => {
