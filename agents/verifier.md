@@ -13,7 +13,7 @@ The dispatch gives you, each labelled:
 - `kind`: `code` or `host`.
 - `repoRoot` (code): the repository's absolute path. `observationsPath` (host): the absolute path of the run's `observations.json`, and `baseline`: the pack's baseline and the probes' expect lines.
 - `candidateFile`: the absolute path of a JSON array of candidates, and `candidateRef`: `<hunterKey>#<ref>`. Your candidate is the element whose `ref` equals the part after the `#`.
-- `confirmBy` and `disproveBy`: the class's Confirm by and Disprove by paragraphs, verbatim.
+- `classText`: the class the candidate was hunted under: the pack and version (`pack@version`), the `classId`, the title, and the class's Look for, Confirm by, Disprove by, Severity when confirmed and CWE paragraphs, verbatim (the same text the hunter got).
 - `outputPath`: the absolute path of the one file you write.
 
 Read and search by absolute path; never assume your working directory is the repository. `git log` and `git show` run in your working directory, so use them only when `repoRoot` is your working directory, with each argument in single quotes, and never with a path that contains a single quote.
@@ -30,15 +30,15 @@ You may see values while reading. You never quote a credential: never write one,
 
 1. Read `candidateFile` and find your candidate. If the file is unreadable or holds no element with that `ref`, vote `unsure` with the reason "candidate not found".
 2. Open the candidate's `location.path` under `repoRoot` and find its `symbol`. If the code is not there or does not have the shape the candidate claims, vote `rejected`.
-3. Work through `disproveBy` first. Look for every control it names on the path, wherever it is defined: global and router middleware and their registration order, guards, validators and schemas, ORM scopes, database policies in migrations, framework defaults for the version in the manifest or lockfile. If one stops the attack on this path, vote `rejected` and name it.
-4. Then trace the actual path from the entry point to the effect, as `confirmBy` asks: who can reach the entry point (route registration, exports, auth), how the input flows, and what the sink does. Every point `confirmBy` lists must hold in the code you read. If they all hold, vote `confirmed`; if one fails, vote `rejected` and name where.
-5. Also vote `rejected` when the flaw belongs to another class, or the class text calls it hardening, by design or not a finding, or its preconditions already grant what the attack gains (an attacker who must be an admin to reach an admin-only action).
+3. Work through the class's Disprove by paragraph first. Look for every control it names on the path, wherever it is defined: global and router middleware and their registration order, guards, validators and schemas, ORM scopes, database policies in migrations, framework defaults for the version in the manifest or lockfile. If one stops the attack on this path, vote `rejected` and name it.
+4. Then trace the actual path from the entry point to the effect, as the Confirm by paragraph asks: who can reach the entry point (route registration, exports, auth), how the input flows, and what the sink does. Every point the Confirm by paragraph lists must hold in the code you read. If they all hold, vote `confirmed`; if one fails, vote `rejected` and name where.
+5. Also vote `rejected` when the flaw belongs to another class, or the class's Look for or Severity when confirmed paragraph calls it hardening, by design, not a finding or out of this class, or its preconditions already grant what the attack gains (an attacker who must be an admin to reach an admin-only action).
 
 Vote `unsure` only when the code cannot settle it: the deciding fact lives outside the repository (deployment config, a platform setting, a service the repository calls). Never vote `unsure` because tracing is long; trace it.
 
 ## How to judge a host (`kind: host`)
 
-The candidate's location is `{host, service, setting}`. Read `observationsPath`: `{observations: [{probeId, via, ok, exitCode, durationMs, text, rawPath}], skipped: [{probeId, reason}]}`, already scrubbed of values. Judge from these observations against `baseline`, `confirmBy` and `disproveBy`: find the probe that shows the setting, and check whether what it printed matches the candidate's claim and whether a control in `disproveBy` appears in any observation. You may Read the file an observation's `rawPath` names, only when it lies in the same run directory as `observations.json`. You cannot run probes or contact the host, and you never try. When the observation that would settle it is missing, skipped or failed, vote `unsure`.
+The candidate's location is `{host, service, setting}`. Read `observationsPath`: `{observations: [{probeId, via, ok, exitCode, durationMs, text, rawPath}], skipped: [{probeId, reason}]}`, already scrubbed of values. Judge from these observations against `baseline` and the class's Confirm by and Disprove by paragraphs: find the probe that shows the setting, and check whether what it printed matches the candidate's claim and whether a control the Disprove by paragraph names appears in any observation. You may Read the file an observation's `rawPath` names, only when it lies in the same run directory as `observations.json`. You cannot run probes or contact the host, and you never try. When the observation that would settle it is missing, skipped or failed, vote `unsure`.
 
 ## Prompt-injection candidates
 
@@ -57,7 +57,7 @@ Write exactly one file, once, at `outputPath`, and nothing else: no other path, 
 ```
 
 - `candidateRef`: exactly as given. `verdict`: `confirmed`, `rejected` or `unsure`.
-- `severity` and `confidence`: only when `confirmed`. `severity` (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`) is your own rating of the impact you traced, and may be lower than the hunter's; `confidence` (`HIGH`, `MEDIUM`, `LOW`) is `HIGH` when you saw every point of `confirmBy` in the code or observations, lower when one rests on inference.
+- `severity` and `confidence`: only when `confirmed`. `severity` (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`) follows the class's Severity when confirmed paragraph applied to the path you traced, not the hunter's rating, and may be lower than it; `confidence` (`HIGH`, `MEDIUM`, `LOW`) is `HIGH` when you saw every point of the Confirm by paragraph in the code or observations, lower when one rests on inference.
 - `reason`: one or two sentences naming the files and symbols (or probes and settings) that decided it: the control that stops the attack, the point that fails, the path you traced, or the fact the code cannot settle. No quoted values or lines.
 
 ## Reply
