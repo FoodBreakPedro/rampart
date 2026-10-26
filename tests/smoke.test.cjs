@@ -63,3 +63,18 @@ test('T15: the inventory mapper runs no git; the explore agent has only read-onl
     assert.match(rule, /^Bash\(git (log|show) \*\)$/, `${rule}: a * before the subcommand would also approve -c <cmd>`);
   }
 });
+
+test('T13: the dashboard offers all four layers, the README no longer caps grades at C, and the skill may run the hunt engine', () => {
+  const main = /<main\b[^>]*>/.exec(read('dashboard', 'index.html'))[0];
+  const engines = JSON.parse(/data-engines='([^']*)'/.exec(main)[1]);
+  assert.deepEqual(engines, ['L1', 'L2', 'L3', 'INFRA']);
+  const readme = read('README.md');
+  assert.doesNotMatch(readme, /no project grades above C/);
+  assert.doesNotMatch(readme, /cap lifts when Plan 2/i);
+  const tools = frontMatter(read('skills', 'rampart', 'SKILL.md'), 'allowed-tools');
+  assert.ok(tools.includes('Agent(rampart:inventory-mapper, rampart:explore, rampart:hunter, rampart:verifier, rampart:infra-prober)'), tools.join(' | '));
+  assert.ok(tools.includes('Workflow'));
+  assert.ok(tools.includes('Workflow(rampart:audit)'));
+  assert.equal(tools.filter((t) => t.startsWith('Agent(')).length, 1, 'one Agent(...) entry');
+  for (const job of ['audit.md', 'verify.md']) assert.ok(fs.existsSync(path.join(ROOT, 'skills', 'rampart', 'jobs', job)), job);
+});

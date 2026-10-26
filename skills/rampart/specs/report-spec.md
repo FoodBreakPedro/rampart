@@ -1,6 +1,6 @@
 # Run report (`REPORT.md`)
 
-The human report for one run, written to `~/.rampart/projects/<slug>/runs/<run-id>/REPORT.md` by the hunt pipeline that arrives with Plan 2 (L2, L3 and INFRA audits). L1 jobs in this version write no report: they summarise in chat only.
+The human report for one run, written to `~/.rampart/projects/<slug>/runs/<run-id>/REPORT.md` by `scripts/render-report.cjs` after every L2, L3 and INFRA audit. L1 jobs, imports and verify runs write no report: they summarise in chat only.
 
 ## Shape
 

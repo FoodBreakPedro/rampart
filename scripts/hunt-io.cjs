@@ -820,7 +820,7 @@ function reverify(slug, runId, { finding: only } = {}) {
 // ---- the command line ---------------------------------------------------------------------
 
 const USAGE = [
-  'usage: node scripts/hunt-io.cjs init --project <slug> --system <id> --layer L2|L3|INFRA [--effort low|medium|high] [--repo <path>] [--base <ref>] [--run <runId>] [--json]',
+  'usage: node scripts/hunt-io.cjs init --project <slug> --system <id> --layer L2|L3|INFRA [--effort low|medium|high] [--repo <path>] [--base <ref>] [--run <runId>] [--dry-run] [--json]',
   '       node scripts/hunt-io.cjs assemble --project <slug> --run <runId> [--json]',
   '       node scripts/hunt-io.cjs list --project <slug> --run <runId> [--json]',
   '       node scripts/hunt-io.cjs init-verify --project <slug> (--finding <id> | --system <id> --all) [--repo <path>] [--json]',
