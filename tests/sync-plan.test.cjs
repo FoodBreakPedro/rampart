@@ -728,13 +728,13 @@ function dbTree(files) {
   return dir;
 }
 
-test('T9 versions: builds {"<collection>/<id>": version} from {id, data, version} wrappers and from version or _version beside the fields', () => {
+test('T9 versions: builds {"<collection>/<id>": version} from {id, data, version} wrappers', () => {
   const dir = dbTree({
     [`findings/${ID_A}.json`]: { id: ID_A, data: { id: ID_A, title: 'x' }, version: 3 },
-    [`findings/${ID_B}.json`]: { id: ID_B, title: 'y', _version: 7 },
-    [`projects/${SLUG}.json`]: { slug: SLUG, version: 2 },
+    [`findings/${ID_B}.json`]: { id: ID_B, data: { id: ID_B, title: 'y' }, version: 7 },
+    [`projects/${SLUG}.json`]: { id: SLUG, data: { slug: SLUG }, version: 2 },
     'runs/2026-10-23T18-02-11Z.json': { id: 'whatever', data: { runId: '2026-10-23T18-02-11Z' }, version: 1 },
-    'meta/owner.json': { ownerId: 'u_x', _version: 5 },
+    'meta/owner.json': { id: 'owner', data: { ownerId: 'u_x' }, version: 5 },
     'notes.txt': 'ignored',
   });
   const out = path.join(home, 'v out', 'versions.json');
@@ -748,7 +748,7 @@ test('T9 versions: builds {"<collection>/<id>": version} from {id, data, version
 
 test('T9 versions: a file with no integer version fails loudly, naming the file, and writes no map', () => {
   for (const content of [{ id: ID_A, title: 'no version' }, { id: ID_A, data: { id: ID_A }, version: 'v2' }, { id: ID_A, _version: 0 }]) {
-    const dir = dbTree({ [`findings/${ID_B}.json`]: { id: ID_B, _version: 1 }, [`findings/${ID_A}.json`]: content });
+    const dir = dbTree({ [`findings/${ID_B}.json`]: { id: ID_B, data: { id: ID_B }, version: 1 }, [`findings/${ID_A}.json`]: content });
     const out = path.join(home, `v-${Math.random().toString(16).slice(2)}.json`);
     const r = cli('versions', '--in', dir, '--out', out);
     assert.equal(r.status, 1, JSON.stringify(content));
@@ -758,6 +758,22 @@ test('T9 versions: a file with no integer version fails loudly, naming the file,
   }
   const bad = dbTree({ [`findings/${ID_A}.json`]: '{not json' });
   assert.equal(cli('versions', '--in', bad, '--out', path.join(home, 'x.json')).status, 1);
+});
+
+test('R53 versions: without --listings a bare body\'s own version (or _version) is never taken as the DB version', () => {
+  for (const content of [
+    { slug: SLUG, name: 'x', version: 2 },
+    { name: 'pack', version: 3, lastReviewed: '2026-10-01' },
+    { id: ID_A, title: 'y', _version: 7 },
+    { id: ID_A, data: { id: ID_A }, version: 0 },
+  ]) {
+    const dir = dbTree({ 'packs/web.json': content });
+    const out = path.join(home, `v-${Math.random().toString(16).slice(2)}.json`);
+    const r = cli('versions', '--in', dir, '--out', out);
+    assert.equal(r.status, 1, JSON.stringify(content));
+    assert.match(r.stderr, /packs\/web\.json carries no version/);
+    assert.ok(!fs.existsSync(out), 'no map written');
+  }
 });
 
 test('T9 versions: argument errors exit 2', () => {
@@ -802,13 +818,14 @@ test('T9 meta-sync: reads this machine\'s push cursor from meta/sync and prints 
 
   const prev = '2026-10-20T00:00:00.000Z';
   const other = { pushedAt: PAST, pulledAt: PAST, pushCursor: PAST, pullCursor: PAST };
-  for (const content of [
-    { id: 'sync', data: { [me]: { pushedAt: prev, pulledAt: prev, pushCursor: prev, pullCursor: prev }, other }, version: 9 },
-    { [me]: { pushedAt: prev, pulledAt: prev, pushCursor: prev, pullCursor: prev }, other, _version: 9 },
+  for (const [content, version] of [
+    [{ id: 'sync', data: { [me]: { pushedAt: prev, pulledAt: prev, pushCursor: prev, pullCursor: prev }, other }, version: 9 }, 9],
+    // A bare body's own _version is not the DB's (R53); the recipe passes --versions for the real one.
+    [{ [me]: { pushedAt: prev, pulledAt: prev, pushCursor: prev, pullCursor: prev }, other, _version: 9 }, null],
   ]) {
     const dir = dbTree({ 'meta/sync.json': content });
     r = cli('meta-sync', '--in', dir);
-    assert.deepEqual(JSON.parse(r.stdout), { machineId: me, pushCursor: prev, version: 9 }, 'the version pins the meta/sync update');
+    assert.deepEqual(JSON.parse(r.stdout), { machineId: me, pushCursor: prev, version }, 'only a wrapper\'s version pins the meta/sync update');
 
     const cursor = '2026-10-26T10:00:00.000Z';
     r = cli('meta-sync', '--in', dir, '--cursor', cursor, '--full');
@@ -865,6 +882,35 @@ test('R41 page-copy: copies the plugin page into --to <dir> and prints {hash, fi
   assert.equal(cli('page-copy', '--to', path.join(home, 'a file')).status, 2, '--to must be a folder or not exist yet');
 });
 
+test('Minor 6 page-copy --clean: removes only the copy it made, and the .rampart-publish folder once it is empty', () => {
+  // A .rampart-publish folder in a working directory: the copy goes, then the empty folders.
+  const work = path.join(home, 'work dir');
+  const to = path.join(work, '.rampart-publish');
+  const { file } = JSON.parse(cli('page-copy', '--to', to).stdout);
+  assert.ok(fs.existsSync(file));
+  let r = cli('page-copy', '--to', to, '--clean');
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), { removed: file });
+  assert.ok(!fs.existsSync(to), 'the empty .rampart-publish folder is gone');
+  assert.ok(fs.existsSync(work), 'the working directory stays');
+  r = cli('page-copy', '--to', to, '--clean');
+  assert.equal(r.status, 0, 'nothing to clean is fine');
+  assert.deepEqual(JSON.parse(r.stdout), { removed: null });
+
+  // Anything else in the folder stays, and so does the folder; a folder of another name is never removed.
+  JSON.parse(cli('page-copy', '--to', to).stdout);
+  fs.writeFileSync(path.join(to, 'rampart-dashboard', 'notes.txt'), 'keep');
+  fs.writeFileSync(path.join(to, 'other.txt'), 'keep');
+  assert.equal(cli('page-copy', '--to', to, '--clean').status, 0);
+  assert.ok(fs.existsSync(path.join(to, 'rampart-dashboard', 'notes.txt')) && fs.existsSync(path.join(to, 'other.txt')));
+  assert.ok(!fs.existsSync(path.join(to, 'rampart-dashboard', 'index.html')));
+  const scratch = path.join(home, 'scratchpad');
+  cli('page-copy', '--to', scratch);
+  assert.equal(cli('page-copy', '--to', scratch, '--clean').status, 0);
+  assert.ok(fs.existsSync(scratch), 'a folder not named .rampart-publish is left, even when empty');
+  assert.equal(cli('page-copy', '--clean').status, 2, 'no --to');
+});
+
 test('Minor 2: a batch holds at most 50 entries and at most 900 000 bytes of doc files, so its body stays under 1 MiB', () => {
   seed();
   for (let i = 0; i < 6; i++) {
@@ -916,11 +962,12 @@ test('T11a versions --listings: bare bodies take their version from the listing 
   assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')), { [`findings/${ID_A}`]: 4, [`findings/${ID_B}`]: 1, [`projects/${SLUG}`]: 12, 'meta/owner': 2 });
 });
 
-test('T11a versions --listings: a paged read appends pages to one file, and the fixture tree + listing parse', () => {
+test('T11a versions --listings: each page of a paged read is its own <collection>-<n>.txt (R52), and the fixture tree + listing parse', () => {
   const { dir, listings } = bareSnapshot([['findings', ID_A, 3]]);
+  fs.renameSync(path.join(listings, 'findings.txt'), path.join(listings, 'findings-1.txt'));
   const extra = path.join(dir, 'findings', `${ID_B}.json`);
   fs.writeFileSync(extra, '{"title":"second page"}');
-  fs.appendFileSync(path.join(listings, 'findings.txt'), `${listingLine('findings', ID_B, 6, dir)}\n[ran at access level 'view']\n`);
+  fs.writeFileSync(path.join(listings, 'findings-2.txt'), `1 documents from collection "findings" saved as JSON files under "${dir}/findings":\n${listingLine('findings', ID_B, 6, dir)}\n[ran at access level 'view']\n`);
   const out = path.join(home, 'v.json');
   assert.equal(cli('versions', '--in', dir, '--listings', listings, '--out', out).status, 0);
   assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')), { [`findings/${ID_A}`]: 3, [`findings/${ID_B}`]: 6 });

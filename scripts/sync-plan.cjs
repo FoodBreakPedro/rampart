@@ -23,17 +23,20 @@
 // files are bare bodies or {id, data, version} wrappers. Exit 0 ok, 1 anything else, 2 bad arguments.
 //      node scripts/sync-plan.cjs versions --in <dir> [--listings <dir>] --out <file.json>
 //        the push --versions map {"<collection>/<doc_id>": version} from an ArtifactData out_dir tree read just before the
-//        push (the same snapshot the pull read). Each file is a {id, data, version} wrapper or a body with version or _version
-//        beside its fields; a file with no integer version fails (exit 1, naming it) rather than leaving a doc unpinned.
-//        With --listings <dir> the versions come from the read's result text saved there as <collection>.txt (the files are
-//        bare bodies): lines `- "<id>"  <n> bytes  version <v>  "<path>"`; a listed doc with no file, a file not listed, a
-//        path outside --in or a version that is not a positive integer fails (exit 1).
+//        push (the same snapshot the pull read). Without --listings each file must be an {id, data, version} wrapper (a bare
+//        body's own version is never taken, R53); a file with no such version fails (exit 1, naming it) rather than leaving a
+//        doc unpinned.
+//        With --listings <dir> the versions come from the read's result text saved there, one <collection>-<n>.txt per page
+//        (every .txt in the folder is read; the files are bare bodies): lines `- "<id>"  <n> bytes  version <v>  "<path>"`;
+//        a listed doc with no file, a file not listed, a path outside --in or a version that is not a positive integer fails
+//        (exit 1).
 //        pull, versions and meta-sync treat a missing --in with an existing parent as an empty snapshot (a fresh database).
 //      node scripts/sync-plan.cjs page-hash [--file <page.html>]
 //        sha256:<hex> of the live page (default the plugin's dashboard/index.html), for config.json dashboard.pageHash.
-//      node scripts/sync-plan.cjs page-copy --to <dir>
+//      node scripts/sync-plan.cjs page-copy --to <dir> [--clean]
 //        copies the plugin's page to <dir>/rampart-dashboard/index.html and prints {hash, file}: the Artifact tool publishes
-//        only files under the session's working directory or scratchpad, and an installed plugin is under neither.
+//        only files under the session's working directory or scratchpad, and an installed plugin is under neither. With
+//        --clean it removes that copy instead (and the folders, once empty, when <dir> is .rampart-publish); prints {removed}.
 //      node scripts/sync-plan.cjs meta-sync --in <dir> [--versions <file.json>] [--cursor <iso> [--full]]
 //        without --cursor: {machineId, pushCursor, version} from <dir>/meta/sync.json (null when none). With it: the data
 //        for meta/sync, this machine's entry only {pushedAt, pulledAt, pushCursor, pullCursor}; pushCursor moves to --cursor
@@ -301,7 +304,7 @@ const USAGE = [
   '       node scripts/sync-plan.cjs pull --project <slug> --in <file.json | dir>',
   '       node scripts/sync-plan.cjs versions --in <dir> [--listings <dir>] --out <file.json>',
   '       node scripts/sync-plan.cjs page-hash [--file <page.html>]',
-  '       node scripts/sync-plan.cjs page-copy --to <dir>',
+  '       node scripts/sync-plan.cjs page-copy --to <dir> [--clean]',
   '       node scripts/sync-plan.cjs meta-sync --in <dir> [--versions <file.json>] [--cursor <iso> [--full]]',
 ].join('\n');
 
@@ -313,6 +316,7 @@ function parseArgs(argv) {
       options: {
         project: { type: 'string' }, since: { type: 'string' }, versions: { type: 'string' }, out: { type: 'string' }, in: { type: 'string' },
         file: { type: 'string' }, cursor: { type: 'string' }, full: { type: 'boolean' }, to: { type: 'string' }, listings: { type: 'string' },
+        clean: { type: 'boolean' },
       },
       allowPositionals: true,
       strict: true,
@@ -420,10 +424,11 @@ function docFromFile(collection, id, content) {
   return { collection, id, data };
 }
 
-// The version an out_dir file carries, or undefined: a wrapper's version, else _version or version beside the fields.
+// The version an out_dir file carries, or undefined. Only an explicit {id, data, version} wrapper has one (R53): a bare
+// body's own version (a pack's, say) or _version is a field of the document, never the DB's version of it.
 function versionOf(content) {
-  if (!isObject(content)) return undefined;
-  const v = '_version' in content ? content._version : content.version;
+  if (!isObject(content) || !isObject(content.data) || !('id' in content)) return undefined;
+  const v = content.version;
   return Number.isInteger(v) && v >= 1 ? v : undefined;
 }
 
@@ -522,7 +527,7 @@ const isDir = (p) => {
 };
 
 const PAGE = path.join(__dirname, '..', 'dashboard', 'index.html');
-const TOOL_FLAGS = { versions: ['in', 'out', 'listings'], 'page-hash': ['file'], 'page-copy': ['to'], 'meta-sync': ['in', 'cursor', 'full', 'versions'] };
+const TOOL_FLAGS = { versions: ['in', 'out', 'listings'], 'page-hash': ['file'], 'page-copy': ['to', 'clean'], 'meta-sync': ['in', 'cursor', 'full', 'versions'] };
 
 // Copies the plugin's page into <to>/rampart-dashboard/index.html; returns {hash, file}.
 function pageCopy(to) {
@@ -533,6 +538,31 @@ function pageCopy(to) {
   return { hash: `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`, file };
 }
 
+// Removes the copy pageCopy made in <to>: rampart-dashboard/index.html, then that folder and <to> itself when they are empty
+// and <to> is the .rampart-publish folder the recipe falls back to (a scratchpad or any other folder is never removed).
+// Nothing else is touched. Returns {removed: <file> | null}.
+function pageClean(to) {
+  const dir = path.join(to, 'rampart-dashboard');
+  const file = path.join(dir, 'index.html');
+  let removed = null;
+  try {
+    fs.unlinkSync(file);
+    removed = file;
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  const rmdirIfEmpty = (d) => {
+    try {
+      fs.rmdirSync(d);
+    } catch (err) {
+      if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(err.code)) throw err;
+    }
+  };
+  rmdirIfEmpty(dir);
+  if (path.basename(to) === '.rampart-publish') rmdirIfEmpty(to);
+  return { removed };
+}
+
 // The verbs that take no project.
 function mainTool(verb, values) {
   const allowed = TOOL_FLAGS[verb] || [];
@@ -540,7 +570,8 @@ function mainTool(verb, values) {
   if (extra) throw new UsageError(`${verb} does not take --${extra}`);
   if (verb === 'page-copy') {
     if (!values.to) throw new UsageError('page-copy needs --to');
-    process.stdout.write(`${JSON.stringify(pageCopy(path.resolve(values.to)))}\n`);
+    const to = path.resolve(values.to);
+    process.stdout.write(`${JSON.stringify(values.clean ? pageClean(to) : pageCopy(to))}\n`);
     return;
   }
   if (verb === 'page-hash') {
@@ -602,7 +633,7 @@ function main(argv) {
   const { verb, values } = parseArgs(argv);
   if (Object.hasOwn(TOOL_FLAGS, verb)) return mainTool(verb, values);
   if (verb !== 'push' && verb !== 'pull') throw new UsageError(`unknown verb ${verb}`);
-  for (const flag of ['file', 'cursor', 'full', 'to', 'listings']) if (values[flag] !== undefined) throw new UsageError(`${verb} does not take --${flag}`);
+  for (const flag of ['file', 'cursor', 'full', 'to', 'listings', 'clean']) if (values[flag] !== undefined) throw new UsageError(`${verb} does not take --${flag}`);
   if (!values.project) throw new UsageError(`${verb} needs --project`);
   if (verb === 'push') {
     if (!values.out) throw new UsageError('push needs --out');
