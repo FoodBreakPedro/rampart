@@ -164,10 +164,10 @@ After the last system, "Finish a hunt audit".
 
 Score and render as the shared rules say. Then summarise, per system:
 
-- What ran: the layer, the effort (L2 and L3), and how many units were examined (the report's Coverage section); or that it was skipped, with its reason in plain words ("the host could not be reached: <reason>", "nothing to scan: no changed files against main").
+- What ran: the layer, the effort (L2 and L3), and how many units were examined (the report's Coverage section); or that it was skipped, with its reason in plain words ("the host could not be reached: <reason>", "nothing to scan: no changed files against main"). A run the report's headline says `failed` (no unit, or fewer than half the units, were covered) earns no coverage credit for the layer: say so, with the reason from Skips.
 - The counts from `assemble`, in words: verified findings added, updated and unchanged; findings closed because the hunt no longer found them; candidates rejected or left undecided by the verifiers, which stay in the run directory and are never findings; agent entries dropped as unusable (`invalid`), when there are any.
 - The findings, from the report's Findings section only (never from an agent's reply or a workflow log): each line there is an id, a title, a location in parentheses and a status in brackets, under its severity heading. List those whose status is `open` or `regressed`, highest severity first, at most ten, each by id, title, severity and location; past ten, "and <N> more in the report". Those marked `fixed` are the ones this hunt closed: count them, do not list them. For each finding under the Hardening heading, fetch its record with `node "${CLAUDE_PLUGIN_ROOT}/scripts/store.cjs" findings <slug> --id <id> --json`; when its `ruleId` is `rampart/prompt-injection-attempt`, say it is a possible prompt-injection attempt at that location.
-- Every skip from the report's Skips section, each with its reason.
+- Every skip from the report's Skips section, each with its reason: units that failed or were skipped, the classes a low effort left out (a later medium or high audit hunts them), and units where nothing was closed (invalid candidates, or a hunter at the 10-candidate cap).
 - The report's path.
 
 Then the grade, score and trend from the score sheet's first line, and the dashboard path. Skips the summary must also name: systems dropped in "before anything runs" (no checkout, no layer, nothing to scan), a hunt not run because no effort was chosen or the cost was declined, and Supabase advisors skipped.

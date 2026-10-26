@@ -31,7 +31,7 @@ L2, L3 and INFRA need Claude Code's Workflow tool: if `/config` shows a "Dynamic
 The rest of v0.1 arrives in more plans:
 
 - **Plan 3, live dashboard and executors**: the claude.ai artifact dashboard with dispositions and Run buttons, the local `watch` executor and `schedule`.
-- **Plan 4, rampart-lite, evals and the start of the fix flow**: the portable `rampart-lite` skill, `import`, evals run with `claude plugin eval`, and `fix` with an independent patch reviewer.
+- **Plan 4, rampart-lite, evals and the start of the fix flow**: the portable `rampart-lite` skill, evals run with `claude plugin eval`, and `fix` with an independent patch reviewer. (Importing a claude-security report already works: `/rampart audit L2|L3 --import`.)
 
 ## Requirements
 
