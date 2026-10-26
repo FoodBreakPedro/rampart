@@ -19,7 +19,8 @@ const SYS = 'web';
 const LAYER = 'L3';
 // Fake test values, assembled at run time so secret scanners do not read them as committed credentials.
 const TOKEN = ['q8Zx3Lm9', 'Vb2NkR7t', 'Yw4Pc1Hd'].join('');
-const FAKE_JWT = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxMjM0NTY3ODkwIn0', 'abcdefghij'].join('.');
+const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+const FAKE_JWT = [b64({ alg: 'HS256' }), b64({ sub: '1234567890' }), 'abcdefghij'].join('.');
 
 const fixtureText = (kind, name) => fs.readFileSync(path.join(FIX, 'hunt', kind, `${name}.json`), 'utf8');
 const rawCandidates = (name) => JSON.parse(fixtureText('candidates', name));
