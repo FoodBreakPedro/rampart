@@ -173,3 +173,9 @@ Task 13: fix round 1/5 (4 addressed, 0 open — I1 background agents, M1 wait ca
 Task 13: minor (deferred): verify.md "run step 3 before then" ambiguous (two step 3s); reverify overwrites the hunt's multi-verifier tally with the verify run's
 Task 13: complete (commits 2cf1b68..4ed12d3, review clean)
 Ruling R45: Task 14 acceptance runs headless `claude -p --plugin-dir <worktree> --model sonnet` with a temp RAMPART_HOME, `--max-budget-usd` caps (L3 25, L2 10, INFRA 10, verify 5) and an explicit --allowedTools list (no bypassPermissions) — sonnet keeps the many-agent fan-out affordable; caps bound spend — cost if wrong: acceptance does not reflect Opus behaviour.
+Task 14: dispatched (opus, base a6e705a; context task-14-context.md, R45)
+Task 14: implementer DONE_WITH_CONCERNS d886506,5bc538b,f06f8d1,0dad755; tag rampart--v0.2.0-alpha.1 local (all acceptance steps pass, $4.07 on sonnet; one flaw → one finding per matching class; agent Bash tools pattern not a permission grant — prober extra probes need session allow, unexercised; SKILL.md still calls import Plan 4)
+Task 14: review 1 → Approved
+Task 14: minor (deferred): answeredOk treats every grep exit 1 as clean, incl. ufw-enabled and the WP version grep where no-match ≠ healthy (prefer a per-probe opt-in); infra-prober.md:34 ok semantics stale; SKILL.md:41 and README.md:34 list import as Plan 4 while `audit --import` ships; marketplace.json version copy untested against plugin.json; scripts/*.cjs pre-approval covers every script (narrow to named scripts later)
+Task 14: complete (commits a6e705a..0dad755, review clean)
+Final review: dispatched (opus, 17d4ac6..0dad755)
