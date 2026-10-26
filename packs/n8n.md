@@ -34,7 +34,7 @@ lastReviewed: 2026-10-23
 
 ### version-advisories: n8n version with a published security advisory
 
-**Look for:** The running version: the `org.opencontainers.image.version` label in the containers observation (n8n's image sets it from the release version), else the image tag, else, for `latest` or an empty label, the image's creation date and digest in image-digests. Compare it with the n8n GitHub security advisories and release notes. Weigh each advisory by what this instance exposes: issues in webhook, form or OAuth callback handling matter whenever the live URL answers (webhook-route shows the routes are public); issues in the Code node, expressions or a specific node matter for anyone who can edit workflows; issues in a node listed in `NODES_EXCLUDE` do not apply.
+**Look for:** The running version: the `org.opencontainers.image.version` label in the n8n-containers observation (n8n's image sets it from the release version), else the image tag, else, for `latest` or an empty label, the image's creation date and digest in n8n-image-digests. Compare it with the n8n GitHub security advisories and release notes. Weigh each advisory by what this instance exposes: issues in webhook, form or OAuth callback handling matter whenever the live URL answers (webhook-route shows the routes are public); issues in the Code node, expressions or a specific node matter for anyone who can edit workflows; issues in a node listed in `NODES_EXCLUDE` do not apply.
 **Confirm by:** Name the running version and where it came from (label, tag or image date), the advisory (GHSA id or CVE and title), its first fixed version, and the precondition this instance meets (public webhook routes, a node that is not excluded, a version range that includes the running one).
 **Disprove by:** The running version is at or after the fixed version; the affected node is in `NODES_EXCLUDE`; the advisory needs a feature that env shows is off (public API disabled, community packages disabled). A label of `snapshot` or a `latest` tag with no date means the version is unknown: no candidate, say unsure. Being behind the latest release with no security fix in between is hardening.
 **Severity when confirmed:** HIGH. A published vulnerability is open on this instance; follow the advisory's rating. CRITICAL for an unauthenticated remote issue on a reachable route (file read, code execution, auth bypass); HIGH for code execution or credential access that needs a workflow editor; lower ratings follow the advisory.
@@ -42,7 +42,7 @@ lastReviewed: 2026-10-23
 
 ### unauthenticated-access: Editor or API answering without a login
 
-**Look for:** rest-unauth returning 200 (the internal `/rest/` API serves workflows to a caller with no session); public-api-unauth returning 200 (the public API serves workflows without an `X-N8N-API-KEY`); env showing `N8N_USER_MANAGEMENT_DISABLED true` or `N8N_BASIC_AUTH_ACTIVE` on a pre-1.0 version, where an instance could run with no login at all (1.0 made the owner account mandatory and removed basic auth); the editor port 5678 published to all interfaces in containers while the live URL's proxy adds the only login layer.
+**Look for:** rest-unauth returning 200 (the internal `/rest/` API serves workflows to a caller with no session); public-api-unauth returning 200 (the public API serves workflows without an `X-N8N-API-KEY`); env showing `N8N_USER_MANAGEMENT_DISABLED true` or `N8N_BASIC_AUTH_ACTIVE` on a pre-1.0 version, where an instance could run with no login at all (1.0 made the owner account mandatory and removed basic auth); the editor port 5678 published to all interfaces in n8n-containers while the live URL's proxy adds the only login layer.
 **Confirm by:** Quote the http status for the path and the absence of a `WWW-Authenticate` challenge, or the printed setting with the running version. Say what an anonymous caller gets: workflow definitions (which embed URLs, credentials references and logic), executions, or the editor itself.
 **Disprove by:** rest-unauth answers 401; public-api-unauth answers 401 (API on, key required) or 404 (API disabled); the version is 1.0 or later, where the legacy variables have no effect. A 200 from `/healthz`, `/rest/settings` or the login page is by design.
 **Severity when confirmed:** CRITICAL. Anyone can read and run workflows, which hold the keys to every connected system.
@@ -82,7 +82,7 @@ lastReviewed: 2026-10-23
 
 ### edge-tls: TLS at the edge and cookie flags
 
-**Look for:** The live URL on `http://`, or edge without a `Strict-Transport-Security` header over https; `N8N_SECURE_COOKIE false` in env (the `n8n-auth` session cookie travels over cleartext); `N8N_PROTOCOL http` with `WEBHOOK_URL` or `N8N_EDITOR_BASE_URL` on http with a public host name; port 5678 published to all interfaces in containers, so clients can reach n8n directly and skip the TLS proxy.
+**Look for:** The live URL on `http://`, or edge without a `Strict-Transport-Security` header over https; `N8N_SECURE_COOKIE false` in env (the `n8n-auth` session cookie travels over cleartext); `N8N_PROTOCOL http` with `WEBHOOK_URL` or `N8N_EDITOR_BASE_URL` on http with a public host name; port 5678 published to all interfaces in n8n-containers, so clients can reach n8n directly and skip the TLS proxy.
 **Confirm by:** Quote the URL scheme, the missing header, the printed setting, or the port mapping, and say what crosses the network in clear: login credentials, the session cookie, webhook payloads.
 **Disprove by:** The live URL is https, the edge sends HSTS, `N8N_SECURE_COOKIE` is `true` or unset (default `true`), and 5678 is unpublished or bound to a loopback address behind the proxy. A missing HSTS header alone, with https enforced by a redirect, is hardening.
 **Severity when confirmed:** MEDIUM. Credentials and sessions cross the network unencrypted. HIGH when the editor login is served over plain http on a public host name; LOW when only the direct port is published on a host whose live URL is on a private network.
@@ -94,14 +94,14 @@ A healthy n8n runs a current 1.x or 2.x release with no open advisory for its ve
 
 ## Probes
 
-### containers: n8n containers, versions and published ports
+### n8n-containers: n8n containers, versions and published ports
 
 **via:** `ssh`
 **argv:** `["docker","ps","--format","{{.Names}} {{.Image}} {{.Label \"org.opencontainers.image.version\"}} {{.Ports}}"]`
 **expect:** One line per running container: name, image, OCI version label, published ports. The n8n container runs `n8nio/n8n` or `docker.n8n.io/n8nio/n8n` with a version label (for example `1.x.y` or `2.x.y`); its port 5678 is unpublished or bound to a loopback address behind a reverse proxy. Task runner sidecars run `n8nio/runners`. A `permission denied` on the Docker socket means the SSH user is not in the docker group: unavailable.
 **scrub:** none
 
-### image-digests: n8n images, digests and build dates
+### n8n-image-digests: n8n images, digests and build dates
 
 **via:** `ssh`
 **argv:** `["docker","image","ls","--digests","--filter","reference=*/n8n","--filter","reference=*/*/n8n","--format","{{.Repository}}:{{.Tag}} {{.Digest}} {{.CreatedAt}}"]`

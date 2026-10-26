@@ -402,3 +402,12 @@ test('wordpress SSH probes name the site through <sitePath>, never a fixed publi
     assert.ok(!probe.argv.some((a) => a.includes('public_html')), `${probe.id} has no literal public_html`);
   }
 });
+
+// The runner and hunt-io key observations and probe units by probe id across all of a system's host packs, so two packs that
+// apply to one system type must not declare the same probe id (one observation would overwrite the other).
+test('T11: probe ids are unique across the host packs of each system type', () => {
+  for (const type of HOST_PACKS) {
+    const ids = packsFor({ type }).filter((p) => (p.kinds || []).includes('host')).flatMap((p) => p.probes.map((x) => x.id));
+    assert.deepEqual(ids.filter((id, i) => ids.indexOf(id) !== i), [], type);
+  }
+});
