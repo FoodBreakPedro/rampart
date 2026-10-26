@@ -263,7 +263,14 @@ test('dashboard: sync pulls and builds versions from one snapshot, then pushes p
   const batch = at('`ArtifactData batch`');
   assert.ok(read < pull && pull < versions && versions < push && push < batch, 'read, pull, versions, push, batch in that order');
   for (const c of ['`projects`', '`findings`', '`runs`', '`jobs`', '`meta`']) assert.ok(sync.includes(c), `Sync reads ${c}`);
-  assert.match(sync, /Write the result text, copied verbatim, to `<sync>\/listings\/<collection>\.txt`/);
+  assert.match(sync, /Write the result text, copied verbatim, to its own `<sync>\/listings\/<collection>-<n>\.txt`/);
+  // R52: pages of 100, one file per page, never appended.
+  assert.match(sync, /`query: \{limit: 100\}`/);
+  assert.match(sync, /`query: \{limit: 100, cursor: <next_cursor>\}`/);
+  assert.doesNotMatch(sync, /limit: 1000/);
+  assert.doesNotMatch(sync, /appends/);
+  assert.match(sync, /never append/i);
+  assert.match(sync, /do not Read them/);
   assert.match(sync, /redo the whole cycle/);
   assert.match(sync, /never re-read/i);
   assert.match(sync, /sync-plan\.cjs" meta-sync --in "<sync>\/db" --versions "<sync>\/versions\.json"`/);
@@ -389,4 +396,20 @@ test('cloud runs are gated (R50): no recipe or changelog line promises them for 
   assert.match(release, /[Cc]loud runs are off in this release/);
   assert.doesNotMatch(release, /The cloud route needs a GitHub remote/);
   assert.doesNotMatch(release, /or cloud\)/, 'the Run button line does not offer a cloud route');
+});
+
+test('Minor 1: every owner id handed to dashboard-set is quoted', () => {
+  const t = dashboard.text;
+  assert.ok((t.match(/dashboard-set --owner-id "<ownerId>"/g) || []).length >= 2, 'Publish step 8 and Sync step 9');
+  assert.doesNotMatch(t, /--owner-id <ownerId>/);
+});
+
+test('Minor 6: a .rampart-publish copy is announced and cleaned with page-copy --clean after publish and republish', () => {
+  for (const name of ['Publish', 'Republish']) {
+    const s = section(dashboard.text, name);
+    assert.match(s, /sync-plan\.cjs" page-copy --to "<publish dir>" --clean/, `${name} cleans the copy`);
+  }
+  const pub = section(dashboard.text, 'Publish');
+  assert.match(pub, /`\.rampart-publish`[^.]*tell the user/);
+  assert.doesNotMatch(dashboard.text, /\brm -/);
 });
