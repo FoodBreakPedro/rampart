@@ -6,7 +6,7 @@ The shape follows a three-level framework. Level 1, for every app: secrets over 
 
 ## Status
 
-Pre-release. This alpha, `0.1.0-alpha.2`, covers:
+Pre-release. This alpha, `0.2.0-alpha.1`, covers:
 
 - **inventory**: map a folder's systems into a project and record your owner attestation.
 - **audit L1**: gitleaks over a repository's full history, trivy or the npm/pnpm audit on its lockfile, and a grade of each live URL's security headers; then the score.

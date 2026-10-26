@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.0-alpha.1 — 2026-10-26
+
+The hunt engine: Rampart's own agent audits for changes, whole repositories and self-hosted hosts.
+
+- **Grades are no longer capped at C.** Repo systems declare L2 and L3 and hosts declare INFRA; those layers now have engines, so a finished L2, L3 or INFRA run earns its coverage credit and a clean project can reach an A.
+- **`/rampart audit L3`**: a deep hunt of a whole repository. The repository is split into units, and the `rampart:audit` workflow runs one `hunter` agent per unit and pack class, at `low` (the five logic-bug classes: record scoping, tenant isolation, bulk export, sessions, search injection), `medium` (every class, reachable code) or `high` (every class, every unit) effort, with the agent count and a rough token estimate shown before anything runs.
+- **`/rampart audit L2`**: the same hunt on what a branch changed against its base (`--base`, default the system's default branch); only the units holding changed files are hunted.
+- **Independent verification.** Every candidate goes to fresh `verifier` agents told to disprove it. It becomes a finding only when a majority confirm it, with two confirmations for anything HIGH or CRITICAL; rejected and undecided candidates stay in the run directory. A unit whose hunter did not return is marked failed, never clean, and closes no findings.
+- **`/rampart audit INFRA`**: the read-only probes of a host's packs (Docker host, Supabase, n8n, WordPress) over SSH or HTTP, with environment values scrubbed and every output redacted before it is written; one `infra-prober` agent compares the observations with the pack's baseline, and verifiers judge each candidate from the same observations. It refuses to run from a cloud session.
+- **`/rampart verify`**: re-judges open hunt findings against the current code with one fresh verifier each; a finding it can no longer reproduce is closed as fixed.
+- **A `REPORT.md` per run**: title, headline, coverage, findings by severity, skips and the score after the run.
+- **Review packs**: eight versioned packs (`packs/`) for Next.js, Node APIs, Expo, Cloudflare Workers, Supabase, n8n, Docker hosts and WordPress, each with hunt classes (look for, confirm by, disprove by, severity, CWE), a baseline and probes; `scripts/packs.cjs` lists, shows and validates them.
+- **claude-security import**: `/rampart audit L2|L3 --import` records a claude-security report's findings (panel-verified, so stored as verified) without hunting, and never changes a finding's status. An attended L2 or L3 audit offers the hand-off once when the plugin is installed.
+- The skill also pre-approves a plugin script run with no arguments, so a session outside auto mode no longer stops on a permission prompt at the final dashboard render.
+- A grep probe that matches nothing (a healthy host with no risky container flags) counts as a clean answer instead of a failed probe.
+
+### Known limitations
+
+- The `verifier` cannot run probes itself: an INFRA candidate is judged only from the observations the run already recorded.
+- Agent write confinement is prompt-only: hunters, verifiers and the prober are told to write one file in the run directory, and nothing enforces it beyond your session's permissions.
+- Hunters and verifiers read git history only when the session's working directory is the repository root; otherwise they judge the working tree alone.
+- The INFRA environment scrub is line-based: a minified one-line JSON object passes to `redact()` only.
+- The cost shown before a hunt is a rough estimate (a fixed token figure per agent run), not a measurement.
+- One flaw can surface as several findings, one per pack class that catches it (an unscoped export found as record scoping, tenant isolation and bulk export); each is verified on its own.
+- The `infra-prober`'s extra probes run only when your session allows the probe script: its agent definition lists the command but does not grant the permission, so outside auto mode or a matching allow rule it works from the recipe's probes alone.
+- In a headless session (`claude -p`) nothing can be asked: the inventory saves nothing without the attestation, and an audit runs only when the request names the effort (`--effort`) and accepts the cost in words.
+- Real gitleaks and trivy runs, and real SSH hosts, were not exercised on the build machine; acceptance used fixtures, a fake `ssh` and canned probe output.
+
 ## 0.1.0-alpha.2 — 2026-10-23
 
 Fixes from the whole-branch review of alpha.1.
