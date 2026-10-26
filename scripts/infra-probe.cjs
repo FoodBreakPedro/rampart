@@ -6,7 +6,8 @@
 // --run uses the run hunt-io init created (it is finished by the audit, not here); without it the runner creates its own run
 // (job audit, layer INFRA) and finishes it done. In a cloud session (CLAUDE_CODE_REMOTE=true) nothing runs: exit 2. A first probe that cannot reach the host (ssh refused, BatchMode auth failure,
 // timeout, no http answer) marks the run skipped, with the reason, either way: exit 2. A later probe that fails that way is
-// recorded in skipped[] and the run goes on. A probe that exits non-zero is an observation with ok false; its text is kept.
+// recorded in skipped[] and the run goes on. A probe that exits non-zero (other than an exit code its pack lists in okExit), or an
+// http probe answered with a 5xx, is an observation with ok false; its text is kept, and assemble does not count its unit covered.
 //
 // What runs is only what the pack declares: the ssh command is built from the probe's argv, each element single-quoted, and
 // nothing else except the one owner-attested field behind <sitePath> (host.sitePath, charset-checked). Target and URL come from
@@ -48,9 +49,12 @@ function sitePathOf(system) {
 
 const argvOf = (probe, system) => probe.argv.map((a) => a.split(SITE_PATH_TOKEN).join(sitePathOf(system)));
 
-// grep exits 1 when it selected no line, which for a probe that greps for risky settings is the healthy answer, not a failure
-// (an unreadable file or directory exits 2). Every other command answers ok only with exit 0.
-const answeredOk = (probe, system, code) => code === 0 || (code === 1 && probe.via !== 'http' && argvOf(probe, system)[0] === 'grep');
+// A command answers ok with exit 0, or with an exit code its pack lists in okExit (a grep for risky settings exits 1 when it selected
+// no line, which its expect line calls healthy; a grep whose empty output is not healthy declares nothing). An http probe answers ok
+// with any status below 500: a 5xx from the edge or the app says nothing about the setting it was sent to look at.
+const answeredOk = (probe, out) => (probe.via === 'http'
+  ? Number.isInteger(out.status) && out.status < 500
+  : out.exitCode === 0 || (Array.isArray(probe.okExit) && probe.okExit.includes(out.exitCode)));
 
 // Every assignment becomes NAME=[set] (NAME= when the value is empty). Handled: CRLF, `export`, spaces around `=`, a grep `path:` prefix,
 // "NAME=value", JSON string pairs ("name": "value"; booleans, numbers and arrays stay, they are settings, not secrets) and
@@ -145,7 +149,7 @@ async function viaHttp(probe, system) {
     for (const [name, value] of res.headers) if (name !== 'set-cookie') kept.push(`${name}: ${value}`);
     const cookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
     for (const c of cookies) kept.push(`set-cookie: ${c.replace(/^([^=;]*)=[^;]*/, '$1=[set]')}`);
-    return { text: kept.join('\n'), exitCode: 0 };
+    return { text: kept.join('\n'), exitCode: 0, status: res.status };
   } catch (err) {
     const aborted = controller.signal.aborted || (err && err.name === 'AbortError');
     const cause = err && err.cause;
@@ -226,7 +230,7 @@ async function runProbes({ project, system, pack, probes, timeoutMs = DEFAULT_TI
       const text = scrubText(probe, out.text);
       const rawPath = store.writeRaw(project, id, `probe-${probe.id}.txt`, text);
       drop(skipped, probe.id);
-      put(observations, { probeId: probe.id, via: probe.via, ok: answeredOk(probe, ctx.system, out.exitCode), exitCode: out.exitCode, durationMs: Date.now() - started, text, rawPath });
+      put(observations, { probeId: probe.id, via: probe.via, ok: answeredOk(probe, out), exitCode: out.exitCode, durationMs: Date.now() - started, text, rawPath });
     }
     writeAtomic(file, `${JSON.stringify({ observations, skipped }, null, 2)}\n`);
     let finished = run0;

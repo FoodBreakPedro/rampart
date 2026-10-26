@@ -83,6 +83,25 @@ test('a probe may carry an optional path', () => {
   assert.equal(probe.via, 'http');
 });
 
+test('R48: a probe may declare okExit, the exit codes that are a healthy answer; a bad value or an http probe with one fails', () => {
+  put('good', fixture('good').replace('**scrub:** none', '**scrub:** none\n**okExit:** `0,1`'));
+  const pack = readPack('good', tmp);
+  assert.deepEqual(pack.probes[0].okExit, [0, 1]);
+  assert.deepEqual(validatePack(pack), { ok: true, errors: [] });
+  assert.ok(!('okExit' in readPack('good', FIXTURES).probes[0]), 'absent stays absent');
+  put('good', fixture('good').replace('**scrub:** none', '**scrub:** none\n**okExit:** 0, x'));
+  assert.ok(validatePack(readPack('good', tmp)).errors.some((e) => e.path.startsWith('probes[0].okExit')));
+  put('good', fixture('good').replace('**scrub:** none', '**scrub:** none\n**okExit:** 1, 300'));
+  assert.ok(validatePack(readPack('good', tmp)).errors.some((e) => e.path.startsWith('probes[0].okExit')));
+  put('good', fixture('good').replace('`ssh`', '`http`').replace('**scrub:** none', '**scrub:** none\n**okExit:** 0,1'));
+  assert.deepEqual(validatePack(readPack('good', tmp)).errors.map((e) => e.path), ['probes[0].okExit']);
+});
+
+test('R48: among the shipped probes only the grep whose expect line calls empty output healthy declares okExit', () => {
+  const declared = listPacks().flatMap((n) => readPack(n).probes.filter((p) => p.okExit).map((p) => [n, p.id, p.okExit]));
+  assert.deepEqual(declared, [['docker-host', 'container-hostconfig', [0, 1]]]);
+});
+
 test('missing sources: validatePack reports the path sources', () => {
   const pack = readPack('bad-missing-sources', FIXTURES);
   const result = validatePack(pack);

@@ -31,9 +31,10 @@ The probes print setting names, and a value only for settings the pack lists as 
 
 `observations.json` is `{observations: [{probeId, via, ok, exitCode, durationMs, text, rawPath}], skipped: [{probeId, reason}]}`, already scrubbed.
 
-- `via: ssh` and `via: local` probes ran a command on the host: `ok` is true when it exited 0, and `text` is its output and error output. Some probes exit non-zero by design (their expect line says what that means): judge their text, not `ok`.
-- `via: http` probes made one GET or HEAD request to the system's live URL without following redirects: `text` is the line `HTTP <status>` followed by one `name: value` line per response header, with each cookie's value replaced by `[set]`. `ok` is true whenever any response arrived, a 401 or 500 included.
-- A probe in `skipped`, or with `ok` false and no usable text (a `permission denied` the expect line calls unavailable, say), is unavailable. Unavailable is never clean and never a finding: you report nothing from an observation you do not have, and a class whose deciding probe is unavailable gets no candidate.
+- `via: ssh` and `via: local` probes ran a command on the host: `ok` is true when it exited 0, or with an exit code the pack declares a healthy answer (a grep that selected nothing, where its expect line calls empty output healthy), and `text` is its output and error output. Some other probes exit non-zero with a real answer that their expect line describes (`systemctl is-active` with no unit active, a configuration file that does not exist): judge their text against the expect line, not `ok`.
+- `via: http` probes made one GET or HEAD request to the system's live URL without following redirects: `text` is the line `HTTP <status>` followed by one `name: value` line per response header, with each cookie's value replaced by `[set]`. `ok` is true when a response below 500 arrived (a 401 or 404 included); a 5xx is not an answer.
+- A probe in `skipped`, a 5xx, a probe with `ok` false and no usable text, or text the expect line calls unavailable (a `permission denied`, a Docker daemon that is down, `command not found` for the tool the probe needs) is unavailable. Unavailable is never clean and never a finding: you report nothing from an observation you do not have, and a class whose deciding probe is unavailable gets no candidate.
+- Rampart counts a probe's unit as covered only when its `ok` is true. A candidate you report from an `ok` false probe is still verified and recorded, but nothing that probe would have shown is closed as fixed.
 
 Unset environment variables take the default of the running version; the class text says which defaults changed between versions.
 

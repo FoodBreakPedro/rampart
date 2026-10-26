@@ -563,6 +563,11 @@ function judgeUnits(doc, dir) {
       const seen = observations.find((o) => o.probeId === probeOf(u));
       if (!seen) return { ...u, status: 'failed', reason: 'probe has no observation' };
       if (seen.ok === false && !isText(seen.text)) return { ...u, status: 'skipped', reason: 'probe failed and produced no output' };
+      // Only an answer counts: a permission error, a daemon that is down or a 503 from the edge says nothing about the setting.
+      if (seen.ok !== true) {
+        const exit = Number.isInteger(seen.exitCode) ? ` (exit ${seen.exitCode})` : '';
+        return { ...u, status: 'failed', reason: `probe answered with an error${exit}; its output is not an answer` };
+      }
       if (!returned) return { ...u, status: 'failed', reason: 'hunter did not return: infra-prober' };
       return { ...u, status: 'covered' };
     });

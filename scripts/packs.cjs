@@ -33,7 +33,7 @@ const CLASS_LABELS = {
   'severity when confirmed': 'severity',
   cwe: 'cwe',
 };
-const PROBE_LABELS = { via: 'via', argv: 'argv', expect: 'expect', scrub: 'scrub', path: 'path' };
+const PROBE_LABELS = { via: 'via', argv: 'argv', expect: 'expect', scrub: 'scrub', path: 'path', okexit: 'okExit' };
 
 // ---- listing --------------------------------------------------------------------------------
 
@@ -148,6 +148,9 @@ function toProbe({ id, title, lines }) {
   out.expect = f.expect;
   out.scrub = f.scrub === undefined ? undefined : stripTicks(f.scrub);
   if (f.path !== undefined) out.path = stripTicks(f.path);
+  // okExit: the exit codes, besides 0, that are a healthy answer (`0,1`). A part that is not a whole number is kept as written, so
+  // validatePack reports it.
+  if (f.okExit !== undefined) out.okExit = stripTicks(f.okExit).split(/[\s,]+/).filter(Boolean).map((t) => (/^\d+$/.test(t) ? Number(t) : t));
   return out;
 }
 
@@ -220,6 +223,13 @@ function validatePack(pack) {
         probeIds.add(p.id);
       }
       if (Array.isArray(p.argv) && p.argv.length === 0) errors.push({ path: `probes[${i}].argv`, message: 'expected a non-empty array' });
+      if (p.okExit !== undefined) {
+        if (p.via === 'http') errors.push({ path: `probes[${i}].okExit`, message: 'an http probe has no exit code (it is ok below status 500)' });
+        else if (Array.isArray(p.okExit) && p.okExit.length === 0) errors.push({ path: `probes[${i}].okExit`, message: 'expected a non-empty array' });
+        else if (Array.isArray(p.okExit)) {
+          p.okExit.forEach((c, j) => { if (Number.isInteger(c) && c > 255) errors.push({ path: `probes[${i}].okExit[${j}]`, message: 'expected an exit code from 0 to 255' }); });
+        }
+      }
     });
     // A kind promises content: code packs need hunt classes, host packs need probes (a mistyped heading parses as none).
     if (Array.isArray(pack.kinds) && pack.kinds.includes('code') && Array.isArray(pack.classes) && pack.classes.length === 0) {

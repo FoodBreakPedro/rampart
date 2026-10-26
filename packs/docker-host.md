@@ -120,6 +120,7 @@ A healthy Docker host publishes only its intended public entry points (a reverse
 **argv:** `["grep","-r","-o","--include=hostconfig.json","-e","\"Privileged\":true","-e","\"PidMode\":\"host\"","-e","\"IpcMode\":\"host\"","-e","\"UsernsMode\":\"host\"","-e","\"NetworkMode\":\"host\"","-e","\"CapAdd\":\\[[^]]*]","-e","\"Devices\":\\[[^]]*]","/var/lib/docker/containers"]`
 **expect:** As root: one `<container dir>/hostconfig.json:<flag>` line per risky flag, and healthy output is empty or only `"CapAdd":[]` / `"Devices":[]`. Only these keys are printed, never environment or log options. As an ordinary user the command fails with `Permission denied` (the Docker data directory is root-only): unavailable, not clean. Rootless Docker keeps containers under the user's home instead, so the path is missing.
 **scrub:** env
+**okExit:** `0,1`
 
 ### daemon-config: Docker daemon configuration
 

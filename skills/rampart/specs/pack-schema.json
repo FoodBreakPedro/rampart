@@ -54,7 +54,8 @@
           "argv": { "type": "array", "items": { "type": "string" }, "description": "Non-empty (checked by validatePack)." },
           "expect": { "type": "string", "minLength": 1 },
           "scrub": { "enum": ["env", "none"] },
-          "path": { "type": "string", "minLength": 1, "description": "http probes: path under the system's live URL." }
+          "path": { "type": "string", "minLength": 1, "description": "http probes: path under the system's live URL." },
+          "okExit": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 }, "description": "ssh and local probes, optional: the exit codes that are a healthy answer (written `**okExit:** 0,1`). Without it only exit 0 is; set it only when the expect line says that exit (for grep, empty output) is healthy." }
         }
       }
     }

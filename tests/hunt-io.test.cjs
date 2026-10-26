@@ -595,6 +595,44 @@ test('INFRA: init plans one prober for all probes; assemble covers observed prob
   assert.ok(!ledger.units[`db|INFRA|probe:${probes[0]}`]);
 });
 
+// An INFRA run of system db as init plans it, with the prober returned ([] by default) and the given observations per probe id.
+function infraRun(observe, { candidates = [] } = {}) {
+  store.writeProject(projectObject());
+  const out = hio.initRun(SLUG, { system: 'db', layer: 'INFRA' });
+  const probes = JSON.parse(fs.readFileSync(path.join(out.runDir, 'units.json'), 'utf8')).units.map((u) => u.id.replace(/^probe:/, ''));
+  fs.writeFileSync(path.join(out.runDir, 'candidates', 'db__infra-prober.json'), JSON.stringify(candidates));
+  fs.writeFileSync(path.join(out.runDir, 'observations.json'), JSON.stringify({
+    observations: probes.map((p) => ({ probeId: p, via: 'ssh', ok: true, exitCode: 0, durationMs: 5, text: 'ok', rawPath: `raw/${p}.txt`, ...(observe(p, probes) || {}) })),
+    skipped: [],
+  }));
+  return { ...out, probes };
+}
+const infraFinding = (id) => ({
+  id, project: SLUG, system: 'db', layer: 'INFRA', source: 'infra-probe', class: 'verified', pack: 'supabase@1.0.0', ruleId: 'supabase/x', severity: 'MEDIUM', confidence: 'HIGH', cwe: [],
+  title: 't', evidence: 'e', exploitScenario: 's', preconditions: 'p', recommendation: 'r', verification: { verifiers: 1, confirmed: 1, run: OLD_RUN }, status: 'open',
+  externalIds: { claudeSecurityPluginFindingId: null, cve: null }, location: { host: 'db.example.test', service: 'auth', setting: 'x' },
+});
+
+test('R48: an observation that answered with an error (ok false, with text) leaves its unit failed, and nothing is closed', () => {
+  const s = infraRun((p, probes) => (p === probes[0] ? { ok: false, exitCode: 1, text: 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?' } : null));
+  store.upsertFindings(SLUG, [infraFinding('d'.repeat(12))], OLD_RUN);
+  const res = hio.assemble(SLUG, s.runId);
+  assert.deepEqual(res.skipped.map((u) => [u.id, u.status]), [[`probe:${s.probes[0]}`, 'failed']]);
+  assert.match(res.skipped[0].reason, /probe answered with an error \(exit 1\)/);
+  assert.equal(res.counts.closed, 0);
+  assert.equal(statusById()['d'.repeat(12)], 'open');
+  assert.equal(store.readCoverage(SLUG).units[`db|INFRA|probe:${s.probes[0]}`].status, 'failed');
+});
+
+test('R48: an observation whose ok is not true (missing) is not covered either; every probe ok closes what the prober did not report', () => {
+  let s = infraRun((p, probes) => (p === probes[1] ? { ok: undefined } : null));
+  store.upsertFindings(SLUG, [infraFinding('d'.repeat(12))], OLD_RUN);
+  assert.equal(hio.assemble(SLUG, s.runId).counts.closed, 0);
+  s = infraRun(() => null);
+  assert.equal(hio.assemble(SLUG, s.runId).counts.closed, 1);
+  assert.equal(statusById()['d'.repeat(12)], 'fixed');
+});
+
 test('fileKey maps every character outside [A-Za-z0-9._-] to +', () => {
   assert.equal(fileKey('app/api/users'), 'app+api+users');
   assert.equal(fileKey('probe:auth-env'), 'probe+auth-env');

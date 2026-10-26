@@ -39,7 +39,8 @@ Describe the expected, healthy state here.
 
 <!-- Host packs only. One H3 per probe: `### <probeId>: <title>`. Probes are read-only. `via` is ssh, http or local; `argv` is a JSON
      array of strings; `scrub` is env (reduce KEY=value lines to KEY=[set]) or none. `path` is optional (http probes: a path under the
-     system's live URL). -->
+     system's live URL). `okExit` is optional (ssh and local probes: the exit codes that are a healthy answer, such as `0,1` for a grep
+     whose expect line calls empty output healthy); without it only exit 0 is an answer, and an http probe answers below status 500. -->
 
 ### example-probe: Short title of the probe
 

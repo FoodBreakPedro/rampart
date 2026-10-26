@@ -266,6 +266,15 @@ test('http probes use the method in argv[0] against live.url plus path, and keep
   assert.equal(calls().length, 0);
 });
 
+test('R48: an http probe is ok below status 500; a 502 or 503 from the edge is not an answer', async () => {
+  const codes = { '/a': 404, '/b': 503, '/c': 502, '/d': 200 };
+  const site = await serve((req, res) => { res.writeHead(codes[req.url] || 500); res.end(); });
+  writeProject(system({ live: { url: site.url } }));
+  const pack = { probes: Object.keys(codes).map((p) => probe(p.slice(1), ['GET'], { via: 'http', path: p })) };
+  const r = await runProbes({ project: SLUG, system: 'host', pack });
+  assert.deepEqual(r.observations.map((o) => [o.probeId, o.ok]), [['a', true], ['b', false], ['c', false], ['d', true]]);
+});
+
 test('an http probe against a closed port skips the run; a redirect is reported, not followed', async () => {
   const pack = { probes: [probe('get', ['GET'], { via: 'http' })] };
   const r = await runProbes({ project: SLUG, system: 'host', pack });
@@ -420,21 +429,23 @@ test('a cloud session (CLAUDE_CODE_REMOTE=true) is refused before any probe runs
   assert.ok(!fs.existsSync(path.join(runDir(SLUG, mine.runId), 'observations.json')));
 });
 
-test('a grep probe that selects nothing (exit 1, no output) is an ok answer; grep exit 2 and other commands exiting 1 are not', async () => {
+test('R48: a probe that declares okExit answers ok on those exit codes; without it, grep exit 1 is not ok', async () => {
   const pack = {
     ...PACK,
     probes: [
-      probe('flags', ['grep', '-r', '-o', '-e', '"Privileged":true', '/var/lib/docker/containers']),
+      probe('flags', ['grep', '-r', '-o', '-e', '"Privileged":true', '/var/lib/docker/containers'], { okExit: [0, 1] }),
+      probe('ufw', ['grep', '-H', '^ENABLED=', '/etc/ufw/ufw.conf']),
       probe('denied', ['grep', '-r', '-e', 'x', '/root']),
       probe('units', ['systemctl', 'is-active', 'ufw']),
     ],
   };
-  canned({ flags: '', denied: 'grep: /root: Permission denied\n', units: 'inactive\n' }, {
+  canned({ flags: '', ufw: '', denied: 'grep: /root: Permission denied\n', units: 'inactive\n' }, {
     "'grep' '-r' '-o' '-e' '\"Privileged\":true' '/var/lib/docker/containers'": { probe: 'flags', exit: 1 },
+    "'grep' '-H' '^ENABLED=' '/etc/ufw/ufw.conf'": { probe: 'ufw', exit: 1 },
     "'grep' '-r' '-e' 'x' '/root'": { probe: 'denied', exit: 2 },
     "'systemctl' 'is-active' 'ufw'": { probe: 'units', exit: 3 },
   });
   const r = await runProbes({ project: SLUG, system: 'host', pack });
-  assert.deepEqual(r.observations.map((o) => [o.probeId, o.exitCode, o.ok]), [['flags', 1, true], ['denied', 2, false], ['units', 3, false]]);
+  assert.deepEqual(r.observations.map((o) => [o.probeId, o.exitCode, o.ok]), [['flags', 1, true], ['ufw', 1, false], ['denied', 2, false], ['units', 3, false]]);
 });
 
