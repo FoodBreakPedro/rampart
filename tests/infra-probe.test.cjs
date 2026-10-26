@@ -195,7 +195,7 @@ test('<sitePath> is replaced whole or inside an element with host.sitePath; an i
   await runProbes({ project: SLUG, system: 'host', pack });
   assert.deepEqual(calls().map((c) => c.argv[6]), ["'wp' '--path=domains/example.invalid/public_html' 'core' 'version'", "'ls' 'domains/example.invalid/public_html'"]);
 
-  for (const bad of ['../etc', 'a b', 'a;rm', "x'y", '/a/../b', '$(id)']) {
+  for (const bad of ['../etc', 'a b', 'a;rm', "x'y", '~/site', '~', '/a/../b', '$(id)']) {
     fs.rmSync(argvOut, { force: true });
     writeProject(system({ host: { ssh: TARGET, sitePath: bad } }));
     await runProbes({ project: SLUG, system: 'host', pack, probes: ['ls'] });
@@ -324,4 +324,78 @@ test('CLI: exit 2 for an unreachable host, an unknown probe, and bad arguments',
   assert.equal(unknown.status, 2);
   assert.match(unknown.stderr, /not declared/);
   assert.equal(cli('--project', SLUG).status, 2);
+});
+
+test('--run with --probe merges into the existing observations.json: the probe is replaced, the rest stay, the run is untouched', async () => {
+  canned({ containers: 'web\n', env: 'x\n', again: 'fresh\n' }, { [COMMANDS.containers]: 'containers', [COMMANDS.env]: 'env', [COMMANDS.quoted]: 'quoted' });
+  const mine = store.createRun(SLUG, { job: 'audit', layers: ['INFRA'], systems: ['host'], executor: 'local' });
+  await runProbes({ project: SLUG, system: 'host', pack: PACK, runId: mine.runId });
+  fs.writeFileSync(path.join(probesDir, 'containers.txt'), 'changed\n');
+  const r = await runProbes({ project: SLUG, system: 'host', pack: PACK, probes: ['containers'], runId: mine.runId });
+  assert.equal(r.run.status, 'running');
+  assert.deepEqual(r.observations.map((o) => o.probeId), ['containers', 'env', 'quoted']);
+  assert.equal(r.observations[0].text, 'changed\n');
+  assert.deepEqual(observations(mine.runId).observations.map((o) => o.probeId), ['containers', 'env', 'quoted']);
+  assert.equal(store.readRuns(SLUG)[0].status, 'running');
+});
+
+test('--run with --probe: a skipped entry of a probe that now has an observation is dropped', async () => {
+  canned({ containers: 'web\n' }, { [COMMANDS.containers]: 'containers', [COMMANDS.env]: { exit: 255 } });
+  const mine = store.createRun(SLUG, { job: 'audit', layers: ['INFRA'], systems: ['host'], executor: 'local' });
+  const first = await runProbes({ project: SLUG, system: 'host', pack: PACK, probes: ['containers', 'env'], runId: mine.runId });
+  assert.deepEqual(first.skipped.map((x) => x.probeId), ['env']);
+  canned({ env: 'now\n' }, { [COMMANDS.containers]: 'containers', [COMMANDS.env]: 'env' });
+  const r = await runProbes({ project: SLUG, system: 'host', pack: PACK, probes: ['env'], runId: mine.runId });
+  assert.deepEqual(r.skipped, []);
+  assert.deepEqual(r.observations.map((o) => o.probeId), ['containers', 'env']);
+});
+
+test('--run with --probe: an unreachable extra probe goes to skipped[]; earlier observations stay and the run is not skipped', async () => {
+  canned({ containers: 'web\n' }, { [COMMANDS.containers]: 'containers' });
+  const mine = store.createRun(SLUG, { job: 'audit', layers: ['INFRA'], systems: ['host'], executor: 'local' });
+  await runProbes({ project: SLUG, system: 'host', pack: PACK, probes: ['containers'], runId: mine.runId });
+  process.env.FAKE_EXIT = '255';
+  const r = await runProbes({ project: SLUG, system: 'host', pack: PACK, probes: ['env'], runId: mine.runId });
+  assert.equal(r.run.status, 'running');
+  assert.equal(store.readRuns(SLUG)[0].status, 'running');
+  assert.deepEqual(r.observations.map((o) => o.probeId), ['containers']);
+  assert.deepEqual(r.skipped.map((x) => x.probeId), ['env']);
+  assert.deepEqual(observations(mine.runId).skipped, r.skipped);
+});
+
+test('the first-probe skip rule counts the first probe that tried the host: a refused probe does not count', async () => {
+  const pack = { probes: [probe('refused', ['node', '-v'], { via: 'local' }), probe('real', ['docker', 'ps']), probe('later', ['docker', 'info'])] };
+  process.env.FAKE_EXIT = '255';
+  const r = await runProbes({ project: SLUG, system: 'host', pack });
+  assert.equal(r.run.status, 'skipped');
+  assert.deepEqual(r.skipped.map((x) => x.probeId), ['refused', 'real', 'later']);
+  assert.equal(r.skipped[2].reason, 'not run: host unreachable');
+  assert.equal(calls().length, 1);
+
+  delete process.env.FAKE_EXIT;
+  canned({ real: 'ok\n' }, { "'docker' 'ps'": 'real', "'docker' 'info'": { exit: 255 } });
+  const r2 = await runProbes({ project: SLUG, system: 'host', pack });
+  assert.equal(r2.run.status, 'done');
+  assert.deepEqual(r2.observations.map((o) => o.probeId), ['real']);
+});
+
+test('scrub env reduces every assignment form to NAME=[set] and keeps the useful lines', async () => {
+  const lines = [
+    '/n8n', 'N8N_SECURE_COOKIE true', 'CRLF=secret1\r', 'export EXP=secret2', 'SPACED = secret3', 'EMPTYSP = ',
+    '/etc/ssh/sshd_config:PasswordAuthentication no', '/var/lib/docker/containers/abc/hostconfig.json:KEYX=secret4',
+    '"KEYQ=secret5",', '"jsonkey": "secret6",', '"tlsverify": true,', '"hosts": ["tcp://0.0.0.0:2375"]', 'YAML_KEY: secret7',
+    'MULTI="line one', 'continues secret8', 'closes secret9"', 'AFTER=ok',
+    '/x/hostconfig.json:"NetworkMode":"host"', 'ssh: connect failed',
+  ];
+  canned({ env: `${lines.join('\n')}\n` }, { [COMMANDS.env]: 'env' });
+  const r = await runProbes({ project: SLUG, system: 'host', pack: PACK, probes: ['env'] });
+  const text = r.observations[0].text;
+  assert.deepEqual(text.split('\n'), [
+    '/n8n', 'N8N_SECURE_COOKIE true', 'CRLF=[set]', 'export EXP=[set]', 'SPACED=[set]', 'EMPTYSP=',
+    '/etc/ssh/sshd_config:PasswordAuthentication no', '/var/lib/docker/containers/abc/hostconfig.json:KEYX=[set]',
+    'KEYQ=[set]', 'jsonkey=[set]', '"tlsverify": true,', '"hosts": ["tcp://0.0.0.0:2375"]', 'YAML_KEY=[set]',
+    'MULTI=[set]', 'AFTER=[set]',
+    '/x/hostconfig.json:"NetworkMode":"host"', 'ssh: connect failed', '',
+  ]);
+  assert.ok(!/secret\d/.test(fs.readFileSync(r.observations[0].rawPath, 'utf8')));
 });

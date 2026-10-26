@@ -13,6 +13,7 @@
 // project.json. Output never reaches disk or the caller unscrubbed: `scrub: env` reduces NAME=value lines to NAME=[set], and
 // everything goes through redact().
 
+const fs = require('node:fs');
 const path = require('node:path');
 const util = require('node:util');
 const { which, run } = require('./lib/exec.cjs');
@@ -26,11 +27,14 @@ const store = require('./store.cjs');
 const DEFAULT_TIMEOUT_MS = 20000;
 const HTTP_TIMEOUT_MS = 15000;
 const MAX_TEXT = 100000;
-const SITE_PATH_RE = /^[A-Za-z0-9._/~-]+$/;
+const SITE_PATH_RE = /^[A-Za-z0-9._/-]+$/; // relative to the ssh user's home, or absolute; no ~ (single quotes stop tilde expansion)
 const SITE_PATH_TOKEN = '<sitePath>';
 const DEFAULT_SITE_PATH = 'public_html';
 const SSH_TARGET_RE = /^[^\s-]\S*$/; // one argv element that cannot read as an option
-const ENV_LINE = /^(\s*[A-Za-z_][A-Za-z0-9_.]*)=(.*)$/;
+// Assignment forms a scrub:env probe may print: [path:][export ]["]NAME[ ]=[ ]value, JSON "name": "value", and YAML-ish NAME: value.
+const ENV_ASSIGN = /^(\s*(?:export\s+)?(?:[^\s=:"']+:)?)\s*["']?([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*(.*)$/;
+const JSON_STRING_PAIR = /^(\s*)"([^"]+)"\s*:\s*"(.*)$/;
+const YAML_PAIR = /^(\s*)([A-Z_][A-Z0-9_.]*):\s+(\S.*)$/;
 const USAGE = 'usage: node scripts/infra-probe.cjs --project <slug> --system <id> [--probe <id>]... [--run <id>] [--json]';
 
 // ---- argv and scrubbing ---------------------------------------------------------------------
@@ -44,12 +48,35 @@ function sitePathOf(system) {
 
 const argvOf = (probe, system) => probe.argv.map((a) => a.split(SITE_PATH_TOKEN).join(sitePathOf(system)));
 
-// NAME=value becomes NAME=[set] (NAME= stays empty); lines that are not assignments pass unchanged.
+// Every assignment becomes NAME=[set] (NAME= when the value is empty). Handled: CRLF, `export`, spaces around `=`, a grep `path:` prefix,
+// "NAME=value", JSON string pairs ("name": "value"; booleans, numbers and arrays stay, they are settings, not secrets) and
+// NAME: value. A value that opens a quote it does not close on the same line swallows the following lines up to the closing
+// quote, and NAME=[set] is printed once. `NAME value` lines (the pack templates' allowlisted settings) and other text pass.
 function scrubEnv(text) {
-  return text.split('\n').map((line) => {
-    const m = ENV_LINE.exec(line);
-    return m ? (m[2].trim() === '' ? `${m[1]}=` : `${m[1]}=[set]`) : line;
-  }).join('\n');
+  const out = [];
+  let closing = null;
+  for (const raw of text.replace(/\r/g, '').split('\n')) {
+    if (closing !== null) {
+      if (raw.trimEnd().endsWith(closing)) closing = null;
+      continue;
+    }
+    let m = ENV_ASSIGN.exec(raw);
+    if (m) {
+      const value = m[3].trim();
+      const q = value[0] === '"' || value[0] === "'" ? value[0] : null;
+      if (q !== null && (value.length === 1 || !value.endsWith(q))) closing = q;
+      out.push(`${m[1]}${m[2]}=${value.replace(/^["']|["',;\s]+$/g, '') === '' ? '' : '[set]'}`);
+      continue;
+    }
+    m = JSON_STRING_PAIR.exec(raw);
+    if (m) {
+      out.push(`${m[1]}${m[2]}=${/^",?\s*$/.test(m[3]) ? '' : '[set]'}`);
+      continue;
+    }
+    m = YAML_PAIR.exec(raw);
+    out.push(m ? `${m[1]}${m[2]}=[set]` : raw);
+  }
+  return out.join('\n');
 }
 
 function scrubText(probe, text) {
@@ -148,27 +175,53 @@ async function runProbes({ project, system, pack, probes, timeoutMs = DEFAULT_TI
   const own = runId === undefined;
   const run0 = own ? store.createRun(project, { job: 'audit', layers: ['INFRA'], systems: [system], executor: 'local' }) : { runId };
   const id = run0.runId;
-  const observations = [];
-  const skipped = [];
+  // With --run and an observations.json already there (the full pass), this call adds to it: a probe run again replaces its
+  // earlier entry, and the run is never finished or skipped here.
+  const file = path.join(runDir(project, id), 'observations.json');
+  let before = null;
+  if (!own) {
+    try { before = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { before = null; }
+    if (before !== null && (typeof before !== 'object' || !Array.isArray(before.observations) || !Array.isArray(before.skipped))) before = null;
+  }
+  const merging = before !== null;
+  const observations = merging ? [...before.observations] : [];
+  const skipped = merging ? [...before.skipped] : [];
+  const put = (list, entry) => {
+    const at = list.findIndex((e) => e.probeId === entry.probeId);
+    if (at === -1) list.push(entry); else list[at] = entry;
+  };
+  const drop = (list, probeId) => {
+    const at = list.findIndex((e) => e.probeId === probeId);
+    if (at !== -1) list.splice(at, 1);
+  };
+  const note = (probeId, reason) => { drop(observations, probeId); put(skipped, { probeId, reason }); };
   let abort = null;
+  let attempted = false;
   try {
     for (const [i, probe] of chosen.entries()) {
       const started = Date.now();
       const out = probe.via === 'http' ? await viaHttp(probe, ctx.system)
         : probe.via === 'local' ? viaLocal(probe, ctx.system, timeoutMs)
           : viaSsh(probe, ctx.system, timeoutMs);
-      if (out.refused) { skipped.push({ probeId: probe.id, reason: out.refused }); continue; }
+      if (out.refused) { note(probe.id, out.refused); continue; }
+      const first = !attempted; // the first probe that really tried to reach the host
+      attempted = true;
       if (out.unreachable) {
         const reason = redact(out.unreachable);
-        skipped.push({ probeId: probe.id, reason });
-        if (i === 0) { abort = reason; for (const rest of chosen.slice(1)) skipped.push({ probeId: rest.id, reason: 'not run: host unreachable' }); break; }
+        note(probe.id, reason);
+        if (first && !merging) {
+          abort = reason;
+          for (const rest of chosen.slice(i + 1)) note(rest.id, 'not run: host unreachable');
+          break;
+        }
         continue;
       }
       const text = scrubText(probe, out.text);
       const rawPath = store.writeRaw(project, id, `probe-${probe.id}.txt`, text);
-      observations.push({ probeId: probe.id, via: probe.via, ok: out.exitCode === 0, exitCode: out.exitCode, durationMs: Date.now() - started, text, rawPath });
+      drop(skipped, probe.id);
+      put(observations, { probeId: probe.id, via: probe.via, ok: out.exitCode === 0, exitCode: out.exitCode, durationMs: Date.now() - started, text, rawPath });
     }
-    writeAtomic(path.join(runDir(project, id), 'observations.json'), `${JSON.stringify({ observations, skipped }, null, 2)}\n`);
+    writeAtomic(file, `${JSON.stringify({ observations, skipped }, null, 2)}\n`);
     let finished = run0;
     if (abort !== null) finished = store.finishRun(project, id, { status: 'skipped', reason: abort });
     else if (own) finished = store.finishRun(project, id, { status: 'done' });
