@@ -1,12 +1,24 @@
 ---
 name: rampart
-description: "Rampart: layered security and vulnerability reviews of all your systems. Available now: inventory (map a folder's systems into a project and record your owner attestation), audit L1 (secrets history, dependency and live security-header checks, then the score), doctor (which tools this machine has and what degrades without them) and dashboard --static (every project's score sheet as a local HTML page). L2, L3 and INFRA audits arrive with the hunt engine (Plan 2). Use when the user asks Rampart to inventory, audit, score or review the security of their projects and systems, or types /rampart."
+description: "Rampart: layered security and vulnerability reviews of all your systems. Available now: inventory (map a folder's systems into a project and record your owner attestation), audit L1 (secrets history, dependency and live security-header checks, then the score), doctor (which tools this machine has and what degrades without them), dashboard (every project's score sheet as a private live claude.ai dashboard whose owner can record decisions and queue jobs, synced both ways with the local store; or --static, a local HTML page), watch (run the jobs the live dashboard queued) and schedule (a weekly dashboard sync and the overdue L1 audits; --off removes it). L2, L3 and INFRA audits arrive with the hunt engine (Plan 2). Use when the user asks Rampart to inventory, audit, score or review the security of their projects and systems, or types /rampart."
 allowed-tools:
   - Read
   - Write
   - Glob
   - Grep
   - AskUserQuestion
+  - ToolSearch
+  - Skill(artifact-design)
+  - Skill(artifact-capabilities)
+  - Artifact
+  - ArtifactData
+  - ScheduleWakeup
+  - mcp__ccd_session_mgmt__get_session
+  - mcp__ccd_session_mgmt__set_remote_control
+  - mcp__scheduled-tasks__create_scheduled_task
+  - mcp__scheduled-tasks__delete_scheduled_task
+  - CronCreate
+  - CronDelete
   - Agent(rampart:inventory-mapper, rampart:explore)
   - Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/*.cjs" *)
   - Bash(git config user.name)
@@ -29,14 +41,16 @@ This is the front desk. Its whole purpose is to work out which job the user want
    | inventory; add, map or update a project or its systems | inventory | [inventory](${CLAUDE_SKILL_DIR}/jobs/inventory.md) |
    | audit or scan L1; secrets, dependencies, security headers | audit L1 | [audit](${CLAUDE_SKILL_DIR}/jobs/audit.md) |
    | doctor; what is installed, what is missing | doctor | [doctor](${CLAUDE_SKILL_DIR}/jobs/doctor.md) |
-   | dashboard, with or without `--static`; the score sheet page | dashboard | [dashboard](${CLAUDE_SKILL_DIR}/jobs/dashboard.md) |
+   | dashboard, with `--static` or `--sync`; publish, share or sync the live dashboard; the score sheet page | dashboard | [dashboard](${CLAUDE_SKILL_DIR}/jobs/dashboard.md) |
+   | watch, with `--once` or `--claim <jobId>`; run the jobs the live dashboard queued | watch | [watch](${CLAUDE_SKILL_DIR}/jobs/watch.md) |
+   | schedule, with `--weekly`, `--off` or `--run`; a weekly sync and the overdue L1 audits | schedule | [schedule](${CLAUDE_SKILL_DIR}/jobs/schedule.md) |
 
-   These are not in this version: L2, L3 and INFRA audits and `verify` (they arrive with the hunt engine, Plan 2); the live claude.ai dashboard, `watch` and `schedule` (Plan 3); `fix`, `import` and `evals` (Plan 4); `apply` and `refresh-packs` (later). For one of them, say in one line that it is not available yet and when it arrives, start nothing, and open the menu below. A question about Rampart itself (how it keeps you safe, how a score is worked out) is answered from the notes and paths below, with no menu.
+   These are not in this version: L2, L3 and INFRA audits and `verify` (they arrive with the hunt engine, Plan 2); `fix`, `import` and `evals` (Plan 4); `apply` and `refresh-packs` (later). For one of them, say in one line that it is not available yet and when it arrives, start nothing, and open the menu below. A question about Rampart itself (how it keeps you safe, how a score is worked out) is answered from the notes and paths below, with no menu.
 2. **Otherwise, open with the menu.** First run `node "${CLAUDE_PLUGIN_ROOT}/scripts/store.cjs" projects` (empty output means no projects yet). Then call AskUserQuestion once, single select, `header: "Job"`, `question: "What would you like to do?"`, offering exactly these four options and never others (the tool adds its own free-text entry):
    - **Audit L1**: "Secrets history, dependency and security-header checks on an inventoried project, then its score"
    - **Inventory**: "Map a folder's systems into a project and record your owner attestation"
    - **Doctor**: "See which tools this machine has and what degrades without them"
-   - **Dashboard**: "Open every project's score sheet as a local HTML page"
+   - **Dashboard**: "Publish or sync the live claude.ai dashboard, or open the local page with --static"
 
    With no projects, "Inventory" carries " (Recommended)" and goes first; otherwise "Audit L1" does, and the rest keep this order. The menu is the first thing the user sees: no text comes before it.
 3. **Then note auto mode once, Read the recipe and follow it.** As soon as the job is known, emit this exact line, once per session (skip it if this conversation already has it): "Rampart works best in auto mode. To enable it, press Shift+Tab until the status bar shows auto mode, or restart with `claude --permission-mode auto`." It is a note, not a question: never reword it, and do not diagnose the user's settings. Then Read the chosen job's recipe and follow it step by step, even when the request leaves nothing to ask.
@@ -46,7 +60,7 @@ This is the front desk. Its whole purpose is to work out which job the user want
 - [SCRIPTS](${CLAUDE_PLUGIN_ROOT}/scripts): every command a recipe runs is `node "${CLAUDE_PLUGIN_ROOT}/scripts/<name>.cjs" …`.
 - [SCORE RULES](${CLAUDE_SKILL_DIR}/specs/score.md): read it when the user asks how a score or grade was worked out.
 - [SCHEMAS](${CLAUDE_SKILL_DIR}/specs): `project-schema.json`, `finding-schema.json`, `run-schema.json`, `job-schema.json`.
-- [REPORT SPEC](${CLAUDE_SKILL_DIR}/specs/report-spec.md) and [DB LAYOUT](${CLAUDE_SKILL_DIR}/specs/db-layout.md): for the hunt engine (Plan 2) and the live dashboard (Plan 3); no job in this version reads them.
+- [REPORT SPEC](${CLAUDE_SKILL_DIR}/specs/report-spec.md) and [DB LAYOUT](${CLAUDE_SKILL_DIR}/specs/db-layout.md): the report spec is for the hunt engine (Plan 2); the DB layout describes the live dashboard's database, which the dashboard and watch jobs read and write.
 
 ## What to say about safety, if asked
 

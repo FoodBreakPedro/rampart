@@ -1,8 +1,10 @@
 'use strict';
 // The static dashboard (spec 5.7, "Without claude.ai"): dashboard/index.html with the store's data inlined, written to
 // ~/.rampart/dashboard.html. The page reads the <script id="rampart-data" type="application/json"> slot on load.
-//   buildData(now) -> {generatedAt, machineId, projects: [{project, score, findings, runs, dispositions}]}
+//   buildPage(now) -> {generatedAt, machineId, projects: [{project, score, findings, runs, dispositions}]}  (buildData is the old name)
+//   publicProject(project) -> the project without what must not leave the machine (the live dashboard's DB gets the same copy)
 //   renderStatic(outPath?) -> the absolute path written
+// The page data holds no ownerAttestation, no repo.paths, no ssh user or port and no query string on a live URL (publicProject), and a run carries no local folder or URL query in its text (publicRun, R51).
 // Every string in the data goes through redact() first. The store redacts finding text as it arrives, but other fields
 // (a run's reason, a disposition) come from elsewhere, and this page is the copy most likely to be shared, so it is the last
 // place a credential can be stopped. In the slot every "<" is written as <, so no text in the data can close the
@@ -14,6 +16,7 @@
 // Exit 0 ok, 2 bad arguments, 1 anything else (a corrupt store, say).
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const util = require('node:util');
 const store = require('./store.cjs');
@@ -61,18 +64,113 @@ function withSavedTrend(slug, score) {
   return saved && latest.score === score.score ? { ...score, trend: latest.trend } : score;
 }
 
+// The score the page shows for one project (see withSavedTrend). Throws when it cannot be scored (a bad cadence, a finding the
+// score table does not know), as score.cjs does: a page that quietly left it out would look better than it is.
+const projectScore = (slug, project, findings, runs, now) => withSavedTrend(slug, scoreProject(project, findings, runs, now));
+
+// The host name in an ssh target: user@host, user@host:port, ssh://user@host:port/, [v6]:port or a bare host. No user, no port.
+function hostnameOf(ssh) {
+  if (typeof ssh !== 'string') return '';
+  let target = ssh.trim().replace(/^ssh:\/\//i, '');
+  target = target.slice(target.lastIndexOf('@') + 1).split(/[/?#]/)[0];
+  const v6 = /^\[([^\]]*)\]/.exec(target);
+  if (v6) return v6[1];
+  return target.split(':').length === 2 ? target.split(':')[0] : target;
+}
+
+// A live URL as origin + pathname: no userinfo, query or fragment. Anything that is not an http(s) URL gives ''.
+function publicUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.origin + u.pathname : '';
+  } catch {
+    return '';
+  }
+}
+
+// A repo remote with any user before the host removed: https://token@github.com/o/r becomes https://github.com/o/r, and the
+// scp form git@github.com:o/r.git becomes github.com:o/r.git.
+const publicRemote = (remote) =>
+  remote.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/?#@]*@/i, '$1').replace(/^[^/:@\s]+@(?=[^/:@\s]+:)/, '');
+
+// A system with only the fields a viewer needs. An allowlist, because the system schema is open: a field added later stays
+// private until it is listed here.
+function publicSystem(system) {
+  const out = {};
+  for (const key of ['id', 'type', 'name', 'packs', 'criticality', 'executor', 'source', 'layers']) {
+    if (system[key] !== undefined) out[key] = system[key];
+  }
+  if (system.repo && typeof system.repo === 'object') {
+    out.repo = {};
+    if (typeof system.repo.remote === 'string') out.repo.remote = publicRemote(system.repo.remote);
+    if (typeof system.repo.defaultBranch === 'string') out.repo.defaultBranch = system.repo.defaultBranch;
+  }
+  if (system.host && typeof system.host === 'object') out.host = { hostname: hostnameOf(system.host.ssh) };
+  if (system.live && typeof system.live === 'object') {
+    const url = publicUrl(system.live.url);
+    if (url) out.live = { url };
+  }
+  return out;
+}
+
+// The project as the page, and the live dashboard's DB, may hold it: no ownerAttestation, and every system through publicSystem.
+function publicProject(project) {
+  const { ownerAttestation, ...rest } = project;
+  return { ...rest, systems: (Array.isArray(project.systems) ? project.systems : []).map(publicSystem) };
+}
+
+// A finding with its location.url reduced like a live url: a scan that fetched https://app.example/?token=... must not put the
+// query on the page. The stored finding keeps the full url. A url that is not http(s) loses only its query, fragment and userinfo.
+function publicFinding(finding) {
+  const loc = finding.location;
+  if (!loc || typeof loc !== 'object' || typeof loc.url !== 'string') return finding;
+  return { ...finding, location: { ...loc, url: publicUrl(loc.url) || publicRemote(loc.url.split(/[?#]/)[0]) } };
+}
+
+// Free text (a run's reason, its REPORT.md) with this machine's folders and URL queries taken out (R51): every repo.paths
+// value of the project becomes <repo>, the store folder <store> and the home folder ~, longest first, so a store under the
+// home folder reads <store> and not ~/.rampart. A URL keeps its scheme, host and path, never its ?query or #fragment.
+// Credentials are left to redact(), which runs after this.
+function scrubText(text, project) {
+  if (typeof text !== 'string') return text;
+  const swaps = [];
+  for (const system of project && Array.isArray(project.systems) ? project.systems : []) {
+    const paths = system && system.repo && system.repo.paths;
+    if (paths && typeof paths === 'object') {
+      for (const p of Object.values(paths)) if (typeof p === 'string' && p.length > 1) swaps.push([p, '<repo>']);
+    }
+  }
+  swaps.push([rampartHome(), '<store>']);
+  const home = os.homedir();
+  if (home && home.length > 1) swaps.push([home, '~']);
+  let out = text;
+  for (const [from, to] of swaps.sort((a, b) => b[0].length - a[0].length)) out = out.split(from).join(to);
+  return out.replace(/\b([a-z][a-z0-9+.-]*:\/\/[^\s?#"'<>`]*)[?#][^\s"'<>`)]*/gi, '$1');
+}
+
+// A run without any raw-output field (run.json holds none today; this keeps it that way if one is ever added), and with
+// every string in it scrubbed of local folders and URL queries.
+function publicRun({ raw, ...run }, project) {
+  const scrub = (value) => {
+    if (typeof value === 'string') return scrubText(value, project);
+    if (Array.isArray(value)) return value.map(scrub);
+    if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrub(v)]));
+    return value;
+  };
+  return scrub(run);
+}
+
 // Everything the page shows, for every project in the store, in slug order. Runs are the run.json objects (raw tool
-// output is never read); findings are the stored records. Throws when a project cannot be scored (a bad cadence, a finding
-// the score table does not know), as score.cjs does: a page that quietly left it out would look better than it is.
-function buildData(now = new Date()) {
+// output is never read); findings are the stored records.
+function buildPage(now = new Date()) {
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new TypeError('now must be a valid Date');
   const projects = store.listProjects().map((slug) => {
     const project = store.readProject(slug);
     const findings = store.readFindings(slug);
     const runs = store.readRuns(slug);
     const dispositions = store.readDispositions(slug);
-    const score = withSavedTrend(slug, scoreProject(project, findings, runs, now));
-    return redactDeep({ project, score, findings, runs, dispositions });
+    const score = projectScore(slug, project, findings, runs, now);
+    return redactDeep({ project: publicProject(project), score, findings: findings.map(publicFinding), runs: runs.map((r) => publicRun(r, project)), dispositions });
   });
   return { generatedAt: now.toISOString(), machineId: machineId(), projects };
 }
@@ -91,7 +189,7 @@ function fillTemplate(template, data) {
 // The page is written through a temp file and a rename (lib/atomic.cjs), so a reader never sees half a page.
 function renderStatic(outPath) {
   const file = outPath ? path.resolve(outPath) : path.join(rampartHome(), 'dashboard.html');
-  const html = fillTemplate(fs.readFileSync(TEMPLATE, 'utf8'), buildData());
+  const html = fillTemplate(fs.readFileSync(TEMPLATE, 'utf8'), buildPage());
   writeAtomic(file, html);
   return file;
 }
@@ -160,4 +258,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { buildData, renderStatic };
+module.exports = { buildPage, buildData: buildPage, publicProject, publicFinding, publicRun, scrubText, projectScore, redactDeep, renderStatic };

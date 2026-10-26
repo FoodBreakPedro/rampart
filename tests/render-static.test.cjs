@@ -8,7 +8,7 @@ const { spawnSync } = require('node:child_process');
 const store = require('../scripts/store.cjs');
 const { scoreProject } = require('../scripts/score.cjs');
 const { machineId } = require('../scripts/lib/paths.cjs');
-const { buildData, renderStatic } = require('../scripts/render-static.cjs');
+const { buildData, buildPage, publicProject, renderStatic } = require('../scripts/render-static.cjs');
 
 const RENDER = path.join(__dirname, '..', 'scripts', 'render-static.cjs');
 const TEMPLATE = path.join(__dirname, '..', 'dashboard', 'index.html');
@@ -150,7 +150,8 @@ test('buildData returns everything the detail view needs: project, score, findin
   assert.equal(data.projects.length, 1);
   const entry = data.projects[0];
   assert.deepEqual(Object.keys(entry).sort(), ['dispositions', 'findings', 'project', 'runs', 'score']);
-  assert.deepEqual(entry.project, store.readProject(SLUG));
+  assert.deepEqual(entry.project, publicProject(store.readProject(SLUG)), 'the project as publicProject leaves it');
+  assert.equal(buildData, buildPage, 'buildData is the old name of buildPage');
   const findings = store.readFindings(SLUG);
   assert.deepEqual(entry.score, scoreProject(store.readProject(SLUG), findings, store.readRuns(SLUG), NOW));
   assert.deepEqual(entry.runs, [run], 'the run.json objects');
@@ -501,4 +502,11 @@ test('CLI exits 1 on a corrupt store, naming the file and never quoting it', () 
   assert.match(r.stderr, /^render-static: findings\.jsonl line 1 is not valid JSON/);
   assert.ok(!r.stderr.includes('sk-ant'));
   assert.ok(!fs.existsSync(path.join(home, 'dashboard.html')));
+});
+
+test('R35: the page data-version equals .claude-plugin/plugin.json version', () => {
+  const html = fs.readFileSync(TEMPLATE, 'utf8');
+  const main = /<main\b[^>]*>/.exec(html)[0];
+  const version = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.claude-plugin', 'plugin.json'), 'utf8')).version;
+  assert.equal(/data-version="([^"]*)"/.exec(main)[1], version);
 });

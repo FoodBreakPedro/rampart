@@ -221,7 +221,7 @@ function upsertFindings(slug, findings, runId) {
   for (const incoming of new Map(findings.map((f) => [f.id, redactText(f)])).values()) {
     const cur = byId.get(incoming.id);
     if (!cur) {
-      byId.set(incoming.id, { ...incoming, status: 'open', firstSeen: stamp, lastSeen: stamp });
+      byId.set(incoming.id, { ...incoming, status: 'open', firstSeen: stamp, lastSeen: stamp, updatedAt: stamp });
       counts.added++;
     } else if (cur.status === 'false_positive' || cur.status === 'accepted_risk' || isRotatedHistoryLeak(cur)) {
       cur.lastSeen = stamp;
@@ -237,6 +237,7 @@ function upsertFindings(slug, findings, runId) {
       for (const k of changed) cur[k] = incoming[k];
       if (incoming.verification !== undefined) cur.verification = incoming.verification;
       cur.lastSeen = stamp;
+      if (changed.length || cur.status === 'fixed') cur.updatedAt = stamp; // the sync planner pushes on updatedAt
       if (cur.status === 'fixed') {
         cur.status = 'regressed';
         regressed.push(cur.id);
@@ -289,6 +290,7 @@ function closeMissing(slug, { system, source, runId, seenIds, filter } = {}) {
   const dispositions = readDispositions(slug);
   for (const f of closing) {
     f.status = 'fixed';
+    f.updatedAt = stamp;
     dispositions[f.id] = { status: 'fixed', reason: `not reproduced in run ${runId}`, by: 'rampart', at: stamp };
   }
   // Records first, as upsertFindings does: a crash in between leaves a record that findings.jsonl does not yet agree with,
@@ -308,14 +310,17 @@ function loadFinding(slug, id) {
 const readDispositions = (slug) => readJson(projectFile(slug, 'dispositions.json'), {});
 
 // Record the decision in dispositions.json and set the finding's status to match.
-function setDisposition(slug, id, { status, reason, by } = {}) {
+function setDisposition(slug, id, { status, reason, by, at } = {}) {
   checkSlug(slug);
   if (!DISPOSITIONS.includes(status)) throw new Error(`status must be one of ${DISPOSITIONS.join(', ')}`);
   const { findings, finding } = loadFinding(slug, id);
   const dispositions = readDispositions(slug);
-  dispositions[id] = { status, reason: redact(String(reason ?? '')), by: String(by ?? ''), at: now() };
+  // A pulled page decision keeps the time it was made (at); anything unparseable falls back to now.
+  const when = typeof at === 'string' && Number.isFinite(Date.parse(at)) ? at : now();
+  dispositions[id] = { status, reason: redact(String(reason ?? '')), by: String(by ?? ''), at: when };
   writeAtomic(projectFile(slug, 'dispositions.json'), toJson(dispositions));
   finding.status = status;
+  finding.updatedAt = now(); // the status changed now, whatever time the decision was made (the record keeps that), so a push never misses it
   writeFindings(slug, findings);
   return finding;
 }
@@ -326,6 +331,7 @@ function setClass(slug, id, cls, note) {
   if (!CLASSES.includes(cls)) throw new Error(`class must be one of ${CLASSES.join(', ')}`);
   const { findings, finding } = loadFinding(slug, id);
   finding.class = cls;
+  finding.updatedAt = now();
   if (note) finding.evidence = `${finding.evidence}; ${redact(String(note))}`;
   writeFindings(slug, findings);
   return finding;
@@ -364,7 +370,7 @@ function finishRun(slug, runId, patch = {}) {
   const run = readJson(file, null);
   if (!run) throw new Error(`no run ${runId} in project ${slug}`);
   const counts = isObject(patch.counts) ? { ...run.counts, ...patch.counts } : patch.counts ?? run.counts;
-  const merged = { ...run, ...patch, runId: run.runId, project: run.project, counts };
+  const merged = { ...run, ...patch, runId: run.runId, project: run.project, counts, updatedAt: patch.updatedAt || now() };
   if (FINAL_RUN_STATUSES.includes(patch.status)) merged.finishedAt = patch.finishedAt || now();
   assertValid('run', merged, 'run');
   writeAtomic(file, toJson(merged));
@@ -438,6 +444,89 @@ function appendScore(slug, snapshot) {
 
 const readScores = (slug) => readJsonl(projectFile(slug, 'scores.jsonl'), { tornTail: true });
 
+// ---- jobs (mirrored from the dashboard DB for the watch loop) -----------------------------
+
+const JOB_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const jobsDir = () => path.join(rampartHome(), 'jobs');
+
+function jobFile(id) {
+  if (typeof id !== 'string' || !JOB_ID_RE.test(id)) throw new RangeError('job id must be 1 to 64 characters of letters, digits, "-" and "_"');
+  return path.join(jobsDir(), `${id}.json`);
+}
+
+// Validates against job-schema.json and writes ~/.rampart/jobs/<id>.json. The job keeps its own updatedAt (the page's).
+function writeJob(job) {
+  assertValid('job', job, 'job');
+  writeAtomic(jobFile(job.id), toJson(job));
+  return job;
+}
+
+const readJob = (id) => readJson(jobFile(id), null);
+
+// Every mirrored job, oldest first by updatedAt; only those of one project when slug is given.
+function readJobs(slug) {
+  let names;
+  try {
+    names = fs.readdirSync(jobsDir());
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const jobs = names
+    .filter((n) => n.endsWith('.json') && JOB_ID_RE.test(n.slice(0, -5)))
+    .map((n) => readJson(path.join(jobsDir(), n), null))
+    .filter((j) => isObject(j) && (slug === undefined || j.project === slug));
+  return jobs.sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0));
+}
+
+// ---- the live dashboard's settings (config.json "dashboard") ------------------------------
+
+// Each field with the check its value must pass. url is the artifact's claude.ai link; ownerId is the page owner's opaque user
+// id (from the DB's meta/owner); pageHash names the published page version; scheduleId is the scheduled task that runs watch;
+// mcp is false when the page had to be published without the Claude Code Remote connector, so a republish leaves it out too.
+const OPAQUE_ID_RE = /^[A-Za-z0-9_.:@|+=-]{1,200}$/;
+const DASHBOARD_FIELDS = {
+  url: (v) => typeof v === 'string' && /^https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]{1,128}$/.test(v),
+  ownerId: (v) => typeof v === 'string' && OPAQUE_ID_RE.test(v),
+  publishedAt: (v) => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(v) && Number.isFinite(Date.parse(v)),
+  pageHash: (v) => typeof v === 'string' && /^[A-Za-z0-9_:+/=-]{8,200}$/.test(v),
+  remoteControl: (v) => typeof v === 'boolean',
+  scheduleId: (v) => typeof v === 'string' && OPAQUE_ID_RE.test(v),
+  mcp: (v) => typeof v === 'boolean',
+};
+const DASHBOARD_HINTS = {
+  url: 'an https://claude.ai/artifact/<id> or https://claude.ai/code/artifact/<id> link',
+  ownerId: 'an opaque id (letters, digits and _ . : @ | + = -, up to 200)',
+  publishedAt: 'an ISO date-time',
+  pageHash: 'a hash of 8 to 200 characters (letters, digits and _ : + / = -)',
+  remoteControl: 'true or false',
+  scheduleId: 'an opaque id (letters, digits and _ . : @ | + = -, up to 200)',
+  mcp: 'true or false',
+};
+
+// Every dashboard field, null when unset or when the stored value does not pass its check (a hand-edited config never
+// hands a recipe a malformed URL or owner id).
+function readDashboard() {
+  const cfg = readConfig();
+  const stored = isObject(cfg.dashboard) ? cfg.dashboard : {};
+  const out = {};
+  for (const [key, ok] of Object.entries(DASHBOARD_FIELDS)) out[key] = Object.hasOwn(stored, key) && ok(stored[key]) ? stored[key] : null;
+  return out;
+}
+
+// Sets only the given fields, each checked first (nothing is written when one fails), and keeps the rest of config.json.
+function setDashboard(patch) {
+  if (!isObject(patch) || !Object.keys(patch).length) throw new TypeError('setDashboard needs at least one field');
+  for (const [key, value] of Object.entries(patch)) {
+    if (!Object.hasOwn(DASHBOARD_FIELDS, key)) throw new RangeError(`unknown dashboard field ${key}`);
+    if (!DASHBOARD_FIELDS[key](value)) throw new RangeError(`dashboard ${key} must be ${DASHBOARD_HINTS[key]}`);
+  }
+  const cfg = readConfig();
+  const stored = isObject(cfg.dashboard) ? cfg.dashboard : {};
+  writeConfig({ ...cfg, dashboard: { ...stored, ...patch } });
+  return readDashboard();
+}
+
 // ---- CLI ----------------------------------------------------------------------------------
 
 class UsageError extends Error {}
@@ -451,9 +540,17 @@ const USAGE = [
   '                  [--new-since <iso>] [--id <id>] [--ids]',
   '  disposition <slug> <id> <status> --reason "<text>" [--by <name>]',
   '  set-class <slug> <id> <class> --note "<text>"',
+  '  dashboard                     (the live dashboard\'s settings; --json prints every field, null when unset)',
+  '  dashboard-set [--url <link>] [--owner-id <id>] [--published-at <iso>] [--page-hash <hash>]',
+  '                [--remote-control true|false] [--schedule-id <id>] [--mcp true|false]   (sets only the fields given)',
+  '  dashboard-set --clear <flag>  (removes one field, named by its flag: --clear schedule-id)',
 ].join('\n');
 
 const VALUE_FLAGS = ['status', 'reason', 'by', 'note', 'source', 'system', 'class', 'since', 'new-since', 'id'];
+const DASHBOARD_FLAGS = {
+  url: 'url', 'owner-id': 'ownerId', 'published-at': 'publishedAt', 'page-hash': 'pageHash', 'remote-control': 'remoteControl', 'schedule-id': 'scheduleId', mcp: 'mcp',
+};
+VALUE_FLAGS.push(...Object.keys(DASHBOARD_FLAGS), 'clear');
 const BOOLEAN_FLAGS = ['json', 'ids'];
 const FINDING_FILTERS = ['status', 'source', 'system', 'class', 'since', 'new-since', 'id'];
 const FINDING_ID_RE = /^[0-9a-f]{12}$/;
@@ -465,6 +562,8 @@ const VERBS = {
   findings: { args: ['slug'], flags: [...FINDING_FILTERS, 'ids'] },
   disposition: { args: ['slug', 'id', 'status'], flags: ['reason', 'by'], required: ['reason'] },
   'set-class': { args: ['slug', 'id', 'class'], flags: ['note'], required: ['note'] },
+  dashboard: { args: [], flags: [] },
+  'dashboard-set': { args: [], flags: [...Object.keys(DASHBOARD_FLAGS), 'clear'] },
 };
 
 function parseArgs(argv) {
@@ -576,6 +675,32 @@ const HANDLERS = {
     const f = setClass(slug, id, cls, note);
     return { text: `${f.id}  ${f.class}`, json: f };
   },
+  dashboard: () => {
+    const d = readDashboard();
+    return { text: Object.entries(d).map(([k, v]) => `${k}: ${v === null ? '(unset)' : v}`).join('\n'), json: d };
+  },
+  'dashboard-set': (_args, flags) => {
+    if (flags.clear !== undefined) {
+      if (!Object.hasOwn(DASHBOARD_FLAGS, flags.clear)) {
+        throw new UsageError(`--clear takes one of ${Object.keys(DASHBOARD_FLAGS).join(', ')}`);
+      }
+      if (Object.keys(DASHBOARD_FLAGS).some((f) => flags[f] !== undefined)) throw new UsageError('--clear goes on its own');
+      const key = DASHBOARD_FLAGS[flags.clear];
+      return { text: `${key} cleared`, json: clearDashboard(key) };
+    }
+    const patch = {};
+    for (const [flag, key] of Object.entries(DASHBOARD_FLAGS)) {
+      if (flags[flag] === undefined) continue;
+      if (key !== 'remoteControl' && key !== 'mcp') patch[key] = flags[flag];
+      else if (flags[flag] === 'true' || flags[flag] === 'false') patch[key] = flags[flag] === 'true';
+      else throw new UsageError(`--${flag} must be true or false`);
+    }
+    if (!Object.keys(patch).length) {
+      throw new UsageError(`dashboard-set needs at least one of ${Object.keys(DASHBOARD_FLAGS).map((f) => `--${f}`).join(', ')}`);
+    }
+    const d = setDashboard(patch);
+    return { text: `${Object.keys(patch).join(', ')} set`, json: d };
+  },
 };
 
 function main(argv) {
@@ -609,9 +734,24 @@ if (require.main === module) {
   }
 }
 
+// Removes one dashboard field (the schedule's id, once the schedule is off) and keeps the rest of config.json. Clearing a field
+// that is not set writes nothing.
+function clearDashboard(key) {
+  if (!Object.hasOwn(DASHBOARD_FIELDS, key)) throw new RangeError(`unknown dashboard field ${key}`);
+  const cfg = readConfig();
+  if (isObject(cfg.dashboard) && Object.hasOwn(cfg.dashboard, key)) {
+    const { [key]: _gone, ...rest } = cfg.dashboard;
+    writeConfig({ ...cfg, dashboard: rest });
+  }
+  return readDashboard();
+}
+
 module.exports = {
   listProjects, readProject, writeProject,
   readFindings, upsertFindings, closeMissing, readDispositions, setDisposition, setClass,
   createRun, finishRun, readRuns, writeRaw,
   readConfig, writeConfig, appendScore, readScores,
+  writeJob, readJob, readJobs,
+  readDashboard, setDashboard,
+  clearDashboard,
 };

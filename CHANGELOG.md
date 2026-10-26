@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0-alpha.1 — 2026-10-26
+
+The live dashboard (Plan 3). Acceptance was run against a live published artifact with fixture data.
+
+- **`/rampart dashboard` publishes a live claude.ai dashboard.** The page is a private artifact whose database is the record: projects, findings, runs, jobs, executors and meta. Only the owner can write; everyone else reads.
+- **Findings carry dispositions.** The owner marks a finding fixed, false positive or accepted risk from the page, with a reason for the last two, and the decision is signed with the owner's user id.
+- **Job buttons show cost and route before they queue anything.** A Run button queues a job with its estimated cost and the route that will run it (a local executor in this release). Only layers with an engine get a button (L1 for now).
+- **Settings live on the page.** The owner sets them in the dashboard and the executors read them from the database.
+- **Findings export as JSONL or SARIF.** SARIF 2.1.0 has one result per open finding, a stable fingerprint, no evidence text, and the plugin version as the tool version. The files are named `.jsonl.txt` and `.sarif.json` to fit the downloads allowlist.
+- **`/rampart dashboard --sync` mirrors the local store into the dashboard database.** It pulls the page's decisions, settings and jobs first, then writes versioned documents; once published, the database is the record of truth and the local store a cache plus each run's raw output.
+- **`/rampart watch` runs queued jobs.** It claims a job with a version-pinned write, so two executors never run one job. Use `/loop /rampart watch` to keep it running.
+- **`/rampart schedule` sets up a weekly sync and the overdue L1 audits.**
+- **Two hooks.** SessionStart adds a one-line note when a tool a stored project needs is missing, from a doctor report cached per day, and is silent otherwise. After a `git push` from a stored project's repo folder, the post-push hook suggests `/rampart audit L2 --project <slug>` once per session, but only once L2 is available (the hunt engine); on this release alone it stays silent.
+
+### Known limitations
+
+- No apply or fix yet; that is Plan 4.
+- Cloud runs are off in this release: every job runs on a local `/rampart watch` executor, even on a project that allows cloud. They arrive with a cloud executor in a later version. Remote Control is optional; with it, the page nudges a watch session to run a job at once.
+- Verify, L2, L3 and INFRA jobs wait for the hunt engine (Plan 2). The post-push L2 nudge and the verify sync line arrive when the branches meet.
+- Acceptance used fixture data, not a real audit's findings.
+
 ## 0.1.0-alpha.2 — 2026-10-23
 
 Fixes from the whole-branch review of alpha.1.

@@ -54,6 +54,8 @@ Let `<start>` be the earliest `run.startedAt` of this job's checks. This job's n
 - The new and regressed findings, highest severity first, at most ten, each by id, title, severity and location only; past ten, "and <N> more on the dashboard".
 - The grade, score and trend, and the dashboard path.
 
+Then the Live dashboard step at the end of this recipe.
+
 ## L2
 
 Arrives with the hunt engine (Plan 2).
@@ -65,3 +67,7 @@ Arrives with the hunt engine (Plan 2).
 ## INFRA
 
 Arrives with the hunt engine (Plan 2).
+
+## Live dashboard
+
+Every layer's job ends here. When `node "${CLAUDE_PLUGIN_ROOT}/scripts/store.cjs" dashboard --json` shows a `url`, follow the Sync section of [dashboard](${CLAUDE_SKILL_DIR}/jobs/dashboard.md) for this project, last, and add its one line to the summary; a failed sync is a note, not a failed audit. With no `url`, nothing more.
