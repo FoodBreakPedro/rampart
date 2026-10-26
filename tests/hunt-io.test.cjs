@@ -595,6 +595,29 @@ test('INFRA: init plans one prober for all probes; assemble covers observed prob
   assert.ok(!ledger.units[`db|INFRA|probe:${probes[0]}`]);
 });
 
+// Ten distinct candidates, the most a hunter may return: c1..c10 at <dir>/f<n>.ts (code) or on ten settings (INFRA).
+const tenCandidates = (dir, classId = 'authz-scoping') => Array.from({ length: 10 }, (_, i) => ({
+  ...rawCandidates('medium-idor')[0], ref: `c${i + 1}`, classId,
+  location: dir === null ? { host: 'db.example.test', service: 'auth', setting: `s${i + 1}` } : { path: `${dir}/f${i + 1}.ts`, symbol: 'GET' },
+}));
+
+test('R49: a hunter that hit the 10-candidate cap keeps its unit from closing findings, and the unit is marked capped', () => {
+  const s = setup({ units: ['app/api/users', 'lib'], hunters: [['app/api/users', 'authz-scoping'], ['lib', 'authz-scoping']] });
+  store.upsertFindings(SLUG, [
+    storedHunt('a'.repeat(12), 'web-nextjs/authz-scoping', 'app/api/users/gone.ts'),
+    storedHunt('b'.repeat(12), 'web-nextjs/authz-scoping', 'lib/gone.ts'),
+  ], OLD_RUN);
+  hio.writeCandidate(SLUG, s.runId, keyOf('app/api/users', 'authz-scoping'), tenCandidates('app/api/users'));
+  putCandidates(s, 'lib', 'authz-scoping', 'empty');
+  const res = hio.assemble(SLUG, s.runId);
+  assert.deepEqual(statusById(), { ['a'.repeat(12)]: 'open', ['b'.repeat(12)]: 'fixed' });
+  const doc = JSON.parse(fs.readFileSync(path.join(s.dir, 'units.json'), 'utf8'));
+  assert.equal(doc.units.find((u) => u.id === 'app/api/users').capped, true);
+  assert.equal(doc.units.find((u) => u.id === 'app/api/users').status, 'covered');
+  assert.ok(!('capped' in doc.units.find((u) => u.id === 'lib')));
+  assert.equal(res.counts.closed, 1);
+});
+
 // An INFRA run of system db as init plans it, with the prober returned ([] by default) and the given observations per probe id.
 function infraRun(observe, { candidates = [] } = {}) {
   store.writeProject(projectObject());
@@ -631,6 +654,20 @@ test('R48: an observation whose ok is not true (missing) is not covered either; 
   s = infraRun(() => null);
   assert.equal(hio.assemble(SLUG, s.runId).counts.closed, 1);
   assert.equal(statusById()['d'.repeat(12)], 'fixed');
+});
+
+test('R49: an INFRA prober at the cap keeps the whole system from closing findings', () => {
+  const s = infraRun(() => null);
+  // the prober's file, rewritten with ten candidates under the run's first host class
+  const doc = JSON.parse(fs.readFileSync(path.join(s.runDir, 'units.json'), 'utf8'));
+  fs.writeFileSync(path.join(s.runDir, 'candidates', 'db__infra-prober.json'), JSON.stringify(tenCandidates(null, doc.classes[0].classId)));
+  store.upsertFindings(SLUG, [infraFinding('d'.repeat(12))], OLD_RUN);
+  const res = hio.assemble(SLUG, s.runId);
+  assert.equal(res.counts.candidates, 10);
+  assert.equal(res.counts.closed, 0);
+  assert.equal(statusById()['d'.repeat(12)], 'open');
+  const after = JSON.parse(fs.readFileSync(path.join(s.runDir, 'units.json'), 'utf8'));
+  assert.ok(after.units.every((u) => u.status === 'covered' && u.capped === true));
 });
 
 test('fileKey maps every character outside [A-Za-z0-9._-] to +', () => {

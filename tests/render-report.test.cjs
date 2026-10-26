@@ -109,6 +109,17 @@ test('R47: Coverage names the classes hunted and Skips the classes the effort le
   assert.ok(!renderReport(SLUG, old.runId).includes('Classes not hunted'));
 });
 
+test('R49: capped units are named once under Skips', () => {
+  const { runId } = setup({ units: [
+    { id: 'app/api/users', kind: 'dir', files: 3, reachable: true, status: 'covered', capped: true },
+    { id: 'lib', kind: 'dir', files: 2, reachable: true, status: 'covered', capped: true },
+    { id: 'app/api/export', kind: 'dir', files: 2, reachable: true, status: 'covered' },
+  ] });
+  const skips = renderReport(SLUG, runId).split('## Skips')[1].split('## Score')[0];
+  assert.match(skips, /- A hunter returned the most candidates it may \(10\) in app\/api\/users, lib: there may be more, so findings there were not closed/);
+  assert.ok(!skips.includes('app/api/export'));
+});
+
 test('a skipped run puts its own reason under Skips', () => {
   const { runId } = setup({ layer: 'INFRA', system: 'db', units: [], runPatch: { status: 'skipped', reason: 'host unreachable (connect timeout)' } });
   const md = renderReport(SLUG, runId);

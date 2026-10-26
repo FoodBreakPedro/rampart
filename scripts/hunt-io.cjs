@@ -46,6 +46,7 @@ const RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
 const SLUG_RE = /^[a-z0-9-]{2,40}$/;
 const RUN_ID_RE = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$/;
 const REF_RE = /^c([1-9]|10)$/;
+const MAX_CANDIDATES = 10; // per hunter, as REF_RE allows
 const VOTE_FILE_RE = /^(.+)__(c(?:[1-9]|10))__([1-9][0-9]*)\.json$/;
 const JWT_RE = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/;
 const TOKEN_RE = /[A-Za-z0-9+=_-]{20,}/g; // no '/' or '.': paths and dotted identifiers are not tokens
@@ -592,9 +593,19 @@ function assemble(slug, runId) {
     const h = i.key ? (doc.hunters || []).find((x) => x.key === i.key) : null;
     for (const id of h ? (h.units || [h.unit]) : []) invalidIn.set(id, (invalidIn.get(id) || 0) + 1);
   }
-  const units = judgeUnits(doc, dir).map((u) => (invalidIn.has(u.id) ? { ...u, invalid: invalidIn.get(u.id) } : u));
+  // A hunter that returned the most candidates it may (10) may have stopped there: what it did not report is no evidence of a fix,
+  // so its unit (for the INFRA prober, every probe unit of the system) closes nothing, and the report says so.
+  const cappedIn = new Set();
+  for (const h of doc.hunters || []) {
+    if (candidates.filter((c) => c.hunter.agent === h.key).length >= MAX_CANDIDATES) for (const id of h.units || [h.unit]) cappedIn.add(id);
+  }
+  const units = judgeUnits(doc, dir).map((u) => {
+    let out = invalidIn.has(u.id) ? { ...u, invalid: invalidIn.get(u.id) } : u;
+    if (cappedIn.has(u.id)) out = { ...out, capped: true };
+    return out;
+  });
   const covered = units.filter((u) => u.status === 'covered');
-  const closable = covered.filter((u) => !u.invalid);
+  const closable = covered.filter((u) => !u.invalid && !u.capped);
   const t = tally(candidates, votes);
 
   const now = new Date().toISOString();

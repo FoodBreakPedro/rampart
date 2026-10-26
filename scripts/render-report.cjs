@@ -163,6 +163,8 @@ function skipsSection(run, units) {
     else if (u.status === 'planned') items.push(`${id}: not examined, the run ended before it was covered`);
     if (Number.isInteger(u.invalid) && u.invalid > 0) items.push(`${id}: ${u.invalid} invalid candidate(s) ignored; findings in this unit were not closed`);
   }
+  const capped = ((units && units.units) || []).filter((u) => u.capped === true).map((u) => u.id);
+  if (capped.length) items.push(`A hunter returned the most candidates it may (10) in ${unitList(capped)}: there may be more, so findings there were not closed`);
   return ['## Skips', '', items.length ? items.map((i) => `- ${i}`).join('\n') : 'Nothing was skipped.'].join('\n');
 }
 
