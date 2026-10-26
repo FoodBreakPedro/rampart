@@ -135,9 +135,43 @@ test('watch: every step that writes a job or executor document, and every claim,
   const writes = blocks(watch.text).filter((b) => /`(?:set|update|delete) (?:jobs|executors)\/[^`]*`|claim-patch/.test(b));
   assert.ok(writes.length >= 7, `only ${writes.length} write steps found`);
   for (const b of writes) assert.match(b, /`if_version`/, `not pinned: ${b.slice(0, 160)}`);
-  for (const b of blocks(watch.text).filter((x) => /`update [a-z]+\//.test(x))) {
-    assert.match(b, /`if_version` the version/, `an update must say which version it pins: ${b.slice(0, 160)}`);
+  // Every update says which version it pins; a set without it only where the text says it creates the document.
+  const sentenceAfter = (b, i) => b.slice(i).split(/\.(?:\s|$)/)[0];
+  let updates = 0;
+  let sets = 0;
+  for (const b of writes) {
+    for (const m of b.matchAll(/`(update|set) (?:jobs|executors)\/[^`]*`/g)) {
+      const rest = sentenceAfter(b, m.index);
+      if (m[1] === 'update') {
+        updates++;
+        assert.match(rest, /`if_version` the version/, `an update must say which version it pins: ${rest.slice(0, 160)}`);
+      } else {
+        sets++;
+        assert.match(rest, /creates the document|`if_version` the version/, `a set must pin a version or say it creates the document: ${rest.slice(0, 160)}`);
+      }
+    }
+    const unpinned = b.replace(/[^.]*creates the document[^.]*\./g, '');
+    assert.doesNotMatch(unpinned, /\b(?:no|without|omit|skip)\b[^.\n]*`if_version`/i, `an unpinned write: ${b.slice(0, 160)}`);
   }
+  assert.ok(updates >= 7 && sets >= 1, `${updates} updates and ${sets} sets found`);
+});
+
+test('watch: the next pass is scheduled on every pass, not only on an idle one', () => {
+  const step = /\n6\. \*\*Next pass\.\*\*([\s\S]*)$/.exec(watch.text);
+  assert.ok(step, 'step 6 exists');
+  const [lead, ...bullets] = step[1].split(/\n\s*- /);
+  assert.match(lead, /heartbeat as in step 4\.11\.\s*Then, every pass:/, 'the heartbeat is separate from the scheduling');
+  assert.doesNotMatch(lead, /no job ran this pass[^.]*,\s*then:/i, 'the scheduling is not conditioned on an idle pass');
+  assert.ok(bullets.some((b) => /^`ScheduleWakeup`/.test(b)), 'a ScheduleWakeup bullet follows');
+  for (const b of bullets) assert.doesNotMatch(b, /no job ran/i);
+});
+
+test('watch: job failures name the right cause and a stuck claim is handled', () => {
+  const t = watch.text;
+  assert.match(t, /names a target this project's inventory does not list"; so does an `audit` job with no `layer` and a `verify` job with no `findingId`/);
+  assert.doesNotMatch(t, /no `findingId`[^\n]*verify is not available/);
+  const running = blocks(t).find((b) => /\*\*Running\.\*\*/.test(b));
+  assert.match(running, /`get jobs\/<id>` once: still `claimed` and `claimedBy` this executor, redo the write with `if_version` the version just read/);
 });
 
 test('watch: the claim is a fresh read, a queued check, then a pinned update; a version conflict is a lost race', () => {
