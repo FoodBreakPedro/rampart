@@ -388,6 +388,26 @@ test('all units failed: the run finishes failed with a reason, never clean', () 
   assert.ok(Object.values(ledger.units).every((e) => e.status === 'failed'));
 });
 
+test('R50: fewer than half the planned units covered finishes the run failed; the covered units still reach the ledger', () => {
+  const units = ['a', 'b', 'c'];
+  let s = setup({ units, hunters: units.map((u) => [u, 'authz-scoping']) });
+  putCandidates(s, 'a', 'authz-scoping', 'empty');
+  hio.assemble(SLUG, s.runId);
+  let run = JSON.parse(fs.readFileSync(path.join(s.dir, 'run.json'), 'utf8'));
+  assert.equal(run.status, 'failed');
+  assert.equal(run.reason, 'only 1 of 3 units were covered');
+  assert.deepEqual(validate(loadSchema('run'), run), { ok: true, errors: [] });
+  assert.equal(store.readCoverage(SLUG).units[`${SYS}|${LAYER}|a`].status, 'covered');
+  // exactly half is enough
+  const four = ['a', 'b', 'c', 'd'];
+  s = setup({ units: four, hunters: four.map((u) => [u, 'authz-scoping']) });
+  putCandidates(s, 'a', 'authz-scoping', 'empty');
+  putCandidates(s, 'b', 'authz-scoping', 'empty');
+  hio.assemble(SLUG, s.runId);
+  run = JSON.parse(fs.readFileSync(path.join(s.dir, 'run.json'), 'utf8'));
+  assert.equal(run.status, 'done');
+});
+
 test('assemble counts land in run.json and validate against the run schema', () => {
   const s = setup();
   putCandidates(s, 'app/api/users', 'authz-scoping', 'medium-idor');

@@ -663,8 +663,10 @@ function assemble(slug, runId) {
     verified: t.verified.length, rejected: t.rejected.length, undecided: t.undecided.length,
     invalid: invalid.length,
   };
-  const failed = covered.length === 0;
-  store.finishRun(slug, runId, failed ? { status: 'failed', reason: 'no unit was covered', counts } : { status: 'done', counts });
+  // A run that covered fewer than half its planned units is not a finished audit of the layer (the score credits a done run in
+  // full): it finishes failed, though the units it did cover keep their place in the ledger and their closes.
+  const reason = covered.length === 0 ? 'no unit was covered' : covered.length < units.length / 2 ? `only ${covered.length} of ${units.length} units were covered` : null;
+  store.finishRun(slug, runId, reason ? { status: 'failed', reason, counts } : { status: 'done', counts });
   return { counts, invalid, findings: findings.map((f) => f.id), skipped: units.filter((u) => u.status === 'failed' || u.status === 'skipped') };
 }
 
