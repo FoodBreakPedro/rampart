@@ -1028,68 +1028,23 @@ test('jobs: confirming writes exactly the job doc, valid against the job schema'
   assert.deepEqual(mcp.calls, [], 'an executor without remote control is not nudged');
 });
 
-test('jobs: the cloud route calls create_session with the pinned prompt and stores the session id it returns', async () => {
-  const variants = [
-    [{ session_id: 'session-a' }, 'session-a'],
-    [{ id: 'session-b' }, 'session-b'],
-    [{ sessionId: 'session-c' }, 'session-c'],
-    [{}, null],
-    ['plain text', null],
-  ];
-  for (const [payload, expected] of variants) {
-    const mcp = stubMcp({ payload });
-    const { document, store } = await bootLive({ seed: jobSeed({ cloudAllowed: true }), user: ownerUser(), hash: '#p-example-app', mcp: mcp.ns });
-    const job = await queueFrom(document, store, layerButton(document, 'mobile', 'L1'));
-    assert.equal(job.executorKind, 'cloud');
-    assert.equal(mcp.calls.length, 1);
-    const [call] = mcp.calls;
-    assert.equal(call.server, REMOTE);
-    assert.equal(call.tool, 'create_session');
-    assert.deepEqual(Object.keys(call.input).sort(), ['prompt', 'source_url', 'title']);
-    assert.equal(call.input.prompt, `/rampart audit L1 --project example-app --system mobile --job ${job.id}`);
-    assert.equal(call.input.source_url, 'https://github.com/<owner>/example-app');
-    assert.ok(typeof call.input.title === 'string' && call.input.title.length > 0);
-    const updates = jobWrites(store).filter((w) => w.op === 'update');
-    if (expected) {
-      assert.equal(updates.length, 1, JSON.stringify(payload));
-      assert.equal(updates[0].path, `jobs/${job.id}`);
-      assert.deepEqual(Object.keys(updates[0].data).sort(), ['sessionId', 'updatedAt']);
-      assert.equal(updates[0].data.sessionId, expected);
-    } else {
-      assert.deepEqual(updates, [], `nothing stored for ${JSON.stringify(payload)}`);
-    }
-    const stored = await readDoc(store, `jobs/${job.id}`);
-    assert.equal(stored.status, 'queued');
-    assert.deepEqual(isValidJob(stored).errors, []);
-  }
-});
-
-test('jobs: a create_session rejection (or no mcp) keeps the job queued, tries once and says to start /rampart watch', async () => {
-  const cases = [
-    stubMcp({ reject: { code: 'tool_error', message: 'RAW-tool', retryable: true } }),
-    stubMcp({ reject: { code: 'server_not_connected', message: 'RAW-server' } }),
-    null,
-  ];
-  for (const mcp of cases) {
-    const { document, store, $, errors } = await bootLive({ seed: jobSeed({ cloudAllowed: true }), user: ownerUser(), hash: '#p-example-app', mcp: mcp && mcp.ns });
-    const job = await queueFrom(document, store, layerButton(document, 'mobile', 'L1'));
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    await settle();
-    if (mcp) assert.equal(mcp.calls.length, 1, 'never retried');
-    const writes = jobWrites(store);
-    assert.equal(writes.length, 2, 'the job doc, then the switch to local (R33)');
-    assert.equal(writes[1].op, 'update');
-    assert.deepEqual(Object.keys(writes[1].data).sort(), ['executorKind', 'updatedAt']);
-    assert.equal(writes[1].data.executorKind, 'local');
-    const stored = await readDoc(store, `jobs/${job.id}`);
-    assert.equal(stored.status, 'queued', 'it stays queued');
-    assert.equal(stored.executorKind, 'local', 'so a local watch can run it');
-    assert.deepEqual(isValidJob(stored).errors, []);
-    assert.doesNotMatch($('toast').textContent, /may have started/, 'a definite refusal is not ambiguous');
-    assert.match(rowFor(document, job.id).textContent, /Queued · start \/rampart watch/);
-    assert.match($('toast').textContent, /\/rampart watch/);
-    assert.doesNotMatch($('toast').textContent, /RAW-|\[object/);
-    assert.deepEqual(errors, []);
+test('jobs: cloud runs are gated (R50): a cloud-eligible job routes local, says why, and never calls create_session', async () => {
+  for (const remoteControl of [false, true]) {
+    const mcp = stubMcp({ payload: {} });
+    const { document, store } = await bootLive({ seed: jobSeed({ cloudAllowed: true, remoteControl }), user: ownerUser(), hash: '#p-example-app', mcp: mcp.ns });
+    await press(layerButton(document, 'mobile', 'L1'));
+    const sheetText = sheetOf(document).textContent;
+    assert.match(sheetText, /local executor/);
+    assert.match(sheetText, /cloud runs arrive in a later version/);
+    assert.doesNotMatch(sheetText, /cloud session/);
+    await press(document.getElementById('job-sheet-confirm'));
+    const job = jobSets(store)[0].data;
+    assert.equal(job.executorKind, 'local');
+    assert.deepEqual(isValidJob(job).errors, []);
+    assert.equal(mcp.calls.filter((c) => c.tool === 'create_session').length, 0);
+    // A local job still nudges an online remote-control executor.
+    assert.deepEqual(mcp.calls.map((c) => c.tool), remoteControl ? ['send_message'] : []);
+    assert.deepEqual(jobWrites(store).filter((w) => w.op === 'update'), [], 'no switch to local is needed');
   }
 });
 
@@ -1141,9 +1096,10 @@ test('jobs: an infra or host-backed job on a cloud-allowed project routes local 
   assert.equal(jobs.length, 3);
   assert.deepEqual(jobs.map((j) => j.executorKind), ['local', 'local', 'local']);
   assert.equal(mcp.calls.filter((c) => c.tool === 'create_session').length, 0);
-  // The same page does reach the cloud for the repo-backed system, so the check above is not vacuous.
-  await queueFrom(document, store, layerButton(document, 'mobile', 'L3'));
-  assert.equal(mcp.calls.filter((c) => c.tool === 'create_session').length, 1);
+  // The repo-backed system, which would have gone to the cloud, routes local too while cloud runs are gated (R50).
+  const repoJob = await queueFrom(document, store, layerButton(document, 'mobile', 'L3'));
+  assert.equal(repoJob.executorKind, 'local');
+  assert.equal(mcp.calls.filter((c) => c.tool === 'create_session').length, 0);
   for (const job of jobSets(store).map((w) => w.data)) assert.deepEqual(isValidJob(job).errors, []);
 });
 
@@ -1160,11 +1116,10 @@ test('jobs: "Verify still present" queues a verify job for the finding; fix and 
   assert.equal(job.type, 'verify');
   assert.equal(job.findingId, 'b71e04c9d2a8');
   assert.equal(job.system, 'mobile');
-  assert.equal(job.executorKind, 'cloud');
+  assert.equal(job.executorKind, 'local', 'cloud runs are gated (R50)');
   assert.deepEqual(job.costEstimate, jobsLib.costEstimate({ type: 'verify', openVerified: 1 }));
   assert.deepEqual(isValidJob(job).errors, []);
-  assert.equal(mcp.calls[0].input.prompt, `/rampart verify --project example-app --finding b71e04c9d2a8 --job ${job.id}`);
-  assert.equal(mcp.calls[0].input.source_url, 'https://github.com/<owner>/example-app');
+  assert.deepEqual(mcp.calls, [], 'no cloud session; the executor takes no remote messages');
 });
 
 test('jobs: rows show live status: claimed by the executor, running, done or failed with the summary, and a stale queued job', async () => {
@@ -1246,22 +1201,6 @@ test('jobs: the sheet names the local executor by machine, from local executors 
   assert.match(rowFor(document, job.id).textContent, /Queued · start \/rampart watch/);
 });
 
-test('jobs: an ambiguous create_session failure switches the job to local and says a cloud session may have started (R33)', async () => {
-  for (const code of ['server_unavailable', 'upstream_error']) {
-    const mcp = stubMcp({ reject: { code, message: 'RAW', retryable: true } });
-    const { document, store, $ } = await bootLive({ seed: jobSeed({ cloudAllowed: true }), user: ownerUser(), hash: '#p-example-app', mcp: mcp.ns });
-    const job = await queueFrom(document, store, layerButton(document, 'mobile', 'L1'));
-    await settle();
-    assert.equal(mcp.calls.length, 1, 'never retried');
-    const stored = await readDoc(store, `jobs/${job.id}`);
-    assert.equal(stored.executorKind, 'local');
-    assert.equal(stored.status, 'queued');
-    assert.match($('toast').textContent, /may have started/);
-    assert.match($('toast').textContent, /\/rampart watch/);
-    assert.doesNotMatch($('toast').textContent, /RAW/);
-  }
-});
-
 // A stale job of example-app on `system`, queued with `executorKind` long ago.
 function staleSeed({ cloudAllowed, remoteControl = false, system = 'mobile', layer = 'L1', executorKind }) {
   const seed = jobSeed({ cloudAllowed, remoteControl });
@@ -1297,20 +1236,15 @@ test('jobs: requeue re-routes on current data; a stale cloud job on a host-backe
   }
 });
 
-test('jobs: requeue dispatches on the fresh route: create_session when it is now cloud, send_message when local', async () => {
-  let mcp = stubMcp({ payload: { session_id: 'session-r' } });
-  let page = await requeueStale(staleSeed({ cloudAllowed: true, executorKind: 'local' }), mcp);
-  assert.equal(page.patch.executorKind, 'cloud');
-  assert.deepEqual(mcp.calls.map((c) => c.tool), ['create_session']);
-  assert.equal(mcp.calls[0].input.prompt, '/rampart audit L1 --project example-app --system mobile --job job-stale');
-  assert.equal((await readDoc(page.store, 'jobs/job-stale')).sessionId, 'session-r');
-
-  mcp = stubMcp({ payload: {} });
-  page = await requeueStale(staleSeed({ cloudAllowed: false, remoteControl: true, executorKind: 'local' }), mcp);
-  assert.equal(page.patch.executorKind, 'local');
-  assert.deepEqual(mcp.calls, [{
-    server: REMOTE, tool: 'send_message', input: { session_id: 'session-placeholder', message: '/rampart watch --claim job-stale' },
-  }]);
+test('jobs: requeue dispatches on the fresh route: a cloud-eligible job is local now and nudges with send_message (R50)', async () => {
+  for (const cloudAllowed of [true, false]) {
+    const mcp = stubMcp({ payload: {} });
+    const page = await requeueStale(staleSeed({ cloudAllowed, remoteControl: true, executorKind: cloudAllowed ? 'cloud' : 'local' }), mcp);
+    assert.equal(page.patch.executorKind, 'local');
+    assert.deepEqual(mcp.calls, [{
+      server: REMOTE, tool: 'send_message', input: { session_id: 'session-placeholder', message: '/rampart watch --claim job-stale' },
+    }]);
+  }
 });
 
 test('jobs: at confirm a requeue re-reads the job and does nothing when it is no longer queued (R30a)', async () => {

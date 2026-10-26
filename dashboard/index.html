@@ -748,8 +748,10 @@ const RampartDashboard = (function () {
     }
 
     // Where a job runs. Cloud only when the project allows it, the system has no host (a host is reached from here), the repo is on
-    // github.com and the work is not INFRA or apply. Anything else, and anything unreadable, is local.
+    // github.com and the work is not INFRA or apply. Anything else, and anything unreadable, is local. Cloud runs are gated off
+    // until a cloud executor exists (R50): with CLOUD_RUNS false, a job that would go to the cloud runs locally and says why.
     function route(args) {
+      const CLOUD_RUNS = false;
       const a = args || {};
       const project = a.project || {};
       const system = a.system || {};
@@ -759,6 +761,7 @@ const RampartDashboard = (function () {
       if (system.executor === 'local') return { executorKind: 'local', reason: 'this system is set to run locally' };
       if (project.cloudAllowed !== true) return { executorKind: 'local', reason: 'cloud is not allowed for this project' };
       if (!isGithubRemote(system.repo && system.repo.remote)) return { executorKind: 'local', reason: 'cloud needs a repo on github.com' };
+      if (!CLOUD_RUNS) return { executorKind: 'local', reason: 'cloud runs arrive in a later version' };
       return { executorKind: 'cloud', reason: 'repo on github.com and the project allows cloud' };
     }
 
@@ -2032,6 +2035,7 @@ const RampartDashboard = (function () {
 
   // Reach an executor for a queued job. Every refusal leaves it queued for /rampart watch; nothing is retried. A cloud job
   // whose session could not be started is switched to local first (R33), since a local watch leaves cloud jobs alone.
+  // While cloud runs are gated (Jobs.route, R50) no job routes to the cloud, so create_session is never called.
   async function dispatch(job, plan) {
     if (job.executorKind === 'cloud') {
       await startCloudSession(job, plan);
@@ -2398,7 +2402,7 @@ const RampartDashboard = (function () {
         }),
         h('label', { for: id('cloud') }, 'Allow cloud sessions')),
       h('p', { class: 'settings-why', id: id('cloud-why') }, eligible
-        ? 'Each job still runs in the cloud only on a system whose repo is on github.com and that is not reached through a host.'
+        ? 'Cloud runs arrive in a later version; until then every job runs on a local executor.'
         : 'Cloud sessions need a system whose repo is on github.com, and this project has none.'),
       settingsSelect(id('executor'), 'defaultExecutor', 'Default executor', [['local', 'Local'], ['cloud', 'Cloud']], now.defaultExecutor, busy),
       settingsSelect(id('effort'), 'huntEffort', 'L3 hunt effort', [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']], now.huntEffort, busy)),

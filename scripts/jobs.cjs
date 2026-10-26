@@ -114,8 +114,10 @@ function costEstimate(input) {
 }
 
 // Where a job runs. Cloud only when the project allows it, the system has no host (a host is reached from here), the repo is on
-// github.com and the work is not INFRA or apply. Anything else, and anything unreadable, is local.
+// github.com and the work is not INFRA or apply. Anything else, and anything unreadable, is local. Cloud runs are gated off
+// until a cloud executor exists (R50): with CLOUD_RUNS false, a job that would go to the cloud runs locally and says why.
 function route(args) {
+  const CLOUD_RUNS = false;
   const a = args || {};
   const project = a.project || {};
   const system = a.system || {};
@@ -125,6 +127,7 @@ function route(args) {
   if (system.executor === 'local') return { executorKind: 'local', reason: 'this system is set to run locally' };
   if (project.cloudAllowed !== true) return { executorKind: 'local', reason: 'cloud is not allowed for this project' };
   if (!isGithubRemote(system.repo && system.repo.remote)) return { executorKind: 'local', reason: 'cloud needs a repo on github.com' };
+  if (!CLOUD_RUNS) return { executorKind: 'local', reason: 'cloud runs arrive in a later version' };
   return { executorKind: 'cloud', reason: 'repo on github.com and the project allows cloud' };
 }
 

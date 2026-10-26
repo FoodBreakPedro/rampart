@@ -182,13 +182,14 @@ test('watch: the claim is a fresh read, a queued check, then a pinned update; a 
   assert.match(t, /lost race/);
 });
 
-test('watch: refuses without a URL or an owner id, refuses jobs the owner did not create, leaves cloud and apply jobs alone', () => {
+test('watch: refuses without a URL or an owner id, refuses jobs the owner did not create, leaves apply jobs alone and runs a cloud-marked one (R50)', () => {
   const t = watch.text;
   assert.match(t, /store\.cjs" dashboard --json/);
   assert.match(t, /`url` null[^\n]*stop/);
   assert.match(t, /`ownerId` null[^\n]*no job may run[^\n]*Stop/);
   assert.match(t, /`createdBy` is not exactly `ownerId`[^\n]*refusal-patch/);
-  assert.match(t, /`executorKind` is `cloud`/);
+  assert.match(t, /`executorKind` is `cloud`[^\n]*no cloud executor runs jobs in this version/);
+  assert.doesNotMatch(t, /a cloud session owns it/);
   assert.match(t, /`type` is `apply`/);
   for (const text of ['layer <L> is not available in this version', 'verify is not available in this version', 'not runnable from the dashboard in this version']) {
     assert.ok(t.includes(`"${text}"`), `fixed failure text: ${text}`);
@@ -377,4 +378,15 @@ test('schedule: the front desk routes to it, it is no longer "not in this versio
 test('minor 6: the cron-line id is recorded before the person installs the line, and --weekly then reports it scheduled', () => {
   const w = section(schedule.text, 'Weekly');
   assert.match(w, /`crontab:rampart-weekly` is recorded even before[^.]*installs? the line[^.]*already scheduled[^.]*`--off`/);
+});
+
+test('cloud runs are gated (R50): no recipe or changelog line promises them for this release', () => {
+  const inventory = recipes.find((r) => r.name === 'inventory.md').text;
+  assert.doesNotMatch(inventory, /cloud runs arrive with Plan 3/);
+  assert.match(inventory, /cloud runs arrive in a later version/);
+  const changelog = fs.readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8');
+  const release = changelog.slice(changelog.indexOf('## 0.3.0-alpha.1'), changelog.indexOf('## 0.1.0-alpha.2'));
+  assert.match(release, /[Cc]loud runs are off in this release/);
+  assert.doesNotMatch(release, /The cloud route needs a GitHub remote/);
+  assert.doesNotMatch(release, /or cloud\)/, 'the Run button line does not offer a cloud route');
 });

@@ -29,7 +29,7 @@ The live dashboard's buttons queue jobs in its database; a watch session on one 
 4. **The queue.** `ArtifactData query` on `jobs` with `query: {where: [["status", "==", "queued"]], order_by: {field: "confirmedAt", direction: "asc"}, limit: 50}`. Take the `--claim` job first when given, then the rest in that order. With none, go to step 6. For each job `<id>`, one at a time:
    1. **Id.** It must match `job-<8 digits>-<6 digits>-<4 hex>`; otherwise leave the job untouched and note it (an id of another shape never reaches a path or a command).
    2. **Fresh read.** `ArtifactData get jobs/<id>` with `out_dir: "<store.home>/watch"`. The result names the saved file, `<job file>`; Read it. The version is the one the result shows, or the file's `version` field.
-   3. **Leave it alone**, with no write, when its `status` is not `queued` (another executor has it), its `executorKind` is `cloud` (a cloud session owns it) or its `type` is `apply` (no executor runs apply in this version).
+   3. **Leave it alone**, with no write, when its `status` is not `queued` (another executor has it) or its `type` is `apply` (no executor runs apply in this version). A job whose `executorKind` is `cloud` is run here like any other: no cloud executor runs jobs in this version.
    4. **Not the owner's.** When `createdBy` is not exactly `ownerId`: run `node "${CLAUDE_PLUGIN_ROOT}/scripts/jobs.cjs" refusal-patch --job "<job file>"`, then `update jobs/<id>` with `data` the printed patch and `if_version` the version from the fresh read. Next job.
    5. **Runnable here.**
       - The `project` must be listed by `node "${CLAUDE_PLUGIN_ROOT}/scripts/store.cjs" projects`. Not listed: leave the job queued for a machine that holds the project, and note it.

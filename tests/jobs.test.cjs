@@ -116,11 +116,15 @@ test('costEstimate: results are integers; bad input throws', () => {
 
 // ---- routing --------------------------------------------------------------------------------
 
-test('route: a repo on github with cloud allowed goes to cloud', () => {
+// Cloud runs are gated off until a cloud executor exists (R50): where the route would have said cloud, it says local with
+// this reason. The other local reasons are unchanged, so each check below still tells them apart.
+const GATED = 'cloud runs arrive in a later version';
+const isGated = (r) => r.executorKind === 'local' && r.reason === GATED;
+
+test('route: a repo on github with cloud allowed routes local while cloud runs are gated (R50)', () => {
   const r = jobs.route({ project: cloudOk, system: repoSystem(), type: 'audit', layer: 'L2' });
-  assert.equal(r.executorKind, 'cloud');
-  assert.equal(typeof r.reason, 'string');
-  assert.ok(r.reason.length > 0 && r.reason.length < 120);
+  assert.equal(r.executorKind, 'local');
+  assert.equal(r.reason, GATED);
 });
 
 test('route: cloudAllowed false or absent stays local', () => {
@@ -144,8 +148,8 @@ test('route: apply never goes to cloud', () => {
 test('route: a system with executor local (host-backed) stays local; cloud and either do not block', () => {
   assert.equal(jobs.route({ project: cloudOk, system: hostSystem(), type: 'audit', layer: 'L2' }).executorKind, 'local');
   assert.equal(jobs.route({ project: cloudOk, system: repoSystem({ executor: 'local' }), type: 'audit', layer: 'L2' }).executorKind, 'local');
-  assert.equal(jobs.route({ project: cloudOk, system: repoSystem({ executor: 'cloud' }), type: 'audit', layer: 'L2' }).executorKind, 'cloud');
-  assert.equal(jobs.route({ project: cloudOk, system: repoSystem({ executor: 'either' }), type: 'audit', layer: 'L2' }).executorKind, 'cloud');
+  assert.ok(isGated(jobs.route({ project: cloudOk, system: repoSystem({ executor: 'cloud' }), type: 'audit', layer: 'L2' })));
+  assert.ok(isGated(jobs.route({ project: cloudOk, system: repoSystem({ executor: 'either' }), type: 'audit', layer: 'L2' })));
 });
 
 test('route: a host-backed system never goes to cloud, whatever its executor says', () => {
@@ -158,7 +162,12 @@ test('route: a host-backed system never goes to cloud, whatever its executor say
 });
 
 test('route: the remote must be on github.com, in any of the forms git uses', () => {
-  const kind = (remote) => jobs.route({ project: cloudOk, system: { id: 's', repo: { remote } }, type: 'audit', layer: 'L1' }).executorKind;
+  // A github.com remote reaches the gate; any other is turned away before it, with its own reason.
+  const kind = (remote) => {
+    const r = jobs.route({ project: cloudOk, system: { id: 's', repo: { remote } }, type: 'audit', layer: 'L1' });
+    assert.equal(r.executorKind, 'local');
+    return r.reason === GATED ? 'cloud' : 'local';
+  };
   for (const remote of [
     'github.com/acme/app',
     'github.com:acme/app.git',
@@ -205,7 +214,7 @@ test('route: the reason is non-empty for every outcome', () => {
     { project: cloudOk, system: { repo: { remote: 'gitlab.com/a/b' } } },
   ]) {
     const r = jobs.route(args);
-    assert.ok(['local', 'cloud'].includes(r.executorKind));
+    assert.equal(r.executorKind, 'local', 'no route reaches the cloud while it is gated');
     assert.ok(typeof r.reason === 'string' && r.reason.length > 0);
   }
 });
@@ -361,7 +370,7 @@ test('CLI cost: the same numbers as the function', () => {
 test('CLI route: from a project file or from the store, picking the system by id', () => {
   const project = { name: 'Example', cloudAllowed: true, systems: [repoSystem(), hostSystem()] };
   const file = writeTmp('project.json', project);
-  assert.equal(cliJson(['route', '--project-file', file, '--system', 'web', '--type', 'audit', '--layer', 'L2']).executorKind, 'cloud');
+  assert.ok(isGated(cliJson(['route', '--project-file', file, '--system', 'web', '--type', 'audit', '--layer', 'L2'])));
   assert.equal(cliJson(['route', '--project-file', file, '--system', 'box', '--type', 'audit', '--layer', 'L2']).executorKind, 'local');
   assert.equal(cliJson(['route', '--project-file', file, '--system', 'web', '--type', 'audit', '--layer', 'INFRA']).executorKind, 'local');
   const out = cliJson(['route', '--project-file', file, '--system', 'web', '--type', 'apply']);
@@ -376,7 +385,7 @@ test('CLI route: from a project file or from the store, picking the system by id
     if (saved === undefined) delete process.env.RAMPART_HOME;
     else process.env.RAMPART_HOME = saved;
   }
-  assert.equal(cliJson(['route', '--project', 'example-app', '--system', 'mobile', '--type', 'audit', '--layer', 'L1']).executorKind, 'cloud');
+  assert.ok(isGated(cliJson(['route', '--project', 'example-app', '--system', 'mobile', '--type', 'audit', '--layer', 'L1'])));
 });
 
 test('CLI route without --system is a usage error, not a routing decision', () => {
