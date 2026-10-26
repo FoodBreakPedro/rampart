@@ -78,3 +78,12 @@ test('T13: the dashboard offers all four layers, the README no longer caps grade
   assert.equal(tools.filter((t) => t.startsWith('Agent(')).length, 1, 'one Agent(...) entry');
   for (const job of ['audit.md', 'verify.md']) assert.ok(fs.existsSync(path.join(ROOT, 'skills', 'rampart', 'jobs', job)), job);
 });
+
+test('T14: a script the recipes run with no arguments (render-static) is pre-approved too, not only scripts run with arguments', () => {
+  const tools = frontMatter(read('skills', 'rampart', 'SKILL.md'), 'allowed-tools');
+  assert.ok(tools.includes('Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/*.cjs" *)'));
+  const recipes = ['SKILL.md', 'role.md', ...fs.readdirSync(path.join(ROOT, 'skills', 'rampart', 'jobs')).map((f) => `jobs/${f}`)];
+  const bare = recipes.some((file) => /`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/[a-z0-9-]+\.cjs"`/.test(read('skills', 'rampart', ...file.split('/'))));
+  assert.ok(bare, 'some recipe runs a script with no arguments');
+  assert.ok(tools.includes('Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/*.cjs")'), 'a rule that ends in " *" does not match a command with no arguments');
+});

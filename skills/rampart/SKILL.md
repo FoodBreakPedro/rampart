@@ -10,6 +10,7 @@ allowed-tools:
   - Agent(rampart:inventory-mapper, rampart:explore, rampart:hunter, rampart:verifier, rampart:infra-prober)
   - Workflow
   - Workflow(rampart:audit)
+  - Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/*.cjs")
   - Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/*.cjs" *)
   - Bash(git config user.name)
   - Bash(git remote get-url *)
