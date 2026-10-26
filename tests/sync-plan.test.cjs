@@ -108,6 +108,32 @@ test('the page data and the pushed docs hold no paths, ssh user, query string, o
   assert.ok(outputs.buildPage.includes('PASSWORD=[REDACTED]'), 'the credential is redacted in place');
 });
 
+test('R51: a run reason and report with a repo path, the home folder, the store and a URL query reach neither the page nor the push', () => {
+  seed();
+  const repoPath = '/srv/private/db';
+  const storePath = home; // RAMPART_HOME: the store folder
+  const homePath = os.homedir();
+  const reason = `gitleaks failed in ${repoPath}/src: see ${storePath}/projects/${SLUG}/runs/x/raw.json, ${homePath}/.npmrc and `
+    + `https://api.example.invalid/v1/scan?key=${PLANTED_QUERY}#frag-${PLANTED_QUERY}`;
+  const run = store.createRun(SLUG, { job: 'audit', layers: ['L1'], systems: ['db'], executor: 'local' });
+  fs.writeFileSync(path.join(runDir(SLUG, run.runId), 'REPORT.md'), `# Report\n\n${reason}\n`);
+  store.finishRun(SLUG, run.runId, { status: 'failed', reason });
+  const page = buildPage(NOW);
+  const plan = planPush(SLUG, { now: NOW });
+  const outputs = { buildPage: JSON.stringify(page), planPush: JSON.stringify(plan) };
+  for (const [what, out] of Object.entries(outputs)) {
+    assert.ok(!out.includes(repoPath), `${what}: no repo path`);
+    assert.ok(!out.includes(storePath), `${what}: no store path`);
+    assert.ok(!out.includes(homePath), `${what}: no home path`);
+    assert.ok(!out.includes(PLANTED_QUERY), `${what}: no URL query or fragment`);
+  }
+  const pageRun = page.projects[0].runs.find((r) => r.runId === run.runId);
+  assert.equal(pageRun.reason, `gitleaks failed in <repo>/src: see <store>/projects/${SLUG}/runs/x/raw.json, ~/.npmrc and https://api.example.invalid/v1/scan`);
+  const doc = plan.docs.find((d) => d.collection === 'runs' && d.id === run.runId).data;
+  assert.equal(doc.reason, pageRun.reason);
+  assert.ok(doc.reportMd.includes(pageRun.reason), 'the report is scrubbed the same way');
+});
+
 test('publicProject keeps only repo.remote/defaultBranch, host.hostname and live.url as origin plus pathname', () => {
   seed();
   const p = publicProject(store.readProject(SLUG));

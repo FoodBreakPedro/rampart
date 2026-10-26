@@ -15,7 +15,7 @@
 // decisions by people the later one stands; the same decision pulled twice applies once; an automated (by 'rampart') page disposition applies only when its doc is newer than the
 // local finding; for jobs and project settings the newer updatedAt wins.
 // Nothing private is planned: projects go through publicProject, findings are the stored (redacted) records, and a run doc
-// carries its summary and REPORT.md, never raw tool output. Packs docs are not planned yet (Plan 2 owns packs).
+// carries its summary and REPORT.md, never raw tool output, with local folders and URL queries scrubbed (R51). Packs docs are not planned yet (Plan 2 owns packs).
 // CLI: node scripts/sync-plan.cjs push --project <slug> [--since <iso>] [--versions <file.json>] --out <dir>
 //      node scripts/sync-plan.cjs pull --project <slug> --in <file-or-dir>
 // push writes <dir>/docs/<collection>/<id>.json per doc and <dir>/batches.json = {cursor, batches: [[{op, collection,
@@ -44,7 +44,7 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const util = require('node:util');
 const store = require('./store.cjs');
-const { publicProject, publicFinding, projectScore, redactDeep } = require('./render-static.cjs');
+const { publicProject, publicFinding, publicRun, scrubText, projectScore, redactDeep } = require('./render-static.cjs');
 const { runDir, machineId } = require('./lib/paths.cjs');
 const { redact } = require('./lib/redact.cjs');
 const { writeAtomic } = require('./lib/atomic.cjs');
@@ -131,11 +131,12 @@ function findingDoc(f, dispositions) {
   return { collection: 'findings', id: f.id, data: redactDeep(data) };
 }
 
-function runDoc(slug, run) {
-  const { raw, ...summary } = run;
-  const data = { ...summary, updatedAt: run.updatedAt || run.finishedAt };
+// A run summary as the DB holds it: publicRun's copy (no raw output, no local folder, no URL query; R51) and its REPORT.md
+// scrubbed the same way.
+function runDoc(slug, run, project) {
+  const data = { ...publicRun(run, project), updatedAt: run.updatedAt || run.finishedAt };
   const report = readReport(slug, run.runId);
-  if (report !== null) data.reportMd = fitReport(report, data);
+  if (report !== null) data.reportMd = fitReport(scrubText(report, project), data);
   return { collection: 'runs', id: run.runId, data: redactDeep(data) };
 }
 
@@ -185,7 +186,7 @@ function planPush(slug, { since, versions = {}, now = new Date() } = {}) {
   const docs = [];
   if (changedAfter(cut, project.updated, lastScore && lastScore.at)) docs.push(projectDoc(slug, project, findings, runs, now));
   for (const f of findings) if (changedAfter(cut, f.updatedAt, f.lastSeen)) docs.push(findingDoc(f, dispositions));
-  for (const run of runs) if (changedAfter(cut, run.updatedAt, run.finishedAt)) docs.push(runDoc(slug, run));
+  for (const run of runs) if (changedAfter(cut, run.updatedAt, run.finishedAt)) docs.push(runDoc(slug, run, project));
   return { docs, batches: toBatches(docs, versions), cursor };
 }
 

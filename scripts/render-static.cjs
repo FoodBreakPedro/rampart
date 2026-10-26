@@ -4,7 +4,7 @@
 //   buildPage(now) -> {generatedAt, machineId, projects: [{project, score, findings, runs, dispositions}]}  (buildData is the old name)
 //   publicProject(project) -> the project without what must not leave the machine (the live dashboard's DB gets the same copy)
 //   renderStatic(outPath?) -> the absolute path written
-// The page data holds no ownerAttestation, no repo.paths, no ssh user or port and no query string on a live URL (publicProject).
+// The page data holds no ownerAttestation, no repo.paths, no ssh user or port and no query string on a live URL (publicProject), and a run carries no local folder or URL query in its text (publicRun, R51).
 // Every string in the data goes through redact() first. The store redacts finding text as it arrives, but other fields
 // (a run's reason, a disposition) come from elsewhere, and this page is the copy most likely to be shared, so it is the last
 // place a credential can be stopped. In the slot every "<" is written as <, so no text in the data can close the
@@ -16,6 +16,7 @@
 // Exit 0 ok, 2 bad arguments, 1 anything else (a corrupt store, say).
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const util = require('node:util');
 const store = require('./store.cjs');
@@ -126,8 +127,38 @@ function publicFinding(finding) {
   return { ...finding, location: { ...loc, url: publicUrl(loc.url) || publicRemote(loc.url.split(/[?#]/)[0]) } };
 }
 
-// A run without any raw-output field. run.json holds none today; this keeps it that way if one is ever added.
-const publicRun = ({ raw, ...run }) => run;
+// Free text (a run's reason, its REPORT.md) with this machine's folders and URL queries taken out (R51): every repo.paths
+// value of the project becomes <repo>, the store folder <store> and the home folder ~, longest first, so a store under the
+// home folder reads <store> and not ~/.rampart. A URL keeps its scheme, host and path, never its ?query or #fragment.
+// Credentials are left to redact(), which runs after this.
+function scrubText(text, project) {
+  if (typeof text !== 'string') return text;
+  const swaps = [];
+  for (const system of project && Array.isArray(project.systems) ? project.systems : []) {
+    const paths = system && system.repo && system.repo.paths;
+    if (paths && typeof paths === 'object') {
+      for (const p of Object.values(paths)) if (typeof p === 'string' && p.length > 1) swaps.push([p, '<repo>']);
+    }
+  }
+  swaps.push([rampartHome(), '<store>']);
+  const home = os.homedir();
+  if (home && home.length > 1) swaps.push([home, '~']);
+  let out = text;
+  for (const [from, to] of swaps.sort((a, b) => b[0].length - a[0].length)) out = out.split(from).join(to);
+  return out.replace(/\b([a-z][a-z0-9+.-]*:\/\/[^\s?#"'<>`]*)[?#][^\s"'<>`)]*/gi, '$1');
+}
+
+// A run without any raw-output field (run.json holds none today; this keeps it that way if one is ever added), and with
+// every string in it scrubbed of local folders and URL queries.
+function publicRun({ raw, ...run }, project) {
+  const scrub = (value) => {
+    if (typeof value === 'string') return scrubText(value, project);
+    if (Array.isArray(value)) return value.map(scrub);
+    if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrub(v)]));
+    return value;
+  };
+  return scrub(run);
+}
 
 // Everything the page shows, for every project in the store, in slug order. Runs are the run.json objects (raw tool
 // output is never read); findings are the stored records.
@@ -139,7 +170,7 @@ function buildPage(now = new Date()) {
     const runs = store.readRuns(slug);
     const dispositions = store.readDispositions(slug);
     const score = projectScore(slug, project, findings, runs, now);
-    return redactDeep({ project: publicProject(project), score, findings: findings.map(publicFinding), runs: runs.map(publicRun), dispositions });
+    return redactDeep({ project: publicProject(project), score, findings: findings.map(publicFinding), runs: runs.map((r) => publicRun(r, project)), dispositions });
   });
   return { generatedAt: now.toISOString(), machineId: machineId(), projects };
 }
@@ -227,4 +258,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { buildPage, buildData: buildPage, publicProject, publicFinding, projectScore, redactDeep, renderStatic };
+module.exports = { buildPage, buildData: buildPage, publicProject, publicFinding, publicRun, scrubText, projectScore, redactDeep, renderStatic };
