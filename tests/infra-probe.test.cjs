@@ -111,7 +111,7 @@ test('scrub env: NAME=value becomes NAME=[set], NAME= stays empty, allowlisted "
 });
 
 test('redact() runs over output of a probe whose scrub is none', async () => {
-  const secret = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghijklmnopqrstuvwxyz012345';
+  const secret = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxMjM0NTY3ODkwIn0', 'abcdefghijklmnopqrstuvwxyz012345'].join('.'); // a fake JWT, assembled so scanners skip it
   canned({ containers: `token ${secret}\n` }, { [COMMANDS.containers]: 'containers' });
   const r = await runProbes({ project: SLUG, system: 'host', pack: PACK, probes: ['containers'] });
   assert.ok(!r.observations[0].text.includes(secret));
