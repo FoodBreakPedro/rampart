@@ -157,3 +157,11 @@ Task 11: review 1 → Approved (no Critical/Important)
 Task 11: minor (deferred): agent value-token test ≥2 digits misses AWS-style ids/letter-only secrets (exempt identifier shapes instead); probe-id uniqueness test per type only (assert global); prober doesn't say what to do on runner exit 1; normalizeCandidate falls back to named[0] when pack missing/wrong (Task 6 parser); example evidence overclaims TLS proxy; ${CLAUDE_PLUGIN_ROOT} expansion in subagent tool pattern unverified (T13/T14 live check)
 Task 11: complete (commits 956b4e5..7fdef49, review clean)
 Task 12: dispatched (sonnet, base 7fdef49; context task-12-context.md, R41)
+Task 12: implementer DONE_WITH_CONCERNS 2a82ba7 (ruleId claude-security/<cwe_id>; job import; fixture outside CLAUDE-SECURITY-* dir due to .gitignore; merge into fixed → regressed; --json omits skipped list; re-import counts merged 3 unchanged 3)
+Task 12: review 1 → Needs fixes (I1 merge into a fixed finding goes through upsertFindings and re-opens it as regressed with a made-up "reappeared" disposition from a possibly stale report)
+Ruling R43: an import never changes a finding's status — merge targets whose status is fixed, false_positive or accepted_risk get only the external id recorded (and the higher verification) by a write that leaves status/disposition/lastSeen untouched; open/regressed targets merge through upsertFindings as now — an import carries no freshness, and the record's own "regressed" must come from a Rampart sighting — cost if wrong: a genuinely reappeared flaw is not re-opened until Rampart's own audit sees it. Also ruled in (cheap, count correctness): dedupe records that resolve to the same finding id within one report (keep the stronger, count once), and include `skipped` (line + fixed reason) in --json.
+Task 12: minor (deferred): no size cap on JSONL read; "merged" label on re-import could read "matched"
+Task 12: fix round 1/5 (3 addressed, 0 open — R43 annotateFinding, in-report dedupe, --json skipped; commits 2a82ba7..b8e84fe)
+Task 12: minor (deferred): R43 residual — a no-CWE record whose computed id equals a stored fixed finding's id goes via upsert and regresses it (rare); test .slice(0,2) order-dependent
+Task 12: complete (commits ca97a31..b8e84fe, review clean)
+Task 13: dispatched (opus, context task-13-context.md)
