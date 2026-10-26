@@ -136,3 +136,16 @@ Task 9: minor (deferred → final review): `.rampart-publish/` fallback in the u
 Task 9: minor (deferred): R40 "empty is failed" wording edge when the owner list is legitimately empty
 Task 9: minor (deferred): republish with mcp from a null state does not record mcp true (harmless)
 Task 9: complete (commits 72dd2d5..62ead13, review clean)
+Task 10: dispatched (BASE e539bac, Opus implementer)
+Ruling R43: schedule.md adds `--run` (the scheduled prompt is `/rampart schedule --run`, steps live in the recipe) — a scheduled fresh session cannot carry a multi-step prompt reliably — cost: one extra flag.
+Ruling R44: Task 10 adds "schedule" to SKILL.md's description (amends R37: description named by Task 9 before schedule existed) — cost: none.
+Task 10: review: 1 Important (R44 description — ruled after dispatch, so not the implementer's miss) + 1 plan-mandated (post-push suggests L2, unavailable on this branch) + minors 1,2,6 folded into fix round 1
+Ruling R45: post-push suggests `/rampart audit L2 --project <slug>` only when the plugin's audit.md L2 section has steps (same availability test watch.md uses); otherwise it stays silent and does not use up the session's once — the branch may merge before Plan 2 — cost: no push nudge until Plan 2 lands.
+Ruling R46: session-start's detached `spawn(process.execPath, [own script])` is a justified deviation from "every external call through exec.run" — exec.run is synchronous and cannot detach; no shell, plugin's own script — cost: none.
+Task 10: minor (deferred): test race with the detached refresher after afterEach rm (assertions unaffected)
+Task 10: minor (deferred): push detection limits (`git -C`, `cd x && git push`, `echo "git push"`) — note in header comment
+Task 10: fix round 1/5 (5 addressed, 0 open — R44 description, R45 gated L2 nudge, spawn error listener, lock finally, crontab id note; commits 45c02e3..9b1964b)
+Task 10: minor (deferred): Minor-1 test is a source regex (spawn error not portably triggerable)
+Task 10: minor (deferred): l2Available couples to the exact "Arrives with the hunt engine" wording (same as watch.md); revisit at the Plan 2 merge
+Task 10: minor (deferred): CronCreate arguments described in prose, unverified
+Task 10: complete (commits e539bac..9b1964b, review clean)
