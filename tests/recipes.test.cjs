@@ -317,3 +317,55 @@ test('R40: the viewer check compares a view-level list of projects with the owne
 test('Minor 1: the sync names where its projects come from', () => {
   assert.match(section(dashboard.text, 'Sync'), /store\.cjs" projects`/);
 });
+
+// ---- schedule (Task 10) ----------------------------------------------------------------------
+
+const schedule = recipes.find((r) => r.name === 'schedule.md');
+
+test('schedule: the recipe exists with --weekly, --off and the scheduled run', () => {
+  assert.ok(schedule, 'jobs/schedule.md exists');
+  for (const name of ['Weekly', 'Off', 'Run']) assert.ok(section(schedule.text, name), `schedule.md has a "## ${name}" section`);
+  assert.match(schedule.text, /`\/rampart schedule \[--weekly \| --off\]`/);
+});
+
+test('schedule: confirms with AskUserQuestion before creating, and tries the schedulers in the order the brief gives', () => {
+  const w = section(schedule.text, 'Weekly');
+  const ask = w.indexOf('AskUserQuestion');
+  const order = ['mcp__scheduled-tasks__create_scheduled_task', 'CronCreate', 'claude -p'].map((s) => w.indexOf(s));
+  assert.ok(ask >= 0, 'asks first');
+  for (const at of order) assert.ok(at > ask, 'every scheduler comes after the question');
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'scheduled-tasks, then CronCreate, then the printed cron line');
+  assert.match(w, /store\.cjs" dashboard-set --schedule-id scheduled-tasks:<taskId>/);
+  assert.match(w, /store\.cjs" dashboard-set --schedule-id cron:<id>/);
+  assert.match(w, /store\.cjs" dashboard-set --schedule-id crontab:rampart-weekly/);
+  assert.match(w, /\/rampart schedule --run/, 'the scheduled prompt runs the Run section');
+});
+
+test('schedule: --off removes the task with the tool its id names, then clears the id', () => {
+  const off = section(schedule.text, 'Off');
+  assert.match(off, /mcp__scheduled-tasks__delete_scheduled_task/);
+  assert.match(off, /CronDelete/);
+  assert.match(off, /crontab/);
+  assert.match(off, /store\.cjs" dashboard-set --clear schedule-id/);
+});
+
+test('schedule: the run syncs the dashboard, then audits L1 only on systems whose L1 is overdue, asking nothing', () => {
+  const run = section(schedule.text, 'Run');
+  const sync = run.indexOf('Sync');
+  const audit = run.indexOf('/rampart audit L1 --project <slug> --system <id>');
+  assert.ok(sync >= 0 && audit > sync, 'sync first, then the audits');
+  assert.match(run, /score\.cjs" <slug> --json --no-save/);
+  assert.match(run, /`nextDue`/);
+  assert.match(run, /ask nothing/i);
+});
+
+test('schedule: the front desk routes to it, it is no longer "not in this version", and its tools are allowed', () => {
+  const skill = fs.readFileSync(path.join(SKILL_DIR, 'SKILL.md'), 'utf8');
+  assert.match(skill, /\| schedule[^|]*\| schedule \| \[schedule\]\(\$\{CLAUDE_SKILL_DIR\}\/jobs\/schedule\.md\) \|/);
+  const notYet = /These are not in this version:[^\n]*/.exec(skill)[0];
+  assert.doesNotMatch(notYet, /schedule/);
+  const head = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skill)[1];
+  for (const tool of ['mcp__scheduled-tasks__create_scheduled_task', 'mcp__scheduled-tasks__delete_scheduled_task', 'CronCreate', 'CronDelete']) {
+    assert.match(head, new RegExp(`^\\s*-\\s*${escape(tool)}\\s*$`, 'm'), `allowed-tools has ${tool}`);
+  }
+});

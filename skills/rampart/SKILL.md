@@ -15,6 +15,10 @@ allowed-tools:
   - ScheduleWakeup
   - mcp__ccd_session_mgmt__get_session
   - mcp__ccd_session_mgmt__set_remote_control
+  - mcp__scheduled-tasks__create_scheduled_task
+  - mcp__scheduled-tasks__delete_scheduled_task
+  - CronCreate
+  - CronDelete
   - Agent(rampart:inventory-mapper, rampart:explore)
   - Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/*.cjs" *)
   - Bash(git config user.name)
@@ -39,8 +43,9 @@ This is the front desk. Its whole purpose is to work out which job the user want
    | doctor; what is installed, what is missing | doctor | [doctor](${CLAUDE_SKILL_DIR}/jobs/doctor.md) |
    | dashboard, with `--static` or `--sync`; publish, share or sync the live dashboard; the score sheet page | dashboard | [dashboard](${CLAUDE_SKILL_DIR}/jobs/dashboard.md) |
    | watch, with `--once` or `--claim <jobId>`; run the jobs the live dashboard queued | watch | [watch](${CLAUDE_SKILL_DIR}/jobs/watch.md) |
+   | schedule, with `--weekly`, `--off` or `--run`; a weekly sync and the overdue L1 audits | schedule | [schedule](${CLAUDE_SKILL_DIR}/jobs/schedule.md) |
 
-   These are not in this version: L2, L3 and INFRA audits and `verify` (they arrive with the hunt engine, Plan 2); `schedule` (Plan 3); `fix`, `import` and `evals` (Plan 4); `apply` and `refresh-packs` (later). For one of them, say in one line that it is not available yet and when it arrives, start nothing, and open the menu below. A question about Rampart itself (how it keeps you safe, how a score is worked out) is answered from the notes and paths below, with no menu.
+   These are not in this version: L2, L3 and INFRA audits and `verify` (they arrive with the hunt engine, Plan 2); `fix`, `import` and `evals` (Plan 4); `apply` and `refresh-packs` (later). For one of them, say in one line that it is not available yet and when it arrives, start nothing, and open the menu below. A question about Rampart itself (how it keeps you safe, how a score is worked out) is answered from the notes and paths below, with no menu.
 2. **Otherwise, open with the menu.** First run `node "${CLAUDE_PLUGIN_ROOT}/scripts/store.cjs" projects` (empty output means no projects yet). Then call AskUserQuestion once, single select, `header: "Job"`, `question: "What would you like to do?"`, offering exactly these four options and never others (the tool adds its own free-text entry):
    - **Audit L1**: "Secrets history, dependency and security-header checks on an inventoried project, then its score"
    - **Inventory**: "Map a folder's systems into a project and record your owner attestation"

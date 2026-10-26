@@ -543,13 +543,14 @@ const USAGE = [
   '  dashboard                     (the live dashboard\'s settings; --json prints every field, null when unset)',
   '  dashboard-set [--url <link>] [--owner-id <id>] [--published-at <iso>] [--page-hash <hash>]',
   '                [--remote-control true|false] [--schedule-id <id>] [--mcp true|false]   (sets only the fields given)',
+  '  dashboard-set --clear <flag>  (removes one field, named by its flag: --clear schedule-id)',
 ].join('\n');
 
 const VALUE_FLAGS = ['status', 'reason', 'by', 'note', 'source', 'system', 'class', 'since', 'new-since', 'id'];
 const DASHBOARD_FLAGS = {
   url: 'url', 'owner-id': 'ownerId', 'published-at': 'publishedAt', 'page-hash': 'pageHash', 'remote-control': 'remoteControl', 'schedule-id': 'scheduleId', mcp: 'mcp',
 };
-VALUE_FLAGS.push(...Object.keys(DASHBOARD_FLAGS));
+VALUE_FLAGS.push(...Object.keys(DASHBOARD_FLAGS), 'clear');
 const BOOLEAN_FLAGS = ['json', 'ids'];
 const FINDING_FILTERS = ['status', 'source', 'system', 'class', 'since', 'new-since', 'id'];
 const FINDING_ID_RE = /^[0-9a-f]{12}$/;
@@ -562,7 +563,7 @@ const VERBS = {
   disposition: { args: ['slug', 'id', 'status'], flags: ['reason', 'by'], required: ['reason'] },
   'set-class': { args: ['slug', 'id', 'class'], flags: ['note'], required: ['note'] },
   dashboard: { args: [], flags: [] },
-  'dashboard-set': { args: [], flags: Object.keys(DASHBOARD_FLAGS) },
+  'dashboard-set': { args: [], flags: [...Object.keys(DASHBOARD_FLAGS), 'clear'] },
 };
 
 function parseArgs(argv) {
@@ -679,6 +680,14 @@ const HANDLERS = {
     return { text: Object.entries(d).map(([k, v]) => `${k}: ${v === null ? '(unset)' : v}`).join('\n'), json: d };
   },
   'dashboard-set': (_args, flags) => {
+    if (flags.clear !== undefined) {
+      if (!Object.hasOwn(DASHBOARD_FLAGS, flags.clear)) {
+        throw new UsageError(`--clear takes one of ${Object.keys(DASHBOARD_FLAGS).join(', ')}`);
+      }
+      if (Object.keys(DASHBOARD_FLAGS).some((f) => flags[f] !== undefined)) throw new UsageError('--clear goes on its own');
+      const key = DASHBOARD_FLAGS[flags.clear];
+      return { text: `${key} cleared`, json: clearDashboard(key) };
+    }
     const patch = {};
     for (const [flag, key] of Object.entries(DASHBOARD_FLAGS)) {
       if (flags[flag] === undefined) continue;
@@ -725,6 +734,18 @@ if (require.main === module) {
   }
 }
 
+// Removes one dashboard field (the schedule's id, once the schedule is off) and keeps the rest of config.json. Clearing a field
+// that is not set writes nothing.
+function clearDashboard(key) {
+  if (!Object.hasOwn(DASHBOARD_FIELDS, key)) throw new RangeError(`unknown dashboard field ${key}`);
+  const cfg = readConfig();
+  if (isObject(cfg.dashboard) && Object.hasOwn(cfg.dashboard, key)) {
+    const { [key]: _gone, ...rest } = cfg.dashboard;
+    writeConfig({ ...cfg, dashboard: rest });
+  }
+  return readDashboard();
+}
+
 module.exports = {
   listProjects, readProject, writeProject,
   readFindings, upsertFindings, closeMissing, readDispositions, setDisposition, setClass,
@@ -732,4 +753,5 @@ module.exports = {
   readConfig, writeConfig, appendScore, readScores,
   writeJob, readJob, readJobs,
   readDashboard, setDashboard,
+  clearDashboard,
 };

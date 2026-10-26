@@ -1371,3 +1371,39 @@ test('R42: dashboard mcp records whether the published page declares the Remote 
   assert.equal(cli('dashboard-set', '--mcp', 'maybe').status, 2);
   assert.equal(JSON.parse(cli('dashboard', '--json').stdout).mcp, false);
 });
+
+// ---- the schedule's id (Task 10) --------------------------------------------------------------
+
+test('T10: scheduleId takes the ids the schedulers hand back, prefixed with the scheduler', () => {
+  for (const id of ['scheduled-tasks:rampart-weekly', 'scheduled-tasks:rampart-weekly-2', 'cron:8f3a2c1d', 'crontab:rampart-weekly']) {
+    assert.equal(store.setDashboard({ scheduleId: id }).scheduleId, id);
+  }
+});
+
+test('T10: clearDashboard removes a field; CLI dashboard-set --clear <flag> does the same and keeps the rest', () => {
+  store.writeConfig({ other: 1 });
+  store.setDashboard({ url: DASH_URL, scheduleId: 'cron:8f3a2c1d' });
+  assert.equal(store.clearDashboard('scheduleId').scheduleId, null);
+  assert.throws(() => store.clearDashboard('colour'), RangeError);
+  assert.ok(!Object.hasOwn(store.readConfig().dashboard, 'scheduleId'), 'the key is gone, not stored as null');
+  store.setDashboard({ scheduleId: 'scheduled-tasks:rampart-weekly' });
+  const r = cli('dashboard-set', '--clear', 'schedule-id', '--json');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).scheduleId, null);
+  assert.equal(store.readDashboard().url, DASH_URL);
+  assert.equal(store.readConfig().other, 1);
+  const again = cli('dashboard-set', '--clear', 'schedule-id');
+  assert.equal(again.status, 0, 'clearing an unset field is fine');
+  assert.equal(again.stdout, 'scheduleId cleared\n');
+});
+
+test('T10: dashboard-set --clear refuses an unknown field, and a field both set and cleared', () => {
+  store.setDashboard({ url: DASH_URL, scheduleId: 'cron:8f3a2c1d' });
+  const before = readText(path.join(home, 'config.json'));
+  for (const args of [['--clear', 'colour'], ['--clear', 'scheduleId'], ['--clear'], ['--clear', 'schedule-id', '--schedule-id', 'cron:1']]) {
+    const r = cli('dashboard-set', ...args);
+    assert.equal(r.status, 2, args.join(' '));
+    assert.equal(r.stdout, '');
+  }
+  assert.equal(readText(path.join(home, 'config.json')), before);
+});
