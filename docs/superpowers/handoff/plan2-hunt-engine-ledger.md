@@ -131,3 +131,10 @@ Ruling R35: the workflow never logs or returns candidate titles or evidence (hun
 Task 8: fix round 1/5 (5 addressed, 0 open — I1 classText, M1–M3, confirmed-vote round trip; commits af0ef91..c749522)
 Task 8: minor (deferred): hunter.md data-not-instructions paragraph says "Report it as a candidate" without the unit-file qualifier (points to the qualified section)
 Task 8: complete (commits 218e63c..c749522, review clean)
+Task 9: dispatched (opus, base c3ef8e5; context task-9-context.md, workflow-api.md)
+Task 9: implementer DONE_WITH_CONCERNS 1b230c0,15b9afa (pipeline stub semantics unconfirmed till T14; validator ignores workflows/ — plugin discovery unconfirmed; paths fallback text)
+Task 9: controller check — claude-security plugin ships workflows/scan.js with agentType 'claude-security:<agent>', so plugin workflows/ discovery and agentType naming match (implementer concern 2 resolved). It also parses args when they arrive as a JSON string.
+Task 9: review 1 → Approved (no Critical/Important)
+Task 9: minor (deferred): stage 1 `(item)=>` relies on pipeline passing the item as prevResult — use `(_, item)`; paths-missing fallback widens L2 hunt; HUNTER/VERDICT schemas lack additionalProperties:false; untested stage-2-throw and failedUnits dedup; args arriving as a JSON string not parsed (claude-security's scan.js parses them)
+Ruling R36: Task 9's deferred minors M1 (stage-1 `(_, item)`) and JSON-string args go to the Task 13 implementer (it wires the Workflow call and may touch workflows/audit.js) — both could break the first live run in Task 14 — cost: Task 13 diff grows slightly.
+Task 9: complete (commits c3ef8e5..15b9afa, review clean)
