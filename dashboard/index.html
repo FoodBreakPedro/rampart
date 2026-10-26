@@ -575,7 +575,7 @@ tr.is-stale .status-queued { color: var(--warn); background: var(--warn-bg); }
   </div>
 </header>
 
-<main class="wrap" id="main" data-engines='["L1"]' data-access="read">
+<main class="wrap" id="main" data-engines='["L1"]' data-version="0.3.0-alpha.1" data-access="read">
   <section id="loading-view" class="empty" aria-labelledby="loading-heading" hidden>
     <h1 id="loading-heading" class="empty-title">Loading the live dashboard</h1>
     <p class="empty-hint">Reading projects, findings and runs from this dashboard's data. When there is none, this page shows how to fill it.</p>
@@ -1190,6 +1190,7 @@ const RampartDashboard = (function () {
   const state = {
     data: null, entries: [], view: null, slug: null, filters: Object.assign({}, DEFAULT_FILTERS), returnTo: null,
     engines: DEFAULT_ENGINES.slice(),
+    version: '', // the plugin version, from <main data-version>; it names the SARIF tool version
     live: null, // the live source, in live mode
     access: 'read', // 'write' only for the owner with db write access (canWrite)
     userId: null, // the writer's user id, which signs a decision's `by`; read only when access is 'write'
@@ -2545,7 +2546,7 @@ const RampartDashboard = (function () {
     const slug = entry.project.slug;
     const findings = list(entry.findings).filter(isObject);
     const file = kind === 'sarif'
-      ? { filename: `${slug}-findings.sarif.json`, data: `${JSON.stringify(toSarif(findings), null, 2)}\n` }
+      ? { filename: `${slug}-findings.sarif.json`, data: `${JSON.stringify(toSarif(findings, { toolVersion: state.version }), null, 2)}\n` }
       : { filename: `${slug}-findings.jsonl.txt`, data: `${findings.map((f) => JSON.stringify(f)).join('\n')}\n` };
     state.exporting = true;
     rerender();
@@ -2968,6 +2969,7 @@ const RampartDashboard = (function () {
 
   function boot() {
     const main = $('main');
+    if (main && main.hasAttribute('data-version')) state.version = String(main.getAttribute('data-version') || '');
     if (main && main.hasAttribute('data-engines')) state.engines = parseEngines(main.getAttribute('data-engines'));
     $('carousel-prev').addEventListener('click', () => scrollCards(-1));
     $('carousel-next').addEventListener('click', () => scrollCards(1));

@@ -503,3 +503,10 @@ test('CLI exits 1 on a corrupt store, naming the file and never quoting it', () 
   assert.ok(!r.stderr.includes('sk-ant'));
   assert.ok(!fs.existsSync(path.join(home, 'dashboard.html')));
 });
+
+test('R35: the page data-version equals .claude-plugin/plugin.json version', () => {
+  const html = fs.readFileSync(TEMPLATE, 'utf8');
+  const main = /<main\b[^>]*>/.exec(html)[0];
+  const version = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.claude-plugin', 'plugin.json'), 'utf8')).version;
+  assert.equal(/data-version="([^"]*)"/.exec(main)[1], version);
+});
