@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.0-alpha.1 — 2026-10-26
+
+The live dashboard (Plan 3). Acceptance was run against a live published artifact with fixture data.
+
+- **`/rampart dashboard` publishes a live claude.ai dashboard.** The page is a private artifact whose database is the record: projects, findings, runs, jobs, executors and meta. Only the owner can write; everyone else reads.
+- **Findings carry dispositions.** The owner marks a finding fixed, false positive or accepted risk from the page, with a reason for the last two, and the decision is signed with the owner's user id.
+- **Job buttons show cost and route before they queue anything.** A Run button queues a job with its estimated cost and the route that will run it (local executor or cloud). Only layers with an engine get a button (L1 for now).
+- **Settings live on the page.** The owner sets them in the dashboard and the executors read them from the database.
+- **Findings export as JSONL or SARIF.** SARIF 2.1.0 has one result per open finding, a stable fingerprint, no evidence text, and the plugin version as the tool version. The files are named `.jsonl.txt` and `.sarif.json` to fit the downloads allowlist.
+- **`/rampart dashboard --sync` mirrors the local store into the dashboard database.** It writes versioned documents and leaves the local store as the source for audits.
+- **`/rampart watch` runs queued jobs.** It claims a job with a version-pinned write, so two executors never run one job. Use `/loop /rampart watch` to keep it running.
+- **`/rampart schedule` sets up a weekly sync and the overdue L1 audits.**
+- **Two hooks.** SessionStart reports what is queued or overdue; the post-push hook syncs after a push.
+
+### Known limitations
+
+- No apply or fix yet; that is Plan 4.
+- The cloud route needs a GitHub remote and the Claude Code Remote connector, whose interface is unverified. Remote Control is optional.
+- Verify, L2, L3 and INFRA jobs wait for the hunt engine (Plan 2). The post-push L2 nudge and the verify sync line arrive when the branches meet.
+- Acceptance used fixture data, not a real audit's findings.
+
 ## 0.1.0-alpha.2 — 2026-10-23
 
 Fixes from the whole-branch review of alpha.1.
