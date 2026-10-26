@@ -206,3 +206,80 @@ test('watch: every patch comes from jobs.cjs, Remote Control is recorded through
   assert.match(t, /120-second delay/);
   assert.match(t, /Sync section of \[dashboard\]\(\$\{CLAUDE_SKILL_DIR\}\/jobs\/dashboard\.md\)/);
 });
+
+// ---- dashboard: publish and sync -------------------------------------------------------------
+
+const dashboard = recipes.find((r) => r.name === 'dashboard.md');
+const section = (text, title) => {
+  const m = new RegExp(`\\n## ${escape(title)}\\r?\\n([\\s\\S]*?)(?=\\n## |$)`).exec(text);
+  return m ? m[1] : null;
+};
+
+test('dashboard: has the "## Sync" section watch.md points at', () => {
+  assert.ok(section(dashboard.text, 'Sync'), 'dashboard.md has a section titled exactly "Sync"');
+  assert.match(watch.text, /Sync section of \[dashboard\]/);
+});
+
+test('dashboard: the first publish asks first, declares the capabilities and records the settings through the store CLI', () => {
+  const pub = section(dashboard.text, 'Publish');
+  assert.ok(pub, 'a Publish section');
+  const ask = pub.indexOf('Publish the Rampart dashboard as a private claude.ai artifact?');
+  const call = pub.search(/Publish with the `Artifact` tool/);
+  assert.ok(ask >= 0 && call > ask, 'the question comes before the publish');
+  for (const s of ['`artifact-design`', '`artifact-capabilities`', 'db-rules.json', '`icon: "shield"`', '`title: "Rampart Dashboard"`', 'downloads: true', 'user: {}',
+    'Claude Code Remote', 'create_session', 'send_message', 'get_session', 'list_sessions', 'list_environments']) {
+    assert.ok(pub.includes(s), `Publish names ${s}`);
+  }
+  assert.match(pub, /store\.cjs" dashboard-set --url <url> --published-at <now> --page-hash <hash>/);
+  assert.match(pub, /sync-plan\.cjs" page-hash/);
+  assert.match(pub, /`as_level: "view"`/);
+  assert.match(pub, /one line/);
+  assert.match(pub, /meta\/owner/);
+  assert.match(pub, /store\.cjs" dashboard-set --owner-id/);
+  assert.match(dashboard.text, /never edit it by hand/);
+});
+
+test('dashboard: a republish happens only when the page hash changed, and asks nothing', () => {
+  const re = section(dashboard.text, 'Republish');
+  assert.ok(re);
+  assert.match(re, /sync-plan\.cjs" page-hash/);
+  assert.match(re, /`pageHash`/);
+  assert.match(re, /no question/i);
+  assert.match(re, /dashboard-set --page-hash <hash> --published-at <now>/);
+});
+
+test('dashboard: sync pulls and builds versions from one snapshot, then pushes pinned batches; a conflict redoes the whole cycle', () => {
+  const sync = section(dashboard.text, 'Sync');
+  const at = (s) => {
+    const i = sync.indexOf(s);
+    assert.ok(i >= 0, `Sync has ${s}`);
+    return i;
+  };
+  const read = at('`out_dir: "<sync>/db"`');
+  const pull = at('sync-plan.cjs" pull --project <slug> --in "<sync>/db"');
+  const versions = at('sync-plan.cjs" versions --in "<sync>/db" --out "<sync>/versions.json"');
+  const push = at('sync-plan.cjs" push --project <slug> --versions "<sync>/versions.json" --out "<sync>/push/<slug>"');
+  const batch = at('`ArtifactData batch`');
+  assert.ok(read < pull && pull < versions && versions < push && push < batch, 'read, pull, versions, push, batch in that order');
+  for (const c of ['`projects`', '`findings`', '`runs`', '`jobs`', '`meta`']) assert.ok(sync.includes(c), `Sync reads ${c}`);
+  assert.match(sync, /redo the whole cycle/);
+  assert.match(sync, /never re-read/i);
+  assert.match(sync, /sync-plan\.cjs" meta-sync --in "<sync>\/db" --cursor <cursor>/);
+  assert.match(sync, /`update meta\/sync` with `data` the printed JSON and `if_version` the version/);
+  assert.match(sync, /`set meta\/sync`[^.]*creates the document/);
+  assert.match(sync, /never type/i);
+});
+
+test('audit and inventory end with the sync when a dashboard URL exists (R12)', () => {
+  for (const name of ['audit.md', 'inventory.md']) {
+    const { text } = recipes.find((r) => r.name === name);
+    const i = text.search(/Sync section of \[dashboard\]\(\$\{CLAUDE_SKILL_DIR\}\/jobs\/dashboard\.md\)/);
+    assert.ok(i >= 0, `${name} names the Sync section`);
+    const lastStep = Math.max(...[...text.matchAll(/\n(?:#+ |\d+\. )/g)].map((m) => m.index));
+    assert.ok(i > lastStep, `${name}: the sync is in the last section or step`);
+    assert.match(text.slice(lastStep), /`url`/, `${name}: only when a dashboard URL exists`);
+  }
+  const audit = recipes.find((r) => r.name === 'audit.md').text;
+  const finish = section(audit, 'L1');
+  assert.match(finish.slice(finish.indexOf('### Finish')), /Live dashboard/, 'audit L1 points its Finish at the sync');
+});

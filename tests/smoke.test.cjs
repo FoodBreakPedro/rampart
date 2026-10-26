@@ -63,3 +63,9 @@ test('T15: the inventory mapper runs no git; the explore agent has only read-onl
     assert.match(rule, /^Bash\(git (log|show) \*\)$/, `${rule}: a * before the subcommand would also approve -c <cmd>`);
   }
 });
+
+test('T9: the skill pre-approves the live dashboard tools and keeps Glob (watch.md globs for verify.md)', () => {
+  const tools = frontMatter(read('skills', 'rampart', 'SKILL.md'), 'allowed-tools');
+  for (const t of ['Glob', 'Artifact', 'ArtifactData', 'ScheduleWakeup', 'Agent(rampart:inventory-mapper, rampart:explore)']) assert.ok(tools.includes(t), t);
+  assert.ok(!tools.some((t) => /^Bash\((?!node |git |ls |date )/.test(t)), 'no new shell rule');
+});
