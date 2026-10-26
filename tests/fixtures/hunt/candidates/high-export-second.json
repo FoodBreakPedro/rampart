@@ -1,0 +1,20 @@
+[
+  {
+    "ref": "c1",
+    "classId": "bulk-export",
+    "title": "Export has no tenant filter",
+    "severity": "MEDIUM",
+    "confidence": "HIGH",
+    "cwe": [
+      "CWE-639"
+    ],
+    "preconditions": "Signed in as any user.",
+    "recommendation": "Scope the query to the session user.",
+    "location": {
+      "path": "app/api/export/route.ts",
+      "symbol": "GET"
+    },
+    "evidence": "The export handler lists all rows.",
+    "exploitScenario": "Any signed-in user downloads all invoices."
+  }
+]

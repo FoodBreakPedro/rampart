@@ -342,4 +342,54 @@ function fromHeaders(result, ctx) {
   }));
 }
 
-module.exports = { fromGitleaks, fromTrivy, fromNpmAudit, fromHeaders };
+// ---- hunter candidates --------------------------------------------------------------------
+
+const CONFIDENCE_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2 };
+const INJECTION_RULE = 'rampart/prompt-injection-attempt';
+
+// candidate: a stored hunt candidate (hunt-io.cjs, candidate-schema.json) that met the verification bar. confirmingVotes: the
+// votes that confirmed it. ctx = {project, runId, now?, totalVotes?}; totalVotes is how many verifiers voted (default: the
+// confirming ones). The finding is class 'verified', from 'rampart-hunter' ('infra-probe' on layer INFRA).
+// severity is the lowest the confirming verifiers gave when two or more gave one, else the hunter's; confidence is the lowest of
+// the hunter's and every confirming verifier's. A candidate flagged as a prompt-injection attempt (the hunter's flag or hunt-io's
+// heuristic) is a LOW 'hardening' finding of rule rampart/prompt-injection-attempt: text in the repository that addresses the
+// scan is a note about the repository, not a vulnerability in it.
+function fromHunt(candidate, confirmingVotes, ctx) {
+  if (!isObject(candidate)) throw new TypeError('fromHunt: candidate must be an object');
+  if (!Array.isArray(confirmingVotes)) throw new TypeError('fromHunt: confirmingVotes must be an array');
+  if (!isObject(ctx)) throw new TypeError('fromHunt: ctx is required');
+  for (const key of ['project', 'runId']) if (!isText(ctx[key])) throw new TypeError(`fromHunt: ctx.${key} must be a non-empty string`);
+  const now = ctx.now || new Date().toISOString();
+  const rated = confirmingVotes.filter((v) => own(RANK, v.severity));
+  const severity = rated.length >= 2 ? rated.map((v) => v.severity).reduce((a, b) => (RANK[b] < RANK[a] ? b : a)) : candidate.severity;
+  const confidence = [candidate.confidence, ...confirmingVotes.map((v) => v.confidence).filter((c) => own(CONFIDENCE_RANK, c))]
+    .reduce((a, b) => (CONFIDENCE_RANK[b] < CONFIDENCE_RANK[a] ? b : a));
+  const injection = Boolean(candidate.flags && candidate.flags.prompt_injection);
+  return {
+    id: candidate.candidateId,
+    project: ctx.project,
+    system: candidate.system,
+    layer: candidate.layer,
+    source: candidate.layer === 'INFRA' ? 'infra-probe' : 'rampart-hunter',
+    pack: `${candidate.pack}@${candidate.packVersion}`,
+    ruleId: injection ? INJECTION_RULE : `${candidate.pack}/${candidate.classId}`,
+    title: candidate.title,
+    severity: injection ? 'LOW' : severity,
+    confidence,
+    cwe: [...candidate.cwe],
+    class: injection ? 'hardening' : 'verified',
+    location: { ...candidate.location },
+    evidence: candidate.evidence,
+    exploitScenario: candidate.exploitScenario,
+    preconditions: candidate.preconditions,
+    recommendation: candidate.recommendation,
+    verification: { verifiers: Number.isInteger(ctx.totalVotes) ? ctx.totalVotes : confirmingVotes.length, confirmed: confirmingVotes.length, run: ctx.runId },
+    status: 'open',
+    firstSeen: now,
+    lastSeen: now,
+    fixedIn: null,
+    externalIds: { claudeSecurityPluginFindingId: null, cve: null },
+  };
+}
+
+module.exports = { fromGitleaks, fromTrivy, fromNpmAudit, fromHeaders, fromHunt, INJECTION_RULE };

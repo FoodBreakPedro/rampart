@@ -300,11 +300,11 @@ test('T13: long project names wrap in the tile and the detail title', () => {
   }
 });
 
-test('T13: only layers with an engine get a Run button; the page sets data-engines to ["L1"] for now', () => {
+test('T13: only layers with an engine get a Run button; the page sets data-engines to all four layers', () => {
   const html = fs.readFileSync(TEMPLATE, 'utf8');
   const main = /<main\b[^>]*>/.exec(html)[0];
   assert.match(main, /id="main"/);
-  assert.match(main, /data-engines='\["L1"\]'/);
+  assert.match(main, /data-engines='\["L1","L2","L3","INFRA"\]'/);
   const { parseEngines, runnableLayers, DEFAULT_ENGINES } = page();
   assert.deepEqual([...DEFAULT_ENGINES], ['L1']);
   assert.deepEqual(parseEngines('["L1"]'), ['L1']);

@@ -130,11 +130,12 @@ function summary(name, result, system, details) {
 //   usage    the line printed after a usage error
 //   scan     (opts) => {run, counts, ...}, with opts as parse returns them; or a promise of that (l1-headers awaits fetch)
 //   details  (result) => the lines printed under the head of a done run
+//   json     (result) => the object --json prints; defaults to {run, counts}
 //   parse    (argv) => opts; defaults to parseArgs. It throws UsageError for bad arguments.
 // --json prints {run, counts}, whatever else the result carries. An error is written to stderr, redacted, as "<name>: <message>".
 // A scan that returns a promise makes runCli return a promise of the exit code, by the same rules (a rejection counts as a
 // throw). That promise does not reject. Wait for it before setting process.exitCode.
-function runCli({ name, usage, scan, details, parse = parseArgs }, argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
+function runCli({ name, usage, scan, details, parse = parseArgs, json = (r) => ({ run: r.run, counts: r.counts }) }, argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
   const fail = (err) => {
     stderr.write(`${name}: ${redact(err.message)}\n`);
     if (err instanceof UsageError) stderr.write(`${usage}\n`);
@@ -143,7 +144,7 @@ function runCli({ name, usage, scan, details, parse = parseArgs }, argv, { stdou
   try {
     const opts = parse(argv);
     const finish = (result) => {
-      stdout.write(`${opts.json ? JSON.stringify({ run: result.run, counts: result.counts }, null, 2) : summary(name, result, opts.system, details)}\n`);
+      stdout.write(`${opts.json ? JSON.stringify(json(result), null, 2) : summary(name, result, opts.system, details)}\n`);
       return result.run.status === 'done' ? 0 : 2;
     };
     const result = scan(opts);

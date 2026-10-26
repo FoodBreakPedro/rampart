@@ -64,8 +64,32 @@ test('T15: the inventory mapper runs no git; the explore agent has only read-onl
   }
 });
 
+test('T13: the dashboard offers all four layers, the README no longer caps grades at C, and the skill may run the hunt engine', () => {
+  const main = /<main\b[^>]*>/.exec(read('dashboard', 'index.html'))[0];
+  const engines = JSON.parse(/data-engines='([^']*)'/.exec(main)[1]);
+  assert.deepEqual(engines, ['L1', 'L2', 'L3', 'INFRA']);
+  const readme = read('README.md');
+  assert.doesNotMatch(readme, /no project grades above C/);
+  assert.doesNotMatch(readme, /cap lifts when Plan 2/i);
+  const tools = frontMatter(read('skills', 'rampart', 'SKILL.md'), 'allowed-tools');
+  assert.ok(tools.includes('Agent(rampart:inventory-mapper, rampart:explore, rampart:hunter, rampart:verifier, rampart:infra-prober)'), tools.join(' | '));
+  assert.ok(tools.includes('Workflow'));
+  assert.ok(tools.includes('Workflow(rampart:audit)'));
+  assert.equal(tools.filter((t) => t.startsWith('Agent(')).length, 1, 'one Agent(...) entry');
+  for (const job of ['audit.md', 'verify.md']) assert.ok(fs.existsSync(path.join(ROOT, 'skills', 'rampart', 'jobs', job)), job);
+});
+
+test('T14: a script the recipes run with no arguments (render-static) is pre-approved too, not only scripts run with arguments', () => {
+  const tools = frontMatter(read('skills', 'rampart', 'SKILL.md'), 'allowed-tools');
+  assert.ok(tools.includes('Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/*.cjs" *)'));
+  const recipes = ['SKILL.md', 'role.md', ...fs.readdirSync(path.join(ROOT, 'skills', 'rampart', 'jobs')).map((f) => `jobs/${f}`)];
+  const bare = recipes.some((file) => /`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/[a-z0-9-]+\.cjs"`/.test(read('skills', 'rampart', ...file.split('/'))));
+  assert.ok(bare, 'some recipe runs a script with no arguments');
+  assert.ok(tools.includes('Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/*.cjs")'), 'a rule that ends in " *" does not match a command with no arguments');
+});
+
 test('T9: the skill pre-approves the live dashboard tools and keeps Glob (watch.md globs for verify.md)', () => {
   const tools = frontMatter(read('skills', 'rampart', 'SKILL.md'), 'allowed-tools');
-  for (const t of ['Glob', 'Artifact', 'ArtifactData', 'ScheduleWakeup', 'Agent(rampart:inventory-mapper, rampart:explore)']) assert.ok(tools.includes(t), t);
+  for (const t of ['Glob', 'Artifact', 'ArtifactData', 'ScheduleWakeup', 'Agent(rampart:inventory-mapper, rampart:explore, rampart:hunter, rampart:verifier, rampart:infra-prober)']) assert.ok(tools.includes(t), t);
   assert.ok(!tools.some((t) => /^Bash\((?!node |git |ls |date )/.test(t)), 'no new shell rule');
 });

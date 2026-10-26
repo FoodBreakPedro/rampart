@@ -30,12 +30,12 @@ const { which, run } = require('./lib/exec.cjs');
 const { rampartHome } = require('./lib/paths.cjs');
 const { redact } = require('./lib/redact.cjs');
 const { listProjects } = require('./store.cjs');
+const { listPacks } = require('./packs.cjs');
 
 const MIN_NODE_MAJOR = 20; // package.json engines.node; 18 is past end of life
 const PROBE_TIMEOUT_MS = 5000;
 const VERSION_RE = /\d+\.\d+(?:\.\d+)?/;
 const PACKS_DIR = path.join(__dirname, '..', 'packs');
-const PACK_TEMPLATE = '_template.md';
 const CLAUDE_SECURITY_PREFIX = 'claude-security@';
 const BYTE_ORDER_MARK = 0xfeff; // a UTF-8 BOM at the start of a JSON file does not matter
 const USAGE = 'usage: node scripts/doctor.cjs [--json]';
@@ -153,12 +153,12 @@ function storeInfo() {
   return { home, exists, projects };
 }
 
-// The packs in dir: the *.md files there, leaving out _template.md. A missing or unreadable dir has none.
+// The packs in dir (listPacks: *.md files, leaving out _template.md and any other file starting with _). A missing or
+// unreadable dir has none.
 function countPacks(dir) {
   try {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    const count = entries.filter((e) => e.isFile() && e.name.endsWith('.md') && e.name !== PACK_TEMPLATE).length;
-    return { dir, exists: true, count };
+    if (!fs.statSync(dir).isDirectory()) return { dir, exists: false, count: 0 };
+    return { dir, exists: true, count: listPacks(dir).length };
   } catch {
     return { dir, exists: false, count: 0 };
   }

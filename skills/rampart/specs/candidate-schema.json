@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rampart hunt candidate",
+  "description": "One candidate finding as hunt-io stores it (candidates/<hunterKey>.json holds an array). Agents write a raw form (a local ref, no candidateId); hunt-io overwrites system, layer, pack, packVersion, hunter and candidateId from units.json, redacts the text fields and replaces value-like evidence. candidateId is the id of the finding the candidate would become.",
+  "type": "object",
+  "required": ["candidateId", "ref", "system", "layer", "pack", "packVersion", "classId", "title", "severity", "confidence", "cwe", "location", "evidence", "exploitScenario", "preconditions", "recommendation", "hunter", "flags"],
+  "additionalProperties": false,
+  "properties": {
+    "candidateId": { "type": "string", "pattern": "^[0-9a-f]{12}$" },
+    "ref": { "type": "string", "pattern": "^c([1-9]|10)$", "description": "The hunter's local reference; the candidateRef of a vote is <hunterKey>#<ref>." },
+    "system": { "type": "string", "minLength": 1 },
+    "layer": { "enum": ["L2", "L3", "INFRA"] },
+    "pack": { "type": "string", "minLength": 1 },
+    "packVersion": { "type": "string", "minLength": 1 },
+    "classId": { "type": "string", "minLength": 1 },
+    "title": { "type": "string", "minLength": 1 },
+    "severity": { "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"] },
+    "confidence": { "enum": ["HIGH", "MEDIUM", "LOW"] },
+    "cwe": { "type": "array", "items": { "type": "string", "pattern": "^CWE-[0-9]+$" } },
+    "location": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["path"],
+          "additionalProperties": false,
+          "properties": { "path": { "type": "string", "minLength": 1 }, "symbol": { "type": ["string", "null"] } }
+        },
+        {
+          "type": "object",
+          "required": ["host"],
+          "additionalProperties": false,
+          "properties": { "host": { "type": "string", "minLength": 1 }, "service": { "type": "string" }, "setting": { "type": "string" } }
+        }
+      ]
+    },
+    "evidence": { "type": "string" },
+    "exploitScenario": { "type": "string" },
+    "preconditions": { "type": "string" },
+    "recommendation": { "type": "string" },
+    "hunter": {
+      "type": "object",
+      "required": ["agent", "unit"],
+      "additionalProperties": false,
+      "properties": {
+        "agent": { "type": "string", "minLength": 1, "description": "The hunterKey of the file the candidate came from." },
+        "unit": { "type": ["string", "null"] }
+      }
+    },
+    "flags": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "prompt_injection": { "type": "boolean" } }
+    }
+  }
+}

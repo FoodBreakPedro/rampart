@@ -1,0 +1,432 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const { listPacks, readPack, validatePack, packsFor, main } = require('../scripts/packs.cjs');
+const { loadSchema } = require('../scripts/lib/validate.cjs');
+
+const REPO_ROOT = path.join(__dirname, '..');
+const FIXTURES = path.join(__dirname, 'fixtures', 'packs');
+const CLI = path.join(REPO_ROOT, 'scripts', 'packs.cjs');
+
+let tmp;
+test.beforeEach(() => {
+  tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'rampart packs '));
+});
+test.afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+const fixture = (name) => fs.readFileSync(path.join(FIXTURES, `${name}.md`), 'utf8');
+const put = (name, text) => fs.writeFileSync(path.join(tmp, `${name}.md`), text);
+const cli = (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
+
+test('readPack parses the good fixture to the exact object', () => {
+  assert.deepEqual(readPack('good', FIXTURES), {
+    name: 'good',
+    version: '1.2.0',
+    appliesTo: ['nextjs', 'node-api'],
+    kinds: ['code', 'host'],
+    sources: [
+      { url: 'https://example.com/guide', date: '2026-09-01' },
+      { url: 'https://example.org/advisory', date: '2026-08-15' },
+    ],
+    lastReviewed: '2026-10-01',
+    classes: [
+      {
+        id: 'idor',
+        title: 'Broken object-level authorization',
+        lookFor: 'Handlers that load a record by an id from the request without checking the caller owns it.',
+        confirmBy: 'Trace the id from the route to the query and show no ownership check lies between them.',
+        disproveBy: 'Find a policy, a row-level filter or a guard that scopes the query to the caller.',
+        severity: 'HIGH',
+        cwe: ['CWE-639', 'CWE-862'],
+      },
+      {
+        id: 'open-redirect',
+        title: 'Unvalidated redirect target',
+        lookFor: 'Redirects built from a query parameter.',
+        confirmBy: 'Show the parameter reaches the redirect without an allow-list.',
+        disproveBy: 'Show the target is checked against a fixed list or made relative.',
+        severity: 'LOW',
+        cwe: ['CWE-601'],
+      },
+    ],
+    baseline: 'Expect a reverse proxy in front of the app and no container publishing a database port.',
+    probes: [
+      {
+        id: 'containers',
+        title: 'Running containers',
+        via: 'ssh',
+        argv: ['docker', 'ps', '--format', '{{.Names}} {{.Image}}'],
+        expect: 'Only the app, the proxy and the database are running.',
+        scrub: 'none',
+      },
+    ],
+  });
+  assert.deepEqual(validatePack(readPack('good', FIXTURES)), { ok: true, errors: [] });
+});
+
+test('a pack with no Probes section has probes: [] and a CRLF file parses the same', () => {
+  const text = fixture('good').replace(/## Probes[\s\S]*?(?=## Sources)/, '');
+  put('good', text.replace(/\n/g, '\r\n'));
+  const pack = readPack('good', tmp);
+  assert.deepEqual(pack.probes, []);
+  assert.equal(pack.classes.length, 2);
+  assert.equal(pack.baseline, 'Expect a reverse proxy in front of the app and no container publishing a database port.');
+});
+
+test('a probe may carry an optional path', () => {
+  put('good', fixture('good').replace('`ssh`', '`http`').replace('**scrub:** none', '**scrub:** none\n**path:** /health'));
+  const probe = readPack('good', tmp).probes[0];
+  assert.equal(probe.path, '/health');
+  assert.equal(probe.via, 'http');
+});
+
+test('R48: a probe may declare okExit, the exit codes that are a healthy answer; a bad value or an http probe with one fails', () => {
+  put('good', fixture('good').replace('**scrub:** none', '**scrub:** none\n**okExit:** `0,1`'));
+  const pack = readPack('good', tmp);
+  assert.deepEqual(pack.probes[0].okExit, [0, 1]);
+  assert.deepEqual(validatePack(pack), { ok: true, errors: [] });
+  assert.ok(!('okExit' in readPack('good', FIXTURES).probes[0]), 'absent stays absent');
+  put('good', fixture('good').replace('**scrub:** none', '**scrub:** none\n**okExit:** 0, x'));
+  assert.ok(validatePack(readPack('good', tmp)).errors.some((e) => e.path.startsWith('probes[0].okExit')));
+  put('good', fixture('good').replace('**scrub:** none', '**scrub:** none\n**okExit:** 1, 300'));
+  assert.ok(validatePack(readPack('good', tmp)).errors.some((e) => e.path.startsWith('probes[0].okExit')));
+  put('good', fixture('good').replace('`ssh`', '`http`').replace('**scrub:** none', '**scrub:** none\n**okExit:** 0,1'));
+  assert.deepEqual(validatePack(readPack('good', tmp)).errors.map((e) => e.path), ['probes[0].okExit']);
+});
+
+test('R48: among the shipped probes only the grep whose expect line calls empty output healthy declares okExit', () => {
+  const declared = listPacks().flatMap((n) => readPack(n).probes.filter((p) => p.okExit).map((p) => [n, p.id, p.okExit]));
+  assert.deepEqual(declared, [['docker-host', 'container-hostconfig', [0, 1]]]);
+});
+
+test('missing sources: validatePack reports the path sources', () => {
+  const pack = readPack('bad-missing-sources', FIXTURES);
+  const result = validatePack(pack);
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.errors.map((e) => e.path), ['sources']);
+  assert.match(result.errors[0].message, /required/);
+});
+
+test('a probe with a non-array argv fails at probes[0].argv, and an empty array fails too', () => {
+  const pack = readPack('good', FIXTURES);
+  pack.probes[0].argv = 'docker ps';
+  let result = validatePack(pack);
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.errors.map((e) => e.path), ['probes[0].argv']);
+  pack.probes[0].argv = [];
+  result = validatePack(pack);
+  assert.deepEqual(result.errors.map((e) => e.path), ['probes[0].argv']);
+  pack.probes[0].argv = ['docker', 5];
+  assert.deepEqual(validatePack(pack).errors.map((e) => e.path), ['probes[0].argv[1]']);
+});
+
+test('argv text that is not JSON is kept raw and fails validation', () => {
+  put('good', fixture('good').replace(/\*\*argv:\*\*.*/, '**argv:** `docker ps`'));
+  const pack = readPack('good', tmp);
+  assert.equal(pack.probes[0].argv, 'docker ps');
+  assert.deepEqual(validatePack(pack).errors.map((e) => e.path), ['probes[0].argv']);
+});
+
+test('a class missing a field fails at classes[i].field; an unknown severity fails', () => {
+  const text = fixture('good')
+    .replace('**Confirm by:** Show the parameter reaches the redirect without an allow-list.\n', '')
+    .replace('**Severity when confirmed:** low', '**Severity when confirmed:** severe');
+  put('good', text);
+  const result = validatePack(readPack('good', tmp));
+  assert.deepEqual(result.errors.map((e) => e.path).sort(), ['classes[1].confirmBy', 'classes[1].severity']);
+  assert.ok(result.errors.every((e) => typeof e.message === 'string' && !e.message.includes('severe')));
+});
+
+test('duplicate class ids and malformed dates are reported', () => {
+  put('good', fixture('good').replace('### open-redirect:', '### idor:').replace('lastReviewed: 2026-10-01', 'lastReviewed: soon'));
+  const paths = validatePack(readPack('good', tmp)).errors.map((e) => e.path).sort();
+  assert.deepEqual(paths, ['classes[1].id', 'lastReviewed']);
+});
+
+test('readPack refuses a name that differs from the file name, and a missing pack or front-matter', () => {
+  put('other', fixture('good'));
+  assert.throws(() => readPack('other', tmp), /name/);
+  assert.throws(() => readPack('nope', tmp), /not found/);
+  put('plain', '# no front-matter\n');
+  assert.throws(() => readPack('plain', tmp), /front-matter/);
+  assert.throws(() => readPack('../good', FIXTURES), /pack name/);
+});
+
+test('listPacks is sorted and excludes _template.md, other _ files and non-markdown files', () => {
+  assert.deepEqual(listPacks(tmp), []);
+  for (const f of ['supabase.md', 'nextjs.md', '_template.md', '_draft.md', 'notes.txt']) fs.writeFileSync(path.join(tmp, f), 'x');
+  assert.deepEqual(listPacks(tmp), ['nextjs', 'supabase']);
+  assert.deepEqual(listPacks(path.join(tmp, 'missing')), []);
+});
+
+test('listPacks defaults to packs/ at the plugin root and leaves the template out', () => {
+  assert.equal(listPacks().includes('_template'), false);
+  assert.ok(fs.existsSync(path.join(REPO_ROOT, 'packs', '_template.md')));
+});
+
+test('the template parses, validates and shows every section and field', () => {
+  const pack = readPack('_template', path.join(REPO_ROOT, 'packs'));
+  assert.deepEqual(validatePack(pack), { ok: true, errors: [] });
+  assert.equal(pack.classes.length, 1);
+  assert.equal(pack.probes.length, 1);
+  assert.equal(pack.probes[0].path, '/optional-path');
+  const text = fs.readFileSync(path.join(REPO_ROOT, 'packs', '_template.md'), 'utf8');
+  for (const needle of [
+    'name:', 'version:', 'appliesTo:', 'kinds:', 'sources:', 'lastReviewed:',
+    '## Hunt classes', '## Baseline', '## Probes', '## Sources',
+    '**Look for:**', '**Confirm by:**', '**Disprove by:**', '**Severity when confirmed:**', '**CWE:**',
+    '**via:**', '**argv:**', '**expect:**', '**scrub:**', '**path:**',
+  ]) assert.ok(text.includes(needle), `template shows ${needle}`);
+  assert.doesNotMatch(text, /sk_live|AKIA|BEGIN [A-Z ]*PRIVATE KEY|password\s*[:=]/i);
+});
+
+test('the pack schema loads through loadSchema', () => {
+  assert.equal(loadSchema('pack').title, 'Rampart pack');
+});
+
+test('packsFor picks packs by system.packs names, else by appliesTo matching system.type', () => {
+  put('nextjs', fixture('good').replace('name: good', 'name: nextjs'));
+  put('node', fixture('good').replace('name: good', 'name: node'));
+  put('nginx', fixture('good').replace('name: good', 'name: nginx').replace('  - nextjs\n  - node-api', '  - web-server'));
+  assert.deepEqual(packsFor({ type: 'node-api' }, tmp).map((p) => p.name), ['nextjs', 'node']);
+  assert.deepEqual(packsFor({ type: 'web-server', packs: ['node'] }, tmp).map((p) => p.name), ['node']);
+  assert.deepEqual(packsFor({ type: 'web-server', packs: [] }, tmp).map((p) => p.name), ['nginx']);
+  assert.deepEqual(packsFor({ type: 'unknown' }, tmp), []);
+  assert.deepEqual(packsFor({ type: 'web-server', packs: ['absent'] }, tmp), []);
+});
+
+test('CLI: list, show, validate, usage errors', () => {
+  const list = cli('list');
+  assert.equal(list.status, 0);
+  assert.equal(list.stdout.includes('_template'), false);
+
+  const show = cli('show', 'nope');
+  assert.equal(show.status, 2);
+  assert.match(show.stderr, /packs: /);
+
+  for (const args of [[], ['bogus'], ['list', 'extra'], ['validate', '--wat'], ['show']]) {
+    const r = cli(...args);
+    assert.equal(r.status, 2, args.join(' '));
+    assert.match(r.stderr, /usage: node scripts\/packs\.cjs/);
+  }
+
+  const ok = cli('validate', '--json');
+  assert.equal(ok.status, 0);
+  assert.equal(JSON.parse(ok.stdout).ok, true);
+});
+
+test('main validates every listed pack, exits 1 when any is invalid, and prints per-pack results', () => {
+  put('bad-missing-sources', fixture('bad-missing-sources'));
+  put('good', fixture('good'));
+  const out = [];
+  const err = [];
+  const io = { stdout: { write: (s) => out.push(s) }, stderr: { write: (s) => err.push(s) }, dir: tmp };
+  assert.equal(main(['validate'], io), 1);
+  assert.match(out.join(''), /INVALID bad-missing-sources/);
+  assert.match(out.join(''), /sources: /);
+  out.length = 0;
+  assert.equal(main(['validate', 'good'], io), 0);
+  assert.match(out.join(''), /^ok good/);
+  out.length = 0;
+  assert.equal(main(['validate', '--json'], io), 1);
+  const doc = JSON.parse(out.join(''));
+  assert.equal(doc.ok, false);
+  assert.deepEqual(doc.packs.map((p) => [p.name, p.ok]), [['bad-missing-sources', false], ['good', true]]);
+  assert.equal(doc.packs[0].errors[0].path, 'sources');
+  out.length = 0;
+  assert.equal(main(['show', 'good'], io), 0);
+  assert.equal(JSON.parse(out.join('')).name, 'good');
+  assert.equal(err.length, 0);
+});
+
+test('main reports a pack whose name differs from its file as invalid instead of crashing', () => {
+  put('other', fixture('good'));
+  const out = [];
+  const io = { stdout: { write: (s) => out.push(s) }, stderr: { write: () => {} }, dir: tmp };
+  assert.equal(main(['validate'], io), 1);
+  assert.match(out.join(''), /INVALID other/);
+});
+
+test('a class with no CWE line fails at classes[i].cwe', () => {
+  put('good', fixture('good').replace(/\*\*CWE:\*\* CWE-601\n/, ''));
+  assert.deepEqual(validatePack(readPack('good', tmp)).errors.map((e) => e.path), ['classes[1].cwe']);
+});
+
+test('a code pack with no classes (mistyped heading) and a host pack with no probes fail', () => {
+  put('good', fixture('good').replace('## Hunt classes', '## Hunt clases'));
+  assert.deepEqual(validatePack(readPack('good', tmp)).errors.map((e) => e.path), ['classes']);
+  const noProbes = fixture('good').replace(/## Probes[\s\S]*?(?=## Sources)/, '');
+  put('good', noProbes);
+  assert.deepEqual(validatePack(readPack('good', tmp)).errors.map((e) => e.path), ['probes']);
+  put('good', noProbes.replace('  - host\n', ''));
+  assert.deepEqual(validatePack(readPack('good', tmp)), { ok: true, errors: [] });
+});
+
+// ---- the shipped packs -----------------------------------------------------------------------
+
+// The class ids every code pack carries; the audit workflow fans hunters out by these names.
+const FIXED_CLASSES = [
+  'authz-scoping', 'tenant-isolation', 'bulk-export', 'session-handling', 'search-injection',
+  'sql-injection', 'ssrf', 'secrets-handling', 'deserialization', 'misconfig',
+];
+const PACKS_DIR = path.join(REPO_ROOT, 'packs');
+
+test('every file in packs/ validates; each code pack has at least 8 classes including the ten fixed ids', () => {
+  const names = listPacks();
+  for (const expected of ['web-nextjs', 'node-api', 'mobile-expo', 'cloudflare-workers']) assert.ok(names.includes(expected), expected);
+  for (const name of names) {
+    const pack = readPack(name);
+    assert.deepEqual(validatePack(pack), { ok: true, errors: [] }, name);
+    if (!pack.kinds.includes('code')) continue;
+    assert.ok(pack.classes.length >= 8, `${name} has ${pack.classes.length} classes`);
+    const ids = pack.classes.map((c) => c.id);
+    for (const id of FIXED_CLASSES) assert.ok(ids.includes(id), `${name} has ${id}`);
+    for (const id of ids) assert.match(id, /^[a-z0-9]+(-[a-z0-9]+)*$/, `${name}: ${id} is kebab-case`);
+    assert.ok(pack.baseline.length > 0, `${name} states a baseline`);
+  }
+  const markdown = fs.readdirSync(PACKS_DIR).filter((f) => f.endsWith('.md') && !f.startsWith('_'));
+  assert.deepEqual(markdown.map((f) => f.slice(0, -3)).sort(), names);
+});
+
+test('shipped packs: appliesTo names real system types, sources cite OWASP Top 10 2025 and ASVS 5, nothing secret-shaped', () => {
+  const types = loadSchema('project').properties.systems.items.properties.type.enum;
+  for (const name of listPacks()) {
+    const pack = readPack(name);
+    for (const type of pack.appliesTo) assert.ok(types.includes(type), `${name}: ${type} is a system type`);
+    const urls = pack.sources.map((s) => s.url);
+    assert.ok(urls.some((u) => /owasp\.org\/Top10\/2025/i.test(u)), `${name} cites OWASP Top 10 2025`);
+    assert.ok(urls.some((u) => /ASVS/i.test(u) && /5\.0/.test(u)), `${name} cites ASVS 5.0`);
+    for (const s of pack.sources) assert.ok(s.date <= pack.lastReviewed, `${name}: ${s.url} read by lastReviewed`);
+    const text = fs.readFileSync(path.join(PACKS_DIR, `${name}.md`), 'utf8');
+    assert.doesNotMatch(text, /sk_live|AKIA[0-9A-Z]{4}|BEGIN [A-Z ]*PRIVATE KEY|password\s*[:=]|eyJ[A-Za-z0-9_-]{8,}|[0-9a-f]{32,}/i, name);
+    assert.doesNotMatch(text, /\b(?:10|127)\.\d+\.\d+\.\d+\b|\b192\.168\.\d+\.\d+\b|\b172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+\b/, `${name} names no private address`);
+  }
+});
+
+test('packsFor picks each shipped code pack for its own system type', () => {
+  for (const type of ['web-nextjs', 'node-api', 'mobile-expo', 'cloudflare-workers']) {
+    assert.ok(packsFor({ type }).map((p) => p.name).includes(type), type);
+  }
+});
+
+// ---- host packs ------------------------------------------------------------------------------
+
+const HOST_PACKS = ['supabase', 'n8n', 'docker-host', 'wordpress-hostinger'];
+// Ruling R15: whole argv tokens, compared case-insensitively, against commands that change state; and no element may carry
+// shell redirection or a pipe (the runner single-quotes each element, so shell syntax would not work anyway). Ruling R19: the
+// placeholder <sitePath>, which the runner replaces with system.host.sitePath, is the one place a > may appear; it is removed
+// before the check, so any other <...> text still fails.
+const WRITE_TOKENS = ['rm', 'restart', 'stop', 'kill', 'down', 'exec', 'apply', 'write'];
+const PLACEHOLDERS = /<sitePath>/g;
+const readOnlyViolations = (argv) =>
+  argv.filter((t) => {
+    const bare = t.replace(PLACEHOLDERS, '');
+    return WRITE_TOKENS.includes(t.toLowerCase()) || bare.includes('>') || bare.includes('|');
+  });
+// A probe whose command mentions any of these could print environment or configuration values.
+const MAY_ECHO_VALUES = /env|inspect|config|printenv|wp-config|\.env\b/i;
+
+test('the read-only gate flags state-changing tokens and shell syntax and passes look-alikes', () => {
+  assert.deepEqual(readOnlyViolations(['docker', 'restart', 'x']), ['restart']);
+  assert.deepEqual(readOnlyViolations(['docker', 'compose', 'DOWN']), ['DOWN']);
+  assert.deepEqual(readOnlyViolations(['docker', 'ps', '--format', '{{.Names}} | x']), ['{{.Names}} | x']);
+  assert.deepEqual(readOnlyViolations(['cat', 'a', '>', 'b']), ['>']);
+  assert.deepEqual(readOnlyViolations(['echo', 'x>y']), ['x>y']);
+  // Whole-token comparison: -exec, write-ahead and is-enabled are not the forbidden commands.
+  assert.deepEqual(readOnlyViolations(['find', '.', '-exec', 'grep', 'write-ahead', '{}', '+']), []);
+  assert.deepEqual(readOnlyViolations(['systemctl', 'is-enabled', 'unattended-upgrades.service']), []);
+  // The site-path placeholder passes, alone or inside an element; any other angle-bracket text is still a redirection.
+  assert.deepEqual(readOnlyViolations(['wp', '--path=<sitePath>', 'stat', '<sitePath>/../wp-config.php', '<sitePath>']), []);
+  assert.deepEqual(readOnlyViolations(['cat', '<other>/x']), ['<other>/x']);
+  assert.deepEqual(readOnlyViolations(['cat', '<sitePath>/x>y']), ['<sitePath>/x>y']);
+});
+
+test('each host pack has at least 5 classes and 6 probes, a baseline, and kebab-case ids', () => {
+  const names = listPacks();
+  for (const name of HOST_PACKS) {
+    assert.ok(names.includes(name), name);
+    assert.ok(readPack(name).kinds.includes('host'), `${name} is a host pack`);
+  }
+  const hostPacks = names.map((n) => readPack(n)).filter((p) => p.kinds.includes('host'));
+  assert.ok(hostPacks.length >= HOST_PACKS.length);
+  for (const pack of hostPacks) {
+    assert.ok(pack.classes.length >= 5, `${pack.name} has ${pack.classes.length} classes`);
+    assert.ok(pack.probes.length >= 6, `${pack.name} has ${pack.probes.length} probes`);
+    assert.ok(pack.baseline.length > 0, `${pack.name} states a baseline`);
+    for (const id of [...pack.classes, ...pack.probes].map((x) => x.id)) assert.match(id, /^[a-z0-9]+(-[a-z0-9]+)*$/, `${pack.name}: ${id}`);
+  }
+});
+
+test('every host probe is read-only: no state-changing token, no redirection or pipe, no shell', () => {
+  for (const pack of listPacks().map((n) => readPack(n)).filter((p) => p.kinds.includes('host'))) {
+    for (const probe of pack.probes) {
+      const where = `${pack.name}/${probe.id}`;
+      assert.deepEqual(readOnlyViolations(probe.argv), [], where);
+      assert.ok(!['sh', 'bash', 'zsh', 'dash', 'sudo', 'su'].includes(probe.argv[0]), `${where} runs no shell or privilege change`);
+      for (const t of probe.argv) {
+        assert.ok(!['&&', '||', ';'].includes(t), `${where}: no command chaining`);
+        assert.ok(!t.includes('$(') && !t.includes('`'), `${where}: no subshell`);
+      }
+      if (probe.via === 'http') {
+        assert.ok(['GET', 'HEAD'].includes(probe.argv[0]) && probe.argv.length === 1, `${where}: http probes are a bare GET or HEAD`);
+        assert.match(probe.path || '/', /^\//, `${where}: path starts with /`);
+      }
+    }
+  }
+});
+
+test('probes that could echo environment or config values are scrub: env', () => {
+  let checked = 0;
+  for (const pack of listPacks().map((n) => readPack(n)).filter((p) => p.kinds.includes('host'))) {
+    for (const probe of pack.probes) {
+      if (!MAY_ECHO_VALUES.test(probe.argv.join(' '))) continue;
+      checked += 1;
+      assert.equal(probe.scrub, 'env', `${pack.name}/${probe.id} must be scrub: env`);
+    }
+  }
+  assert.ok(checked >= 8, `the rule applied to ${checked} probes`);
+});
+
+test('packsFor picks each host pack for its system type, and docker-host for supabase and n8n too', () => {
+  for (const type of HOST_PACKS) assert.ok(packsFor({ type }).map((p) => p.name).includes(type), type);
+  for (const type of ['supabase', 'n8n']) assert.ok(packsFor({ type }).map((p) => p.name).includes('docker-host'), type);
+});
+
+test('env templates write NAME=[set] on the host and never print a whole env entry', () => {
+  let templates = 0;
+  for (const pack of listPacks().map((n) => readPack(n)).filter((p) => p.kinds.includes('host'))) {
+    for (const probe of pack.probes) {
+      for (const el of probe.argv.filter((a) => a.includes('.Config.Env'))) {
+        const where = `${pack.name}/${probe.id}`;
+        // {{.}} or {{println .}} inside the range would emit NAME=value, value included, for names not on the allowlist.
+        assert.doesNotMatch(el, /\{\{\s*(?:println\s+|print\s+|printf\s+"[^"]*"\s+)?\.\s*\}\}/, `${where} prints a whole env entry`);
+        // A value is printed only inside an allowlist branch: every {{index $kv 1}} follows an "if eq $k" test.
+        if (el.includes('{{index $kv 1}}')) assert.match(el, /\{\{if eq \$k "/, `${where} prints values only for allowlisted names`);
+        if (el.includes('{{else}}')) assert.ok(el.includes('{{else}}{{$k}}=[set]{{end}}'), `${where}: the fallback branch prints NAME=[set]`);
+        templates += 1;
+      }
+    }
+  }
+  assert.ok(templates >= 4, `checked ${templates} env templates`);
+});
+
+test('wordpress SSH probes name the site through <sitePath>, never a fixed public_html', () => {
+  const ssh = readPack('wordpress-hostinger').probes.filter((p) => p.via === 'ssh');
+  assert.ok(ssh.length >= 6);
+  for (const probe of ssh) {
+    assert.ok(probe.argv.some((a) => a.includes('<sitePath>')), `${probe.id} uses <sitePath>`);
+    assert.ok(!probe.argv.some((a) => a.includes('public_html')), `${probe.id} has no literal public_html`);
+  }
+});
+
+// The runner and hunt-io key observations and probe units by probe id across all of a system's host packs, so two packs that
+// apply to one system type must not declare the same probe id (one observation would overwrite the other).
+test('T11: probe ids are unique across the host packs of each system type', () => {
+  for (const type of HOST_PACKS) {
+    const ids = packsFor({ type }).filter((p) => (p.kinds || []).includes('host')).flatMap((p) => p.probes.map((x) => x.id));
+    assert.deepEqual(ids.filter((id, i) => ids.indexOf(id) !== i), [], type);
+  }
+});

@@ -123,6 +123,24 @@ const canon = (value) =>
 // changes on every scan: it is stored (see upsertFindings) but is not a change by itself.
 const comparable = (key, value) => (key === 'verification' && isObject(value) ? { ...value, run: undefined } : value);
 
+// ---- coverage ledger (scripts/coverage.cjs) -----------------------------------------------
+
+// The ledger of units covered per system and layer; an empty one when nothing was saved yet.
+const readCoverage = (slug) => readJson(projectFile(slug, 'coverage.json'), { project: checkSlug(slug), units: {} });
+
+// Validates the ledger (its project must be this slug, each entry must match the schema's unitEntry) and saves it atomically.
+function writeCoverage(slug, ledger) {
+  checkSlug(slug);
+  assertValid('coverage', ledger, 'coverage');
+  if (ledger.project !== slug) throw new Error('coverage project does not match the slug');
+  const entrySchema = loadSchema('coverage').$defs.unitEntry;
+  for (const [key, value] of Object.entries(ledger.units)) {
+    const { ok, errors } = validate(entrySchema, value);
+    if (!ok) throw new Error(`coverage entry ${key} is invalid: ${errors.join('; ')}`);
+  }
+  writeAtomic(projectFile(slug, 'coverage.json'), toJson(ledger));
+}
+
 // ---- projects -----------------------------------------------------------------------------
 
 function listProjects() {
@@ -284,7 +302,7 @@ function closeMissing(slug, { system, source, runId, seenIds, filter } = {}) {
   const candidate = (f) =>
     f.system === system && sources.includes(f.source) && (f.status === 'open' || f.status === 'regressed') && !seen.has(f.id);
   const closing = findings.filter((f) => candidate(f) && (!filter || filter(f)));
-  if (!closing.length) return { closed: 0 };
+  if (!closing.length) return { closed: 0, ids: [] };
 
   const stamp = now();
   const dispositions = readDispositions(slug);
@@ -297,7 +315,7 @@ function closeMissing(slug, { system, source, runId, seenIds, filter } = {}) {
   // which the next scan puts right, not a closed finding with no reason.
   writeAtomic(projectFile(slug, 'dispositions.json'), toJson(dispositions));
   writeFindings(slug, findings);
-  return { closed: closing.length };
+  return { closed: closing.length, ids: closing.map((f) => f.id) };
 }
 
 function loadFinding(slug, id) {
@@ -323,6 +341,23 @@ function setDisposition(slug, id, { status, reason, by, at } = {}) {
   finding.updatedAt = now(); // the status changed now, whatever time the decision was made (the record keeps that), so a push never misses it
   writeFindings(slug, findings);
   return finding;
+}
+
+// Record an external id and/or a verification on a stored finding without touching its status, disposition, lastSeen or any
+// other field (an import of someone else's report is not a sighting). patch is {externalIds?, verification?}; externalIds is
+// merged key by key. Returns true when something changed (the file is rewritten only then), false when it was already so.
+function annotateFinding(slug, id, patch = {}) {
+  checkSlug(slug);
+  if (!isObject(patch)) throw new TypeError('patch must be an object');
+  const { findings, finding } = loadFinding(slug, id);
+  const next = { ...finding };
+  if (patch.externalIds !== undefined) next.externalIds = { ...(finding.externalIds || {}), ...patch.externalIds };
+  if (patch.verification !== undefined) next.verification = patch.verification;
+  assertValid('finding', next, 'finding');
+  if (canon(next) === canon(finding)) return false;
+  findings[findings.findIndex((f) => f.id === id)] = next;
+  writeFindings(slug, findings);
+  return true;
 }
 
 // Promote or demote a finding (the L1 secrets triage uses it); the note is appended to evidence.
@@ -748,9 +783,9 @@ function clearDashboard(key) {
 
 module.exports = {
   listProjects, readProject, writeProject,
-  readFindings, upsertFindings, closeMissing, readDispositions, setDisposition, setClass,
+  readFindings, upsertFindings, closeMissing, readDispositions, setDisposition, setClass, annotateFinding,
   createRun, finishRun, readRuns, writeRaw,
-  readConfig, writeConfig, appendScore, readScores,
+  readConfig, writeConfig, appendScore, readScores, readCoverage, writeCoverage,
   writeJob, readJob, readJobs,
   readDashboard, setDashboard,
   clearDashboard,

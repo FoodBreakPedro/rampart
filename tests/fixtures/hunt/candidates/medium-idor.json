@@ -1,0 +1,20 @@
+[
+  {
+    "ref": "c1",
+    "classId": "authz-scoping",
+    "title": "Users route returns any user by id",
+    "severity": "MEDIUM",
+    "confidence": "HIGH",
+    "cwe": [
+      "CWE-639"
+    ],
+    "preconditions": "Signed in as any user.",
+    "recommendation": "Scope the query to the session user.",
+    "location": {
+      "path": "app/api/users/route.ts",
+      "symbol": "GET"
+    },
+    "evidence": "GET reads params.id and calls db.user.findUnique({ where: { id } }) with no session comparison.",
+    "exploitScenario": "A signed-in user requests another user's id and reads their profile."
+  }
+]

@@ -272,25 +272,26 @@ test('post-push: never fails the session, whatever it is given', () => {
   assert.equal(bad.stderr, '');
 });
 
-test('R45 post-push: silent while L2 has not arrived (this plugin\'s own audit.md), and the once is not used up', () => {
+test('R45 post-push: silent while the recipe has no L2 steps, and the once is not used up; this plugin\'s own audit.md has them', () => {
   storeProject(SLUG, [repoSystem({ [machineId()]: repo })]);
   const own = fs.readFileSync(path.join(ROOT, 'skills', 'rampart', 'jobs', 'audit.md'), 'utf8');
-  assert.match(own, /## L2\r?\n\r?\nArrives with the hunt engine/, 'premise: on this branch L2 has not arrived');
-  const r = runHook(POST_PUSH, pushEvent(), { RAMPART_AUDIT_RECIPE: '' }); // unset: the plugin's own recipe
-  assert.equal(r.status, 0);
-  assert.equal(r.stdout, '');
-  assert.ok(!fs.existsSync(path.join(home, 'cache', 'post-push.json')), 'nothing recorded');
+  assert.doesNotMatch(own, /## L2\r?\n\r?\nArrives with the hunt engine/, 'premise: the hunt engine has arrived, so L2 has steps');
   const noL2 = path.join(recipes, 'audit-no-l2.md');
   fs.writeFileSync(noL2, AUDIT_NO_L2);
-  assert.equal(runHook(POST_PUSH, pushEvent(), { RAMPART_AUDIT_RECIPE: noL2 }).stdout, '', 'L3 steps do not count for L2');
+  const r = runHook(POST_PUSH, pushEvent(), { RAMPART_AUDIT_RECIPE: noL2 });
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '', 'L3 steps do not count for L2');
+  assert.ok(!fs.existsSync(path.join(home, 'cache', 'post-push.json')), 'nothing recorded');
   assert.equal(runHook(POST_PUSH, pushEvent(), { RAMPART_AUDIT_RECIPE: path.join(recipes, 'missing.md') }).stdout, '', 'no recipe, no L2');
-  assert.equal(runHook(POST_PUSH, pushEvent()).stdout, pushContext(SLUG), 'once L2 has steps, the same session hears it');
+  assert.equal(runHook(POST_PUSH, pushEvent(), { RAMPART_AUDIT_RECIPE: '' }).stdout, pushContext(SLUG), 'the plugin\'s own recipe has L2 steps, and the same session hears it');
 });
 
 test('R45 post-push: the event cannot choose which recipe is read', () => {
   storeProject(SLUG, [repoSystem({ [machineId()]: repo })]);
+  const noL2 = path.join(recipes, 'audit-no-l2.md');
+  fs.writeFileSync(noL2, AUDIT_NO_L2);
   const event = pushEvent({ RAMPART_AUDIT_RECIPE: l2Recipe, audit_recipe: l2Recipe, tool_input: { command: 'git push', RAMPART_AUDIT_RECIPE: l2Recipe } });
-  assert.equal(runHook(POST_PUSH, event, { RAMPART_AUDIT_RECIPE: '' }).stdout, '');
+  assert.equal(runHook(POST_PUSH, event, { RAMPART_AUDIT_RECIPE: noL2 }).stdout, '');
 });
 
 test('minor 2 session-start --refresh: a refresh that throws still removes its lock, and exits 0 silently', () => {
