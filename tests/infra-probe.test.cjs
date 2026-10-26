@@ -399,3 +399,23 @@ test('scrub env reduces every assignment form to NAME=[set] and keeps the useful
   ]);
   assert.ok(!/secret\d/.test(fs.readFileSync(r.observations[0].rawPath, 'utf8')));
 });
+
+test('a cloud session (CLAUDE_CODE_REMOTE=true) is refused before any probe runs: no run created, a reused run untouched', async () => {
+  canned({ containers: 'abc web nginx:1.27 0.0.0.0:80->80/tcp\n' }, { 'docker ps': 'containers' });
+  const mine = store.createRun(SLUG, { job: 'audit', layers: ['INFRA'], systems: ['host'], executor: 'local' });
+  const before = store.readRuns(SLUG);
+  const saved = process.env.CLAUDE_CODE_REMOTE;
+  process.env.CLAUDE_CODE_REMOTE = 'true';
+  try {
+    await assert.rejects(runProbes({ project: SLUG, system: 'host', pack: PACK }), (err) => err instanceof RangeError && /cloud/.test(err.message));
+    await assert.rejects(runProbes({ project: SLUG, system: 'host', pack: PACK, probes: ['containers'], runId: mine.runId }), /cloud/);
+    const res = spawnSync(process.execPath, [CLI, '--project', SLUG, '--system', 'host', '--probe', 'containers', '--run', mine.runId, '--json'], { encoding: 'utf8', env: process.env });
+    assert.equal(res.status, 2, res.stderr);
+    assert.match(res.stderr, /cloud/);
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CODE_REMOTE; else process.env.CLAUDE_CODE_REMOTE = saved;
+  }
+  assert.deepEqual(store.readRuns(SLUG), before, 'no run created and the reused one is unchanged');
+  assert.equal(calls().length, 0, 'ssh was never called');
+  assert.ok(!fs.existsSync(path.join(runDir(SLUG, mine.runId), 'observations.json')));
+});

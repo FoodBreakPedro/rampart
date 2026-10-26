@@ -814,7 +814,7 @@ test('reverify: rejected closes the finding as fixed, confirmed keeps it open an
   const disp = JSON.parse(fs.readFileSync(path.join(home, 'projects', SLUG, 'dispositions.json'), 'utf8'));
   assert.deepEqual([disp[f.reject.id].status, disp[f.reject.id].reason, disp[f.reject.id].by], ['fixed', `no longer reproducible in run ${out.runId}`, 'rampart']);
   assert.equal(findings[f.confirm.id].status, 'open');
-  assert.equal(findings[f.confirm.id].verification.run, out.runId);
+  assert.deepEqual(findings[f.confirm.id].verification, { verifiers: 1, confirmed: 1, run: out.runId }, 'this run\'s votes, not the hunt\'s 2 of 2');
   assert.ok(findings[f.confirm.id].lastSeen > seen[f.confirm.id]);
   assert.equal(findings[f.confirm.id].severity, 'HIGH');
   assert.equal(findings[f.unsure.id].lastSeen, seen[f.unsure.id]);

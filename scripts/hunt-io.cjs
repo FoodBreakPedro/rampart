@@ -648,7 +648,7 @@ function listCandidates(slug, runId) {
 //   votes/<key>__c1__1.json            the verifier's vote
 // with key = <fileKey(finding id)>__verify. The run has job verify and no layers: a re-check covers no unit, so it earns no
 // coverage credit. reverify applies the votes: rejected -> fixed (by rampart, "no longer reproducible in run <runId>"),
-// confirmed -> still open, seen again (lastSeen and verification.run move on), anything else -> unchanged, with the reason.
+// confirmed -> still open, seen again (lastSeen moves on; verification becomes this run's votes), anything else -> unchanged, with the reason.
 
 const VERIFY_STATUSES = ['open', 'regressed'];
 const verifyKey = (findingId) => `${fileKey(findingId)}__verify`;
@@ -790,7 +790,7 @@ function reverify(slug, runId, { finding: only } = {}) {
       outcome = 'fixed';
       reason = 'the verifier could not reproduce it';
     } else if (confirmed > n / 2) {
-      store.upsertFindings(slug, [{ ...current, verification: { ...(current.verification || { verifiers: n, confirmed }), run: runId } }], runId);
+      store.upsertFindings(slug, [{ ...current, verification: { verifiers: n, confirmed, run: runId } }], runId);
       outcome = 'still-open';
       reason = 'the verifier confirmed it in the current code';
     } else reason = 'the verifier was unsure; left as it is';

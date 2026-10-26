@@ -4,7 +4,7 @@
 // observations; hunt-io assemble judges the probe units from observations.json.
 //   node scripts/infra-probe.cjs --project <slug> --system <id> [--probe <id>]... [--run <id>] [--json]
 // --run uses the run hunt-io init created (it is finished by the audit, not here); without it the runner creates its own run
-// (job audit, layer INFRA) and finishes it done. A first probe that cannot reach the host (ssh refused, BatchMode auth failure,
+// (job audit, layer INFRA) and finishes it done. In a cloud session (CLAUDE_CODE_REMOTE=true) nothing runs: exit 2. A first probe that cannot reach the host (ssh refused, BatchMode auth failure,
 // timeout, no http answer) marks the run skipped, with the reason, either way: exit 2. A later probe that fails that way is
 // recorded in skipped[] and the run goes on. A probe that exits non-zero is an observation with ok false; its text is kept.
 //
@@ -159,6 +159,9 @@ async function viaHttp(probe, system) {
 // Returns {run, observations: [{probeId, via, ok, exitCode, durationMs, text, rawPath}], skipped: [{probeId, reason}]}.
 async function runProbes({ project, system, pack, probes, timeoutMs = DEFAULT_TIMEOUT_MS, runId } = {}) {
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new RangeError('timeoutMs must be a whole number of milliseconds');
+  // Spec 5.8: infra jobs never go to a cloud executor (Claude Code cloud sessions set CLAUDE_CODE_REMOTE). Refused before any
+  // run is created, read or finished, and before any probe, extra probes included.
+  if (process.env.CLAUDE_CODE_REMOTE === 'true') throw new RangeError('INFRA probes never run on a cloud executor; run them from a local session');
   const ctx = resolveSystem(project, system);
   if (!ctx.project.ownerAttestation || typeof ctx.project.ownerAttestation.statement !== 'string' || ctx.project.ownerAttestation.statement.trim() === '') {
     throw new RangeError(`project ${project} has no ownerAttestation; add the owner statement before probing`);
