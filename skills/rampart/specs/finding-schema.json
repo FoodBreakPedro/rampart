@@ -82,6 +82,18 @@
       }
     },
     "status": { "enum": ["open", "fixed", "false_positive", "accepted_risk", "regressed"] },
+    "disposition": {
+      "type": ["object", "null"],
+      "description": "The person's decision, written by the page (dispositions.json stays the local cache). It beats an automated status change.",
+      "required": ["status", "reason", "by", "at"],
+      "properties": {
+        "status": { "enum": ["open", "fixed", "false_positive", "accepted_risk"] },
+        "reason": { "type": "string" },
+        "by": { "type": "string" },
+        "at": { "type": "string" }
+      }
+    },
+    "updatedAt": { "type": "string", "description": "ISO time of the last write; the last writer wins on it." },
     "firstSeen": { "type": "string" },
     "lastSeen": { "type": "string" },
     "fixedIn": { "type": ["string", "null"] },

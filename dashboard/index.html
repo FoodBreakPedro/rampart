@@ -16,6 +16,7 @@
   --accent: #2B5E90;
   --accent-soft: #E2EBF4;
   --shadow-tint: rgba(21, 33, 43, 0.07);
+  --scrim: rgba(21, 33, 43, 0.45);
 
   /* Grades: fill and the text on it. */
   --grade-a: #1D7A4C; --grade-a-ink: #FFFFFF;
@@ -63,6 +64,7 @@
     --accent: #8DB9E6;
     --accent-soft: #1C2C3D;
     --shadow-tint: rgba(0, 0, 0, 0.32);
+    --scrim: rgba(0, 0, 0, 0.62);
     --grade-a: #62CC92; --grade-a-ink: #04261A;
     --grade-b: #5EC2C8; --grade-b-ink: #03282B;
     --grade-c: #EFC261; --grade-c-ink: #2E1E00;
@@ -98,6 +100,7 @@
   --accent: #8DB9E6;
   --accent-soft: #1C2C3D;
   --shadow-tint: rgba(0, 0, 0, 0.32);
+  --scrim: rgba(0, 0, 0, 0.62);
   --grade-a: #62CC92; --grade-a-ink: #04261A;
   --grade-b: #5EC2C8; --grade-b-ink: #03282B;
   --grade-c: #EFC261; --grade-c-ink: #2E1E00;
@@ -167,6 +170,10 @@ code { font-size: 0.92em; }
   font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--accent); background: var(--accent-soft); padding: 3px 9px; border-radius: 999px;
 }
+.mode-badge time { color: var(--ink); font-variant-numeric: tabular-nums; }
+.exec { font-weight: 600; }
+.exec-online { color: var(--ok); }
+.exec-offline { color: var(--muted); }
 
 main { padding-block: 28px 56px; }
 
@@ -250,7 +257,12 @@ main { padding-block: 28px 56px; }
   font-size: 12px; line-height: 1.3; padding: 3px 9px; border-radius: 6px;
   border: 1px dashed var(--line-strong); background: transparent; color: var(--muted); cursor: copy;
 }
-.action:hover { border-color: var(--accent); color: var(--accent); }
+.action:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+/* In live mode the owner's buttons queue a job after a confirmation, so they are solid; the ones whose flow arrives in a
+   later version are disabled and say why beside them. */
+.action-job { border-style: solid; border-color: var(--accent); color: var(--accent); cursor: pointer; }
+.action-job:hover:not(:disabled) { background: var(--accent-soft); }
+.action:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* ---- tiles ---- */
 .carousel-nav { display: flex; gap: 8px; }
@@ -389,7 +401,7 @@ th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .status-fixed, .status-done { color: var(--ok); background: var(--ok-bg); }
 .status-accepted_risk { color: var(--warn); background: var(--warn-bg); }
 .status-false_positive, .status-skipped, .status-unknown { color: var(--neutral); background: var(--neutral-bg); }
-.status-running { color: var(--info); background: var(--info-bg); }
+.status-running, .status-queued, .status-claimed { color: var(--info); background: var(--info-bg); }
 tr.is-closed td { color: var(--muted); }
 
 .title-cell { min-width: 260px; max-width: 460px; }
@@ -404,7 +416,107 @@ tr.is-closed td { color: var(--muted); }
 .loc { min-width: 180px; max-width: 320px; font-family: var(--font-mono); font-size: 12px; overflow-wrap: anywhere; }
 .empty-row td { padding: 24px 12px; text-align: center; color: var(--muted); }
 .run-reason { display: block; margin-top: 4px; max-width: 280px; font-size: 12px; color: var(--muted); }
+
+/* Decision form inside a finding's details: live mode, for the owner only. Fields stack, so it fits the title column at any
+   width. */
+.decide { margin: 12px 0 4px; padding-top: 12px; border-top: 1px solid var(--line); }
+.decide-set { margin: 0; padding: 0; border: 0; min-width: 0; display: grid; gap: 10px; }
+.decide-set legend { padding: 0; margin-bottom: 2px; }
+.decide-field { display: grid; gap: 5px; min-width: 0; }
+.decide-field label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.decide-need { font-weight: 400; }
+.decide select, .decide input {
+  width: 100%; min-width: 0; padding: 7px 10px; font: inherit; font-size: 13px;
+  border: 1px solid var(--line-strong); border-radius: 8px; background-color: var(--surface); color: var(--ink);
+}
+.decide input[aria-invalid="true"] { border-color: var(--bad); }
+.decide-save {
+  justify-self: start; padding: 7px 14px; border: 1px solid var(--accent); border-radius: 8px;
+  background: var(--accent); color: var(--surface); font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.decide-save:hover:not(:disabled) { background: var(--surface); color: var(--accent); }
+.decide :disabled { opacity: 0.6; cursor: progress; }
+.decide-error { color: var(--bad); font-size: 12.5px; }
 .run-counts { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Finding actions and job status (live mode). */
+.finding-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 12px 0 2px; }
+.finding-actions-note { flex-basis: 100%; font-size: 12px; color: var(--muted); }
+.job-note { font-size: 12px; color: var(--muted); }
+.job-note code { padding: 1px 5px; border-radius: 5px; background: var(--sunk); }
+tr.is-stale .status-queued { color: var(--warn); background: var(--warn-bg); }
+.job-tools { margin-top: 6px; }
+
+/* Export buttons above the findings filters: plain outlined buttons, since a download asks the viewer before it saves. */
+.export { display: flex; flex-wrap: wrap; gap: 8px; }
+.export-btn {
+  padding: 6px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--ink);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.export-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.export-btn:disabled { opacity: 0.6; cursor: progress; }
+
+/* Project settings (live mode, owner only): two groups on a surface, each layer's cadence a small number field. */
+.settings {
+  display: grid; gap: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+}
+.settings-group { margin: 0; padding: 0; border: 0; min-width: 0; display: grid; gap: 10px; }
+.settings-group > legend { padding: 0; margin-bottom: 2px; }
+.settings-check { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.settings-check input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.settings-why { font-size: 12.5px; color: var(--muted); max-width: 72ch; }
+.settings-field { display: grid; gap: 5px; min-width: 0; max-width: 260px; }
+.settings-field label { font-size: 12px; font-weight: 600; color: var(--muted); }
+.settings select, .settings input[type="number"] {
+  width: 100%; min-width: 0; padding: 7px 10px; font: inherit; font-size: 13px; font-variant-numeric: tabular-nums;
+  border: 1px solid var(--line-strong); border-radius: 8px; background-color: var(--surface); color: var(--ink);
+}
+.settings [aria-invalid="true"] { border-color: var(--bad); outline-color: var(--bad); }
+.settings-systems { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.settings-system {
+  margin: 0; min-width: 0; display: flex; flex-wrap: wrap; gap: 10px; padding: 10px 12px 12px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--sunk);
+}
+.settings-system > legend { padding: 0 4px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.settings-days { width: 88px; }
+.settings-pending { font-size: 11.5px; color: var(--info); }
+.settings-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+.settings-save {
+  padding: 7px 14px; border: 1px solid var(--accent); border-radius: 8px;
+  background: var(--accent); color: var(--surface); font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.settings-save:hover:not(:disabled) { background: var(--surface); color: var(--accent); }
+.settings :disabled { opacity: 0.6; cursor: not-allowed; }
+.settings[aria-busy="true"] :disabled { cursor: progress; }
+.settings-error { color: var(--bad); font-size: 12.5px; }
+
+/* The confirm sheet: a modal dialog over a scrim, centred, inside the safe-area gutters. */
+.sheet-scrim {
+  position: fixed; inset: 0; z-index: 30; display: grid; place-items: center;
+  padding-block: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-bottom, 0px));
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--scrim);
+}
+.job-sheet {
+  width: 100%; max-width: 460px; max-height: 100%; overflow-y: auto; display: grid; gap: 14px;
+  padding: 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink);
+  box-shadow: 0 18px 48px var(--shadow-tint);
+}
+.sheet-title { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+.sheet-sub { color: var(--muted); font-size: 13px; }
+.sheet-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 14px; margin: 0; font-size: 13px; }
+.sheet-facts dt { color: var(--muted); font-weight: 600; }
+.sheet-facts dd { margin: 0; overflow-wrap: anywhere; }
+.sheet-why { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); }
+.sheet-error { color: var(--bad); }
+.sheet-buttons { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.sheet-cancel, .sheet-confirm { padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.sheet-cancel { border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); }
+.sheet-cancel:hover { border-color: var(--accent); color: var(--accent); }
+.sheet-confirm { border: 1px solid var(--accent); background: var(--accent); color: var(--surface); }
+.sheet-confirm:hover:not(:disabled) { background: var(--surface); color: var(--accent); }
+.sheet-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ---- empty state ---- */
 .empty {
@@ -444,6 +556,8 @@ tr.is-closed td { color: var(--muted); }
   .card { padding: 16px; }
   .empty { padding: 22px; margin-top: 16px; }
   .empty-title { font-size: 19px; }
+  .decide select, .decide input, .settings select, .settings input[type="number"] { font-size: 16px; } /* under 16px, phones zoom the page on focus */
+  .settings-field { max-width: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -461,7 +575,17 @@ tr.is-closed td { color: var(--muted); }
   </div>
 </header>
 
-<main class="wrap" id="main" data-engines='["L1","L2","L3","INFRA"]'>
+<main class="wrap" id="main" data-engines='["L1","L2","L3","INFRA"]' data-version="0.4.0-alpha.1" data-access="read">
+  <section id="loading-view" class="empty" aria-labelledby="loading-heading" hidden>
+    <h1 id="loading-heading" class="empty-title">Loading the live dashboard</h1>
+    <p class="empty-hint">Reading projects, findings and runs from this dashboard's data. When there is none, this page shows how to fill it.</p>
+  </section>
+
+  <section id="unavailable-view" class="empty" aria-labelledby="unavailable-heading" hidden>
+    <h1 id="unavailable-heading" class="empty-title">Live data is not available right now</h1>
+    <p class="empty-hint">This dashboard stopped receiving its data before any arrived. Reload the page to try again.</p>
+  </section>
+
   <section id="empty-view" class="empty" aria-labelledby="empty-heading">
     <h1 id="empty-heading" class="empty-title">No data yet — run <code>/rampart inventory</code>, then <code>/rampart audit L1</code></h1>
     <p class="empty-hint">This page shows the projects, grades and findings in your Rampart store once the dashboard job fills it in.</p>
@@ -497,8 +621,11 @@ tr.is-closed td { color: var(--muted); }
 
 <script id="rampart-data" type="application/json"></script>
 <script>
-// Rampart dashboard. loadData() reads the inline #rampart-data slot (static mode, filled by scripts/render-static.cjs);
-// render(data) draws whatever it is given. Live mode (Plan 3) replaces loadData and calls render again on each update.
+// Rampart dashboard. loadData() reads the inline #rampart-data slot (static mode, filled by scripts/render-static.cjs); when
+// the slot is empty it asks the artifact host for the db capability and, when there is one, returns a live source that
+// subscribes once to each collection and assembles the same page data from its documents (live mode). Without either the
+// page shows the empty state. render(data) draws whatever it is given; called again with new data it patches the views in
+// place (morphChildren, keyed by data-key), so scroll position, focus and open <details> survive a live update.
 // Every element is built from nodes and text, never from markup strings, so nothing in the data is parsed as HTML.
 const RampartDashboard = (function () {
   'use strict';
@@ -520,9 +647,142 @@ const RampartDashboard = (function () {
   const STATUS_LABELS = {
     open: 'Open', regressed: 'Regressed', fixed: 'Fixed', false_positive: 'False positive', accepted_risk: 'Accepted risk',
   };
+  // What a person can decide about a finding on the page; the last two are judgments and need a reason.
+  const DECISIONS = Object.freeze(['open', 'fixed', 'false_positive', 'accepted_risk']);
+  const NEEDS_REASON = Object.freeze(['false_positive', 'accepted_risk']);
+  const REASON_MAX = 500;
   const RUN_STATUS_LABELS = { running: 'Running', done: 'Done', skipped: 'Skipped', failed: 'Failed' };
+  const JOB_STATUSES = ['queued', 'claimed', 'running', 'done', 'failed'];
+  const JOB_STATUS_LABELS = { queued: 'Queued', claimed: 'Claimed', running: 'Running', done: 'Done', failed: 'Failed' };
+  // The dashboard DB's collections (skills/rampart/specs/db-layout.md); the page subscribes to each once.
+  const COLLECTIONS = Object.freeze(['projects', 'findings', 'runs', 'jobs', 'executors', 'meta']);
+  const EXECUTOR_ONLINE_MS = 5 * 60 * 1000;
+  const BADGE_REFRESH_MS = 60 * 1000;
+  // How long the page waits for every collection's first definitive answer before drawing what it has.
+  const ANSWER_TIMEOUT_MS = 10 * 1000;
   const FRESHNESS_LABELS = { fresh: 'Fresh', aging: 'Aging', stale: 'Stale', never: 'Never run', absent: 'Not declared' };
   const DAY_MS = 24 * 60 * 60 * 1000;
+
+  // ---- jobs: ids, cost estimates and routing ----------------------------------------------
+
+  // Verbatim copies of scripts/jobs.cjs PAGE_FUNCTIONS (the page has no module loader). tests/dashboard-live.test.cjs
+  // compares each one with the original, so edit them there and copy them here.
+  const Jobs = (function () {
+    // A time as an ISO string. Throws on null, on anything that is not a valid time and on a year outside 0000-9999 (its ISO
+    // string would carry a sign or more digits, and an id built from it would be malformed).
+    function toIsoTime(now) {
+      if (now === null) throw new TypeError('now must be a valid time');
+      const d = now === undefined ? new Date() : new Date(now);
+      const iso = Number.isNaN(d.getTime()) ? '' : d.toISOString();
+      if (!/^\d{4}-/.test(iso)) throw new TypeError('now must be a valid time');
+      return iso;
+    }
+
+    // A non-negative whole number, or the default when the value is absent.
+    function wholeCount(value, name, fallback) {
+      if (value === undefined || value === null) return fallback;
+      if (!Number.isInteger(value) || value < 0) throw new RangeError(`${name} must be a non-negative whole number`);
+      return value;
+    }
+
+    // True for a github.com remote in the forms git uses: github.com/o/r, github.com:o/r, https://github.com/o/r,
+    // ssh://git@github.com/o/r and git@github.com:o/r.git. The host must be exactly github.com.
+    function isGithubRemote(remote) {
+      if (typeof remote !== 'string') return false;
+      const bare = remote.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').replace(/^[^/@]*@/, '');
+      return /^github\.com[/:]/i.test(bare);
+    }
+
+    // job-<YYYYMMDD-HHmmss>-<4 hex>, UTC. rand() gives an integer 0..65535; the default is crypto.getRandomValues when the
+    // runtime has it (Node 20 and every browser do), else Math.random.
+    function newJobId(now, rand) {
+      const iso = toIsoTime(now);
+      const pick =
+        rand ||
+        function () {
+          const c = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+          if (c && typeof c.getRandomValues === 'function') return c.getRandomValues(new Uint16Array(1))[0];
+          return Math.floor(Math.random() * 65536);
+        };
+      const n = pick();
+      if (!Number.isInteger(n) || n < 0 || n > 65535) throw new RangeError('rand must give a whole number from 0 to 65535');
+      const stamp = iso.slice(0, 19).replace(/[-:]/g, '').replace('T', '-');
+      return `job-${stamp}-${n.toString(16).padStart(4, '0')}`;
+    }
+
+    // The estimated number of subagents a job spawns, and a note that states the numbers. L1 runs scripts only; L2 is
+    // min(units, 10) x 5 classes x 2 verifiers; L3 is units x 5|10|classes by effort x 2; INFRA is probes + 2; verify is one agent per
+    // open verified finding; inventory is one. Defaults: 10 units, 15 classes, 6 probes, 0 open verified findings, medium effort.
+    function costEstimate(input) {
+      if (!input || typeof input !== 'object') throw new TypeError('costEstimate needs {type, layer, ...}');
+      const type = input.type;
+      const known = ['inventory', 'audit', 'verify', 'fix', 'apply', 'dashboard', 'doctor', 'import'];
+      if (!known.includes(type)) throw new RangeError(`unknown job type ${JSON.stringify(type)}`);
+      if (type === 'inventory') return { agents: 1, note: 'inventory: 1 agent (estimate)' };
+      if (type === 'verify') {
+        const open = wholeCount(input.openVerified, 'openVerified', 0);
+        return { agents: open, note: `verify: ${open} open verified findings, 1 agent each = ${open} agents (estimate)` };
+      }
+      if (type === 'fix') return { agents: 1, note: 'fix: 1 agent session (estimate)' };
+      if (type === 'apply') return { agents: 0, note: 'apply: applies a reviewed change, no agents (estimate)' };
+      if (type !== 'audit') return { agents: 0, note: `${type}: scripts only, no agents (estimate)` };
+
+      const layer = input.layer;
+      if (layer === 'L1') return { agents: 0, note: 'L1: scripts only, ~1 min, 0 agents (estimate)' };
+      if (layer === 'INFRA') {
+        const probes = wholeCount(input.probes, 'probes', 6);
+        return { agents: probes + 2, note: `INFRA: ${probes} probes + 2 = ${probes + 2} agents (estimate)` };
+      }
+      if (layer === 'L2') {
+        const units = Math.min(wholeCount(input.units, 'units', 10), 10);
+        return { agents: units * 5 * 2, note: `L2: ${units} units × 5 classes × 2 verifiers = ${units * 5 * 2} agents (estimate)` };
+      }
+      if (layer === 'L3') {
+        const units = wholeCount(input.units, 'units', 10);
+        const effort = input.effort === undefined ? 'medium' : input.effort;
+        if (effort !== 'low' && effort !== 'medium' && effort !== 'high') throw new RangeError('effort must be low, medium or high');
+        const classes = effort === 'low' ? 5 : effort === 'medium' ? 10 : wholeCount(input.classes, 'classes', 15);
+        return { agents: units * classes * 2, note: `L3 (${effort}): ${units} units × ${classes} classes × 2 verifiers = ${units * classes * 2} agents (estimate)` };
+      }
+      throw new RangeError('layer must be L1, L2, L3 or INFRA for an audit');
+    }
+
+    // Where a job runs. Cloud only when the project allows it, the system has no host (a host is reached from here), the repo is on
+    // github.com and the work is not INFRA or apply. Anything else, and anything unreadable, is local. Cloud runs are gated off
+    // until a cloud executor exists (R50): with CLOUD_RUNS false, a job that would go to the cloud runs locally and says why.
+    function route(args) {
+      const CLOUD_RUNS = false;
+      const a = args || {};
+      const project = a.project || {};
+      const system = a.system || {};
+      if (a.type === 'apply') return { executorKind: 'local', reason: 'apply changes run locally' };
+      if (a.layer === 'INFRA') return { executorKind: 'local', reason: 'infra checks need the local network, so they run locally' };
+      if (system.host) return { executorKind: 'local', reason: 'this system is reached through a host, so it runs locally' };
+      if (system.executor === 'local') return { executorKind: 'local', reason: 'this system is set to run locally' };
+      if (project.cloudAllowed !== true) return { executorKind: 'local', reason: 'cloud is not allowed for this project' };
+      if (!isGithubRemote(system.repo && system.repo.remote)) return { executorKind: 'local', reason: 'cloud needs a repo on github.com' };
+      if (!CLOUD_RUNS) return { executorKind: 'local', reason: 'cloud runs arrive in a later version' };
+      return { executorKind: 'cloud', reason: 'repo on github.com and the project allows cloud' };
+    }
+
+    // The patch that claims a queued job. The recipe applies it with if_version, so a second executor loses the race.
+    function claimPatch(job, executorId, now) {
+      if (!job || typeof job !== 'object') throw new TypeError('claimPatch needs a job');
+      if (job.status !== 'queued') throw new Error(`job ${job.id} is ${job.status}, not queued`);
+      if (typeof executorId !== 'string' || executorId === '') throw new TypeError('claimPatch needs an executor id');
+      const at = toIsoTime(now);
+      return { status: 'claimed', claimedBy: executorId, claimedAt: at, updatedAt: at };
+    }
+
+    // The patch for a job someone other than the owner queued: refused, never run.
+    function refusalPatch(job, now) {
+      if (!job || typeof job !== 'object') throw new TypeError('refusalPatch needs a job');
+      const at = toIsoTime(now);
+      return { status: 'failed', resultSummary: 'not created by the owner', finishedAt: at, updatedAt: at };
+    }
+
+    return { toIsoTime, wholeCount, isGithubRemote, newJobId, costEstimate, route, claimPatch, refusalPatch };
+  })();
 
   const own = (obj, key) => obj !== null && typeof obj === 'object' && Object.prototype.hasOwnProperty.call(obj, key);
   const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -600,6 +860,71 @@ const RampartDashboard = (function () {
     if (typeof loc.host === 'string') return [loc.host, loc.service, loc.setting].filter(Boolean).join(' · ');
     if (typeof loc.url === 'string') return [loc.url, loc.header].filter(Boolean).join(' · ');
     return '';
+  }
+
+  // ---- export: findings as SARIF 2.1.0 (pure, no DOM) -------------------------------------
+
+  const SARIF_LEVELS = { CRITICAL: 'error', HIGH: 'error', MEDIUM: 'warning', LOW: 'note', INFO: 'note' };
+
+  // A relative path as a SARIF uri: forward slashes, each segment percent-encoded.
+  const sarifUri = (path) => String(path).replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/');
+
+  // A Rampart location as SARIF locations: a code path (with its line when known) is a physicalLocation; a url, host or
+  // package is a logicalLocation whose kind says which, and a package's manifest path is its physicalLocation too.
+  function sarifLocations(loc) {
+    if (!isObject(loc)) return [];
+    const physical = (path, line) => {
+      const out = { artifactLocation: { uri: sarifUri(path) } };
+      if (Number.isInteger(line) && line >= 1) out.region = { startLine: line };
+      return out;
+    };
+    const logical = (kind, name, props) => {
+      const out = { name: String(name), kind };
+      const bag = {};
+      for (const [k, v] of Object.entries(props)) if (typeof v === 'string' && v !== '') bag[k] = v;
+      if (Object.keys(bag).length) out.properties = bag;
+      return out;
+    };
+    if (typeof loc.package === 'string') {
+      const out = { logicalLocations: [logical('package', loc.package, { ecosystem: loc.ecosystem })] };
+      if (typeof loc.path === 'string' && loc.path) out.physicalLocation = physical(loc.path);
+      return [out];
+    }
+    if (typeof loc.path === 'string' && loc.path) return [{ physicalLocation: physical(loc.path, loc.line) }];
+    if (typeof loc.url === 'string') return [{ logicalLocations: [logical('url', loc.url, { header: loc.header })] }];
+    if (typeof loc.host === 'string') return [{ logicalLocations: [logical('host', loc.host, { service: loc.service, setting: loc.setting })] }];
+    return [];
+  }
+
+  // SARIF 2.1.0 for the open (open or regressed) findings: one run by Rampart, one rule per distinct ruleId, one result per
+  // finding. A result carries the title, the location, class/status/id/severity and the finding id as its fingerprint; never
+  // the evidence, exploit scenario, recommendation or a decision's reason.
+  function toSarif(findings, options) {
+    const toolVersion = isObject(options) && typeof options.toolVersion === 'string' && options.toolVersion ? options.toolVersion : null;
+    const rules = [];
+    const ruleIndex = new Map();
+    const results = list(findings).filter(isActive).map((f) => {
+      const ruleId = typeof f.ruleId === 'string' && f.ruleId ? f.ruleId : 'rampart/unknown';
+      if (!ruleIndex.has(ruleId)) {
+        ruleIndex.set(ruleId, rules.length);
+        rules.push({ id: ruleId, shortDescription: { text: String(f.title || ruleId) } });
+      }
+      const result = {
+        ruleId,
+        ruleIndex: ruleIndex.get(ruleId),
+        level: own(SARIF_LEVELS, f.severity) ? SARIF_LEVELS[f.severity] : 'warning',
+        message: { text: String(f.title || ruleId) },
+      };
+      const locations = sarifLocations(f.location);
+      if (locations.length) result.locations = locations;
+      result.partialFingerprints = { rampartId: String(f.id) };
+      result.properties = { class: f.class, status: f.status, id: String(f.id), severity: f.severity };
+      return result;
+    });
+    const driver = { name: 'Rampart' };
+    if (toolVersion) driver.version = toolVersion;
+    driver.rules = rules;
+    return { $schema: 'https://json.schemastore.org/sarif-2.1.0.json', version: '2.1.0', runs: [{ tool: { driver }, results }] };
   }
 
   // View state in the hash as one plain anchor token: p-<slug>, then ~<filter>.<value> for each filter off its default.
@@ -696,6 +1021,85 @@ const RampartDashboard = (function () {
     return days === 1 ? 'yesterday' : `${days} days ago`;
   }
 
+  // ---- live data: DB documents as page data (pure, no DOM) ---------------------------------
+
+  // The latest push or pull in meta/sync ({[machineId]: {pushedAt, pulledAt, ...}}) and the machine that made it.
+  function latestSync(sync) {
+    let best = { at: null, machineId: null };
+    let bestAt = -Infinity;
+    for (const machine of Object.keys(isObject(sync) ? sync : {})) {
+      const entry = sync[machine];
+      if (!isObject(entry)) continue;
+      for (const stampAt of [entry.pushedAt, entry.pulledAt]) {
+        const t = timeOf(stampAt);
+        if (t !== null && t > bestAt) {
+          best = { at: stampAt, machineId: machine };
+          bestAt = t;
+        }
+      }
+    }
+    return best;
+  }
+
+  // True when any executor's heartbeat is under EXECUTOR_ONLINE_MS old at `now` (ms).
+  function executorOnline(executors, now) {
+    return list(executors).some((e) => {
+      const t = timeOf(isObject(e) ? e.heartbeatAt : null);
+      return t !== null && now - t <= EXECUTOR_ONLINE_MS;
+    });
+  }
+
+  // The page data static mode renders, from the DB's documents: {collection: [{id, data}]}. A project doc is the public
+  // project plus its score (sync-plan.cjs projectDoc); findings, runs and jobs join it by their `project` field, and a
+  // finding's `disposition` field is its decision. `live` carries what the mode badge needs. The project doc's
+  // cadenceOverrides (cadence changes saved here that no sync has applied yet; null once a push consumed them, R26) go on
+  // the entry, not the project.
+  function pageDataFromDocs(docs) {
+    const bodies = (name) => list(isObject(docs) ? docs[name] : null)
+      .filter((d) => isObject(d) && typeof d.id === 'string' && isObject(d.data))
+      .map((d) => Object.assign({ id: d.id }, d.data));
+    const byProject = (name) => {
+      const groups = new Map();
+      for (const body of bodies(name)) {
+        const key = String(body.project);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(body);
+      }
+      return (slug) => groups.get(slug) || [];
+    };
+    const findingsOf = byProject('findings');
+    const runsOf = byProject('runs');
+    const jobsOf = byProject('jobs');
+    const meta = new Map(bodies('meta').map((m) => [m.id, m]));
+    const sync = latestSync(meta.get('sync'));
+    const projects = bodies('projects').map((doc) => {
+      const { id, score, cadenceOverrides, updatedAt, ...rest } = doc;
+      const slug = typeof rest.slug === 'string' ? rest.slug : id;
+      const findings = findingsOf(slug);
+      const dispositions = {};
+      for (const f of findings) if (isObject(f.disposition)) dispositions[f.id] = f.disposition;
+      return {
+        project: Object.assign(rest, { slug }),
+        score: isObject(score) ? score : {},
+        findings,
+        runs: runsOf(slug).map(({ id: runId, ...run }) => Object.assign({ runId }, run)),
+        dispositions,
+        jobs: jobsOf(slug),
+        cadenceOverrides: isObject(cadenceOverrides) ? cadenceOverrides : null,
+      };
+    }).sort((a, b) => a.project.slug.localeCompare(b.project.slug));
+    return {
+      generatedAt: sync.at,
+      machineId: sync.machineId,
+      live: {
+        syncedAt: sync.at,
+        executors: bodies('executors'),
+        ownerId: isObject(meta.get('owner')) && typeof meta.get('owner').ownerId === 'string' ? meta.get('owner').ownerId : null,
+      },
+      projects,
+    };
+  }
+
   // ---- DOM helpers -------------------------------------------------------------------------
 
   function append(el, child) {
@@ -723,15 +1127,92 @@ const RampartDashboard = (function () {
 
   const $ = (id) => document.getElementById(id);
 
+  // Patching in place. A live update rebuilds the view with h() into detached nodes, then morphChildren makes the page's
+  // nodes match them: text and attributes change, the nodes stay. Children with a data-key (a tile's slug, a system, finding,
+  // run or job id) are matched by key and the rest by position; a child whose tag differs is replaced. A <details> keeps the
+  // open state the viewer gave it, a <select> or <input> takes the new value, and an element marked data-dirty (a decision
+  // form the viewer is editing) is left exactly as it is until they save. Kept nodes keep their own event listeners, so a
+  // listener must read anything that can change from its element (actionButton reads data-command), not from a closure.
+  const keyOf = (node) => (node.nodeType === 1 && node.hasAttribute('data-key') ? node.getAttribute('data-key') : null);
+  const sameKind = (a, b) => a.nodeType === b.nodeType && (a.nodeType !== 1 || (a.tagName === b.tagName && keyOf(a) === keyOf(b)));
+
+  function morphAttributes(from, to) {
+    const keepOpen = from.tagName === 'DETAILS';
+    for (const { name } of Array.from(from.attributes)) {
+      if (!to.hasAttribute(name) && !(keepOpen && name === 'open')) from.removeAttribute(name);
+    }
+    for (const { name, value } of Array.from(to.attributes)) {
+      if (keepOpen && name === 'open') continue;
+      if (from.getAttribute(name) !== value) from.setAttribute(name, value);
+    }
+  }
+
+  function morph(from, to) {
+    if (from.nodeType === 3) {
+      if (from.nodeValue !== to.nodeValue) from.nodeValue = to.nodeValue;
+      return;
+    }
+    if (from.hasAttribute('data-dirty')) return;
+    morphAttributes(from, to);
+    morphChildren(from, Array.from(to.childNodes));
+    if ((from.tagName === 'SELECT' || from.tagName === 'INPUT') && from.value !== to.value) from.value = to.value;
+    if (from.tagName === 'INPUT' && from.getAttribute('type') === 'checkbox' && from.checked !== to.checked) from.checked = to.checked;
+  }
+
+  // Make parent's children match next (detached nodes), reusing parent's own where they match. Children that will not be
+  // reused are removed first, so the kept ones close up in their old order and only a real reorder moves one (moving a
+  // node drops its focus). New nodes are inserted around them.
+  function morphChildren(parent, next) {
+    const keyed = new Map();
+    const unkeyed = [];
+    for (const child of Array.from(parent.childNodes)) {
+      const key = keyOf(child);
+      if (key === null) unkeyed.push(child);
+      else if (!keyed.has(key)) keyed.set(key, child);
+    }
+    let u = 0;
+    const pairs = next.map((want) => {
+      const key = keyOf(want);
+      const old = key === null ? unkeyed[u++] : keyed.get(key);
+      if (!old || !sameKind(old, want)) return [null, want];
+      if (key !== null) keyed.delete(key);
+      return [old, want];
+    });
+    const kept = new Set(pairs.map(([old]) => old).filter(Boolean));
+    for (const child of Array.from(parent.childNodes)) if (!kept.has(child)) parent.removeChild(child);
+    pairs.forEach(([old, want], i) => {
+      if (old) morph(old, want);
+      const node = old || want;
+      const at = parent.childNodes[i] || null;
+      if (at !== node) parent.insertBefore(node, at);
+    });
+  }
+
   // ---- view state --------------------------------------------------------------------------
 
   const state = {
     data: null, entries: [], view: null, slug: null, filters: Object.assign({}, DEFAULT_FILTERS), returnTo: null,
     engines: DEFAULT_ENGINES.slice(),
+    version: '', // the plugin version, from <main data-version>; it names the SARIF tool version
+    live: null, // the live source, in live mode
+    access: 'read', // 'write' only for the owner with db write access (canWrite)
+    userId: null, // the writer's user id, which signs a decision's `by`; read only when access is 'write'
+    saving: new Set(), // finding ids with a decision write in flight (one at a time per finding)
+    optimistic: new Map(), // finding id -> {status, disposition} shown while its write is in flight
+    user: null, // the user capability, kept for a writer: a job's createdBy is read from it when the job is confirmed
+    sheet: null, // the open confirm sheet: {scrim, dialog, opener, plan}
+    waiting: new Set(), // job ids queued here that no executor was reached for: their row says to start /rampart watch
+    jobWrites: new Set(), // job ids with a write in flight (one at a time per job)
+    settingsSaving: new Map(), // project slug -> the settings patch in flight (one write at a time per project doc)
+    downloads: null, // the downloads capability once the host gave one; the export buttons render only then
+    downloadsAsked: false,
+    exporting: false, // a save prompt is open (the host allows one at a time)
   };
 
   function show(view) {
     state.view = view;
+    $('loading-view').hidden = view !== 'loading';
+    $('unavailable-view').hidden = view !== 'unavailable';
     $('empty-view').hidden = view !== 'empty';
     $('tiles-view').hidden = view !== 'tiles';
     $('detail-view').hidden = view !== 'detail';
@@ -826,21 +1307,45 @@ const RampartDashboard = (function () {
   // The declared layers of a system that can run in this version: a layer with no engine gets no Run button.
   const runnableLayers = (system, engines) => declaredLayers(system).filter((L) => list(engines).indexOf(L) !== -1);
 
+  // A layer's Run button. For the owner in live mode it queues an audit job after a confirmation; everywhere else (static
+  // mode, a viewer) it copies the command that runs the layer.
   function actionButton(layer, slug, systemId) {
-    const command = auditCommand(layer, slug, systemId);
+    if (canQueue()) {
+      return h('button', {
+        type: 'button',
+        class: 'action action-job',
+        'aria-label': `${ACTION_LABELS[layer]}: shows the cost, then queues the job`,
+        title: 'Queue this job',
+        'data-write': true,
+        'data-action': 'queue',
+        'data-type': 'audit',
+        'data-project': slug,
+        'data-system': systemId,
+        'data-layer': layer,
+        on: { click: onAction },
+      }, ACTION_LABELS[layer]);
+    }
     return h('button', {
       type: 'button',
       class: 'action',
       'aria-label': `${ACTION_LABELS[layer]}, copies the command`,
       title: 'Copy command',
-      'data-command': command,
-      on: {
-        click: (event) => {
-          event.stopPropagation();
-          copyCommand(command, event.currentTarget);
-        },
-      },
+      'data-action': 'copy',
+      'data-command': auditCommand(layer, slug, systemId),
+      on: { click: onAction },
     }, ACTION_LABELS[layer]);
+  }
+
+  // The one click handler of every action button: copy, queue, requeue and the disabled ones. morph keeps a patched
+  // button's listeners (a copy button can become a queue button when access arrives), so it reads what to do from the
+  // element.
+  function onAction(event) {
+    event.stopPropagation();
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    const action = button.getAttribute('data-action');
+    if (action === 'copy') copyCommand(button.getAttribute('data-command'), button);
+    else if (action === 'queue' || action === 'requeue') openSheet(button);
   }
 
   function actionGroup(slug, system) {
@@ -850,8 +1355,14 @@ const RampartDashboard = (function () {
     return h('div', { class: 'actions' }, layers.map((L) => actionButton(L, slug, system.id)));
   }
 
+  // When and where the data came from: the render (static mode) or the latest sync (live mode).
   function generatedLine() {
     const data = state.data || {};
+    if (state.live) {
+      if (!data.generatedAt) return 'Not synced from a machine yet';
+      return ['Synced ', h('time', { datetime: data.generatedAt, title: data.generatedAt }, stamp(data.generatedAt)),
+        ' from ', h('span', { class: 'mono' }, String(data.machineId || 'an unknown machine'))];
+    }
     return ['Generated ', h('time', { datetime: data.generatedAt, title: data.generatedAt }, stamp(data.generatedAt)),
       ' on ', h('span', { class: 'mono' }, String(data.machineId || 'an unknown machine'))];
   }
@@ -860,7 +1371,7 @@ const RampartDashboard = (function () {
 
   function systemChip(slug, system, systemScore) {
     const name = system.name || system.id;
-    return h('li', { class: 'system' },
+    return h('li', { class: 'system', 'data-key': String(system.id) },
       h('div', { class: 'system-row' },
         h('span', { class: 'system-name', title: `${name} (${system.id}, ${system.type})` }, name, h('span', { class: 'system-id' }, system.id)),
         strip(systemScore)),
@@ -908,7 +1419,7 @@ const RampartDashboard = (function () {
   }
 
   function renderTiles() {
-    $('carousel').replaceChildren(...state.entries.map((entry) => h('li', null, card(entry))));
+    morphChildren($('carousel'), state.entries.map((entry) => h('li', { 'data-key': entry.project.slug }, card(entry))));
   }
 
   const motion = () =>
@@ -946,6 +1457,10 @@ const RampartDashboard = (function () {
 
   // Left and right arrows step through the tiles, unless a form control has the keys.
   function onKey(event) {
+    if (state.sheet) {
+      sheetKey(event);
+      return;
+    }
     if (state.view !== 'tiles' || event.defaultPrevented) return;
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
@@ -1007,7 +1522,7 @@ const RampartDashboard = (function () {
       layers.map((L) => h('th', { scope: 'col' }, L)));
     const rows = systems.map((sys) => {
       const sc = isObject(scores[sys.id]) ? scores[sys.id] : {};
-      return h('tr', null,
+      return h('tr', { 'data-key': String(sys.id) },
         h('th', { scope: 'row', class: 'sys-cell' },
           h('span', { class: 'sys-name' }, sys.name || sys.id),
           h('span', { class: 'sys-sub' }, h('span', { class: 'mono' }, sys.id), ` · ${sys.type}${sys.criticality ? ` · ${sys.criticality}` : ''}`)),
@@ -1053,14 +1568,52 @@ const RampartDashboard = (function () {
     return h('div', { class: 'filter' }, h('label', { class: 'label', for: id }, label), select);
   }
 
+  // Who made a decision. A page decision's `by` is an opaque user id, which is never shown: in live mode it reads "owner"
+  // when it is meta/owner's id and "a viewer" otherwise. Static mode shows the local store's `by` (an OS user name), except
+  // a page decision pulled into the store, whose user id (u_...) reads "dashboard user".
+  function author(by) {
+    if (by === 'rampart') return 'Rampart';
+    if (!by) return by;
+    if (!state.live) return String(by).indexOf('u_') === 0 ? 'dashboard user' : String(by);
+    const live = state.data && isObject(state.data.live) ? state.data.live : {};
+    return live.ownerId && by === live.ownerId ? 'owner' : 'a viewer';
+  }
+
   function dispositionText(d) {
     if (!isObject(d)) return '';
     const what = STATUS_LABELS[d.status] || String(d.status || '');
-    const who = [d.by, d.at ? day(d.at) : null].filter(Boolean).join(', ');
+    const who = [author(d.by), d.at ? day(d.at) : null].filter(Boolean).join(', ');
     return `${what}${d.reason ? `: ${d.reason}` : ''}${who ? ` (${who})` : ''}`;
   }
 
-  function findingDetails(f, disposition) {
+  // The owner's actions on a finding (live mode): "Verify still present" queues a verify job for an open or regressed one;
+  // fix and apply arrive with Plan 4 and are disabled, with the note beside them.
+  function findingActions(f, slug) {
+    const note = `fix-note-${f.id}`;
+    const later = (label) => h('button', {
+      type: 'button', class: 'action', disabled: true, 'data-write': true, 'aria-describedby': note, on: { click: onAction },
+    }, label);
+    return h('div', { class: 'finding-actions' },
+      isActive(f)
+        ? h('button', {
+          type: 'button',
+          class: 'action action-job',
+          'aria-label': 'Verify still present: shows the cost, then queues the job',
+          'data-write': true,
+          'data-action': 'queue',
+          'data-type': 'verify',
+          'data-project': slug,
+          'data-system': String(f.system),
+          'data-finding': String(f.id),
+          on: { click: onAction },
+        }, 'Verify still present')
+        : null,
+      later('Diagnose & fix'),
+      later('Apply reviewed patch'),
+      h('p', { class: 'finding-actions-note', id: note }, 'Each arrives with the fix flow (Plan 4).'));
+  }
+
+  function findingDetails(f, disposition, slug) {
     const v = isObject(f.verification) ? f.verification : null;
     const rows = [
       ['Rule', f.ruleId, 'mono'],
@@ -1078,19 +1631,545 @@ const RampartDashboard = (function () {
     ].filter((row) => row[1] !== null && row[1] !== undefined && row[1] !== '');
     return h('details', null,
       h('summary', null, f.title || f.ruleId || f.id),
-      h('dl', { class: 'finding-details' }, rows.map(([k, value, cls]) => [h('dt', null, k), h('dd', cls ? { class: cls } : null, String(value))])));
+      h('dl', { class: 'finding-details' }, rows.map(([k, value, cls]) => [h('dt', null, k), h('dd', cls ? { class: cls } : null, String(value))])),
+      canQueue() ? findingActions(f, slug) : null,
+      canDecide() ? decisionForm(f, disposition) : null);
   }
 
-  function findingRow(f, disposition) {
+  // ---- decisions (live mode, owner only) ---------------------------------------------------
+
+  // The decision form renders only in live mode, for a viewer who may write (canWrite), with a user id to sign `by` with.
+  const canDecide = () => Boolean(state.live) && canWrite() && typeof state.userId === 'string' && state.userId !== '';
+  const needsReason = (status) => NEEDS_REASON.indexOf(status) !== -1;
+  const reasonHint = (status) => (needsReason(status) ? '(required)' : '(optional)');
+
+  // A status select, a reason input and Save, every one tagged data-write. The current status is selected (a finding that
+  // is regressed first asks for a decision) and the current decision's reason is filled in. While its write is in flight
+  // the controls are disabled. The handlers read the finding id from data-finding, never from a closure (see morph).
+  function decisionForm(f, disposition) {
+    const id = String(f.id);
+    const busy = state.saving.has(id);
+    const current = known(DECISIONS, f.status, '');
+    const reason = isObject(disposition) && disposition.status === f.status && typeof disposition.reason === 'string' ? disposition.reason : '';
+    const ids = { status: `decide-status-${id}`, reason: `decide-reason-${id}`, hint: `decide-hint-${id}`, error: `decide-error-${id}` };
+    const select = h('select', { id: ids.status, name: 'status', 'data-write': true, disabled: busy },
+      current ? null : h('option', { value: '', disabled: true }, `${STATUS_LABELS[f.status] || 'Unknown'}: choose a decision`),
+      DECISIONS.map((s) => h('option', { value: s }, STATUS_LABELS[s])));
+    select.value = current;
+    return h('form', {
+      class: 'decide', 'data-write': true, 'data-finding': id, novalidate: true, 'aria-busy': busy ? 'true' : null,
+      on: { input: markDirty, change: decisionChanged, submit: saveDecision },
+    },
+    h('fieldset', { class: 'decide-set' },
+      h('legend', { class: 'label' }, 'Your decision'),
+      h('div', { class: 'decide-field' }, h('label', { for: ids.status }, 'Status'), select),
+      h('div', { class: 'decide-field' },
+        h('label', { for: ids.reason }, 'Reason ', h('span', { class: 'decide-need', id: ids.hint }, reasonHint(current))),
+        h('input', {
+          id: ids.reason, name: 'reason', type: 'text', maxlength: String(REASON_MAX), autocomplete: 'off', value: reason,
+          'data-write': true, disabled: busy, 'aria-required': needsReason(current) ? 'true' : 'false', 'aria-describedby': ids.error,
+        })),
+      h('button', { type: 'submit', class: 'decide-save', 'data-write': true, disabled: busy }, busy ? 'Saving…' : 'Save decision'),
+      h('p', { class: 'decide-error', id: ids.error, role: 'alert', hidden: true })));
+  }
+
+  // Once the viewer touches a form, live updates leave it alone (data-dirty, see morph) until they save.
+  function markDirty(event) {
+    event.currentTarget.setAttribute('data-dirty', '');
+  }
+
+  function decisionChanged(event) {
+    const form = event.currentTarget;
+    markDirty(event);
+    const status = form.querySelector('select').value;
+    const hint = form.querySelector('.decide-need');
+    if (hint) hint.textContent = reasonHint(status);
+    form.querySelector('input').setAttribute('aria-required', needsReason(status) ? 'true' : 'false');
+  }
+
+  // What the toast says when the DB refuses a decision, by error code (db.d.ts; an unknown code reads as unavailable).
+  // `verb` is what the viewer does again: save (a decision) or try (a job).
+  function writeFailure(err, verb = 'save') {
+    const code = isObject(err) && typeof err.code === 'string' ? err.code : null;
+    if (code === 'not_granted' || code === 'capability_disabled' || code === 'capability_removed') return 'This page may not change the dashboard data.';
+    if (code === 'revoked') return 'Access to the dashboard data was withdrawn. Reload the page.';
+    if (code === 'invalid_argument' || code === 'transform_error') return 'The dashboard data refused the change.';
+    if (code === 'resource_exhausted') return `Too many changes at once. Wait a moment, then ${verb} again.`;
+    if (code === 'quota_exceeded') return 'The dashboard data is full.';
+    return `The dashboard data did not answer. ${verb[0].toUpperCase()}${verb.slice(1)} again in a moment.`;
+  }
+
+  // The DB write. async, so a path the store's builder refuses (it throws) arrives as a rejection like any other.
+  async function writeDecision(id, patch) {
+    return state.live.db.doc(`findings/${id}`).update(patch);
+  }
+
+  // Save: check the choice, then write {status, disposition: {status, reason, by, at}, updatedAt} with one ISO stamp. The
+  // row shows the decision at once; when the write settles the DB's documents speak again, so a refused write reverts the
+  // row, and a toast names the finding that failed.
+  function saveDecision(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const id = form.getAttribute('data-finding');
+    if (!canDecide() || state.saving.has(id)) return;
+    const select = form.querySelector('select');
+    const input = form.querySelector('input');
+    const error = form.querySelector('.decide-error');
+    const refuse = (message, field) => {
+      error.textContent = message;
+      error.hidden = false;
+      if (field) {
+        field.setAttribute('aria-invalid', 'true');
+        field.focus();
+      }
+    };
+    const status = select.value;
+    const reason = String(input.value || '').trim().slice(0, REASON_MAX);
+    const entry = currentEntry();
+    const finding = entry ? list(entry.findings).find((f) => isObject(f) && String(f.id) === id) : null;
+    if (!finding) return refuse('This finding is no longer in the dashboard data.');
+    if (DECISIONS.indexOf(status) === -1) return refuse('Choose a decision.', select);
+    if (needsReason(status) && !reason) return refuse(`Give a reason for marking it ${STATUS_LABELS[status].toLowerCase()}.`, input);
+    const was = own(entry.dispositions, id) && isObject(entry.dispositions[id]) ? entry.dispositions[id] : null;
+    if (status === finding.status && reason === (was && typeof was.reason === 'string' ? was.reason : '')) return refuse('Nothing to save: this is the current decision.');
+    const at = new Date().toISOString();
+    const disposition = { status, reason, by: state.userId, at };
+    error.hidden = true;
+    select.removeAttribute('aria-invalid');
+    input.removeAttribute('aria-invalid');
+    form.removeAttribute('data-dirty');
+    state.saving.add(id);
+    state.optimistic.set(id, { status, disposition });
+    rerender();
+    const settled = () => {
+      state.saving.delete(id);
+      state.optimistic.delete(id);
+      rerender();
+    };
+    writeDecision(id, { status, disposition, updatedAt: at }).then(() => {
+      settled();
+      toast(`Saved: ${id} is ${STATUS_LABELS[status].toLowerCase()}`);
+    }, (err) => {
+      settled();
+      toast(`Could not save the decision on ${id}. ${writeFailure(err)}`, null, ERROR_TOAST_MS);
+    });
+  }
+
+  // A finding with a decision in flight shows that decision (status and disposition) until the write settles.
+  function withDecisionsInFlight(entry) {
+    if (!state.optimistic.size || !list(entry.findings).some((f) => isObject(f) && state.optimistic.has(String(f.id)))) return entry;
+    const dispositions = Object.assign({}, isObject(entry.dispositions) ? entry.dispositions : {});
+    const findings = entry.findings.map((f) => {
+      const pending = isObject(f) ? state.optimistic.get(String(f.id)) : undefined;
+      if (!pending) return f;
+      dispositions[f.id] = pending.disposition;
+      return Object.assign({}, f, { status: pending.status });
+    });
+    return Object.assign({}, entry, { findings, dispositions });
+  }
+
+  const rerender = () => {
+    if (state.data && (state.view === 'tiles' || state.view === 'detail')) render(state.data);
+  };
+
+  // ---- jobs (live mode, owner only) --------------------------------------------------------
+
+  // Job buttons follow the decision form's gate: live mode, write access (canWrite) and a known user id. Each one opens
+  // the confirm sheet, which shows the job's type, scope, cost estimate and route before its confirm button is enabled.
+  // Confirming writes jobs/<id> (or, for a requeue, re-confirms the same job), then reaches an executor through the
+  // viewer's Claude Code Remote connector: a cloud job starts a session with create_session; a local job nudges an online
+  // remote-control executor with send_message. When neither happens (no executor online, no connector, any refusal) the
+  // job stays queued and its row says to start /rampart watch. A refused call is never repeated.
+  const REMOTE = 'Claude Code Remote';
+  const STALE_MS = DAY_MS;
+  const canQueue = () => canDecide();
+
+  // What a job button asks for, read from its attributes (see morph: never from a closure).
+  function jobRequest(button) {
+    const attr = (name) => (button.hasAttribute(name) ? button.getAttribute(name) : undefined);
+    return {
+      mode: attr('data-action') === 'requeue' ? 'requeue' : 'new',
+      type: attr('data-type'),
+      slug: attr('data-project'),
+      systemId: attr('data-system'),
+      layer: attr('data-layer'),
+      findingId: attr('data-finding'),
+      jobId: attr('data-job'),
+    };
+  }
+
+  // Everything the sheet shows and the confirm writes, from the data on screen when the sheet opens; {error} when the
+  // project, system, finding or job is gone or no estimate can be made. A requeue routes again on the data on screen (R30a).
+  function jobPlan(req) {
+    const entry = state.entries.find((e) => e.project.slug === req.slug);
+    if (!entry) return { error: 'This project is no longer in the dashboard data.' };
+    const project = entry.project;
+    let { type, systemId, layer, findingId } = req;
+    let job = null;
+    if (req.mode === 'requeue') {
+      job = list(entry.jobs).find((j) => isObject(j) && String(j.id) === req.jobId) || null;
+      if (!job) return { error: 'This job is no longer in the dashboard data.' };
+      if (job.status !== 'queued') return { error: `This job is ${job.status} now, so there is nothing to requeue.` };
+      type = job.type;
+      systemId = job.system;
+      layer = job.layer;
+      findingId = job.findingId;
+    }
+    const system = list(project.systems).find((s) => isObject(s) && String(s.id) === String(systemId)) || null;
+    const finding = findingId ? list(entry.findings).find((f) => isObject(f) && String(f.id) === findingId) || null : null;
+    if (type === 'audit' && !system) return { error: 'This system is no longer in the project.' };
+    if (type === 'verify' && !finding && !job) return { error: 'This finding is no longer in the dashboard data.' };
+    let estimate;
+    try {
+      const effort = layer === 'L3' ? known(['low', 'medium', 'high'], project.huntEffort, undefined) : undefined;
+      estimate = Jobs.costEstimate(type === 'verify' ? { type, openVerified: 1 } : { type, layer, effort });
+    } catch (err) {
+      return { error: 'No cost estimate can be made for this job, so it cannot be queued here.' };
+    }
+    // A requeue routes again on the data on screen now (R30a): the project may have withdrawn cloud since it was queued.
+    const routed = Jobs.route({ project, system, type, layer: layer || (finding ? finding.layer : undefined) });
+    return { mode: req.mode, type, slug: entry.project.slug, project, system, systemId, layer, findingId, job, estimate, route: routed };
+  }
+
+  const liveExecutors = () => (state.data && isObject(state.data.live) ? list(state.data.live.executors) : []);
+
+  // The freshest online local executor (kind 'local', heartbeat under 5 minutes), or null; with remoteOnly, one that also
+  // takes remote messages (remoteControl). A cloud session is never a local executor.
+  function localExecutor(now, remoteOnly) {
+    let best = null;
+    for (const e of liveExecutors()) {
+      const t = isObject(e) ? timeOf(e.heartbeatAt) : null;
+      if (t === null || now - t > EXECUTOR_ONLINE_MS || e.kind !== 'local' || typeof e.id !== 'string') continue;
+      if (remoteOnly && e.remoteControl !== true) continue;
+      if (!best || t > timeOf(best.heartbeatAt)) best = e;
+    }
+    return best;
+  }
+
+  const remoteExecutor = (now) => localExecutor(now, true);
+  const localExecutorOnline = (now) => localExecutor(now, false) !== null;
+
+  const jobLabel = (type, layer) => (type === 'audit' ? `Audit ${layer}` : type === 'verify' ? 'Verify still present' : String(type));
+
+  // "cloud session", or "local executor <machine>" naming the local executor that would take it (the one a nudge goes
+  // to first), or "local executor offline".
+  function routeText(plan) {
+    if (plan.route.executorKind === 'cloud') return 'cloud session';
+    const now = Date.now();
+    const e = remoteExecutor(now) || localExecutor(now, false);
+    return `local executor ${e ? String(e.machineId || e.id) : 'offline'}`;
+  }
+
+  function scopeText(plan) {
+    const named = (name, id) => (name && name !== id ? `${name} (${id})` : String(id));
+    return [
+      named(plan.project.name, plan.slug),
+      plan.systemId ? named(plan.system && plan.system.name, plan.systemId) : null,
+      plan.layer || null,
+      plan.findingId ? `finding ${plan.findingId}` : null,
+    ].filter(Boolean).join(' · ');
+  }
+
+  // The confirm sheet: a modal dialog. Focus moves into it; Escape and Cancel close it and return the focus to the button
+  // that opened it; a click on the scrim does nothing; only the confirm button queues, and it is enabled only once the
+  // type, scope, cost and route are on screen.
+  function openSheet(button) {
+    if (!canQueue() || state.sheet) return;
+    const plan = jobPlan(jobRequest(button));
+    const requeue = plan.mode === 'requeue';
+    const confirm = h('button', {
+      type: 'button', id: 'job-sheet-confirm', class: 'sheet-confirm', 'data-write': true, disabled: true, on: { click: onConfirm },
+    }, requeue ? 'Requeue job' : 'Queue job');
+    const cancel = h('button', { type: 'button', id: 'job-sheet-cancel', class: 'sheet-cancel', on: { click: () => closeSheet() } }, 'Cancel');
+    const facts = plan.error
+      ? h('p', { class: 'sheet-error', id: 'job-sheet-facts', role: 'alert' }, plan.error)
+      : h('dl', { class: 'sheet-facts', id: 'job-sheet-facts' },
+        h('dt', null, 'Job'), h('dd', null, jobLabel(plan.type, plan.layer)),
+        h('dt', null, 'Scope'), h('dd', null, scopeText(plan)),
+        h('dt', null, 'Cost'), h('dd', null, plan.estimate.note),
+        h('dt', null, 'Runs on'), h('dd', null, routeText(plan), h('span', { class: 'sheet-why' }, plan.route.reason)));
+    const dialog = h('div', {
+      class: 'job-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'job-sheet-title', 'aria-describedby': 'job-sheet-facts',
+    },
+    h('h2', { class: 'sheet-title', id: 'job-sheet-title' }, requeue ? 'Requeue this job?' : 'Queue this job?'),
+    h('p', { class: 'sheet-sub' }, requeue
+      ? 'It was queued over a day ago and no executor has taken it. Confirming it again records a fresh cost and time.'
+      : 'Nothing runs until you confirm. The cost is an estimate of the agents the job starts.'),
+    facts,
+    h('div', { class: 'sheet-buttons' }, cancel, confirm));
+    const scrim = h('div', { class: 'sheet-scrim' }, dialog);
+    document.body.appendChild(scrim);
+    state.sheet = { scrim, dialog, opener: button, plan };
+    if (!plan.error) confirm.disabled = false;
+    cancel.focus();
+  }
+
+  function closeSheet() {
+    const sheet = state.sheet;
+    if (!sheet) return;
+    state.sheet = null;
+    sheet.scrim.remove();
+    if (sheet.opener && document.contains(sheet.opener)) sheet.opener.focus();
+  }
+
+  // While the sheet is open every key on the page comes here (onKey): Escape closes it, wherever the focus is; Tab stays
+  // inside it, and brings the focus back in when a click on the scrim let it fall to the page.
+  function sheetKey(event) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeSheet();
+      return;
+    }
+    if (event.key !== 'Tab' || !state.sheet) return;
+    const stops = Array.from(state.sheet.dialog.querySelectorAll('button')).filter((b) => !b.disabled);
+    if (!stops.length) return;
+    const first = stops[0];
+    const last = stops[stops.length - 1];
+    if (!state.sheet.dialog.contains(document.activeElement)) {
+      event.preventDefault();
+      first.focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function onConfirm() {
+    const sheet = state.sheet;
+    if (!sheet || sheet.plan.error) return;
+    closeSheet();
+    if (!canQueue()) return;
+    const done = sheet.plan.mode === 'requeue' ? requeueJob(sheet.plan) : queueJob(sheet.plan);
+    done.catch(() => toast('Could not queue the job. Try again in a moment.', null, ERROR_TOAST_MS));
+  }
+
+  // One write at a time per job; async, so a path the store refuses arrives as a rejection.
+  async function writeJob(id, op, data) {
+    state.jobWrites.add(id);
+    try {
+      return await state.live.db.doc(`jobs/${id}`)[op](data);
+    } finally {
+      state.jobWrites.delete(id);
+    }
+  }
+
+  // A new job: {id, type, project, system?, layer?, findingId?, params, executorKind, status, createdBy, confirmedAt,
+  // costShown, costEstimate, updatedAt}, created with set, then sent on its way.
+  async function queueJob(plan) {
+    let createdBy = null;
+    try {
+      const id = await state.user.id();
+      createdBy = typeof id === 'string' && id !== '' ? id : null;
+    } catch (err) {
+      createdBy = null;
+    }
+    if (!createdBy) {
+      toast('Could not queue the job: the page could not tell who you are. Reload the page.', null, ERROR_TOAST_MS);
+      return;
+    }
+    const at = new Date().toISOString();
+    const job = { id: Jobs.newJobId(at), type: plan.type, project: plan.slug };
+    if (plan.systemId) job.system = plan.systemId;
+    if (plan.layer) job.layer = plan.layer;
+    if (plan.findingId) job.findingId = plan.findingId;
+    Object.assign(job, {
+      params: {},
+      executorKind: plan.route.executorKind,
+      status: 'queued',
+      createdBy,
+      confirmedAt: at,
+      costShown: plan.estimate.note,
+      costEstimate: { agents: plan.estimate.agents, note: plan.estimate.note },
+      updatedAt: at,
+    });
+    try {
+      await writeJob(job.id, 'set', job);
+    } catch (err) {
+      toast(`Could not queue the job. ${writeFailure(err, 'try')}`, null, ERROR_TOAST_MS);
+      return;
+    }
+    await dispatch(job, plan);
+  }
+
+  // A stale job confirmed again (R30a): the job is read again first and left alone unless it is still queued; then the same
+  // doc gets a fresh confirmedAt, cost, route (executorKind) and updatedAt, stays queued, and is sent on its fresh route.
+  async function requeueJob(plan) {
+    const id = String(plan.job.id);
+    if (state.jobWrites.has(id)) return;
+    let current;
+    try {
+      const snap = await state.live.db.doc(`jobs/${id}`).get();
+      current = snap && snap.exists ? snap.data() : null;
+    } catch (err) {
+      toast(`Could not requeue ${id}. ${writeFailure(err, 'try')}`, null, ERROR_TOAST_MS);
+      return;
+    }
+    if (!isObject(current) || current.status !== 'queued') {
+      toast(isObject(current) ? `Not requeued: ${id} is ${current.status} now.` : `Not requeued: ${id} is no longer in the dashboard data.`, null, ERROR_TOAST_MS);
+      return;
+    }
+    const at = new Date().toISOString();
+    const patch = {
+      confirmedAt: at,
+      costShown: plan.estimate.note,
+      costEstimate: { agents: plan.estimate.agents, note: plan.estimate.note },
+      executorKind: plan.route.executorKind,
+      updatedAt: at,
+    };
+    const write = writeJob(id, 'update', patch);
+    rerender();
+    try {
+      await write;
+    } catch (err) {
+      toast(`Could not requeue ${id}. ${writeFailure(err, 'try')}`, null, ERROR_TOAST_MS);
+      return;
+    } finally {
+      rerender();
+    }
+    state.waiting.delete(id);
+    await dispatch(Object.assign({ id }, current, patch), plan);
+  }
+
+  // Reach an executor for a queued job. Every refusal leaves it queued for /rampart watch; nothing is retried. A cloud job
+  // whose session could not be started is switched to local first (R33), since a local watch leaves cloud jobs alone.
+  // While cloud runs are gated (Jobs.route, R50) no job routes to the cloud, so create_session is never called.
+  async function dispatch(job, plan) {
+    if (job.executorKind === 'cloud') {
+      await startCloudSession(job, plan);
+      return;
+    }
+    const executor = remoteExecutor(Date.now());
+    if (!executor) {
+      if (localExecutorOnline(Date.now())) toast(`Queued ${job.id}. The local executor takes it on its next check.`);
+      else waitForWatch(job.id);
+      return;
+    }
+    const mcp = await capability('mcp');
+    if (!mcp) {
+      waitForWatch(job.id);
+      return;
+    }
+    try {
+      await mcp.callTool(REMOTE, 'send_message', { session_id: executor.id, message: `/rampart watch --claim ${job.id}` });
+    } catch (err) {
+      waitForWatch(job.id, err);
+      return;
+    }
+    toast(`Queued ${job.id} and sent it to the local executor`);
+  }
+
+  async function startCloudSession(job, plan) {
+    const remote = plan.system && isObject(plan.system.repo) ? plan.system.repo.remote : null;
+    const fallBack = async (err) => {
+      try {
+        await writeJob(job.id, 'update', { executorKind: 'local', updatedAt: new Date().toISOString() });
+      } catch (writeErr) {
+        // The job keeps executorKind cloud; the note below still tells the owner what to do.
+      }
+      waitForWatch(job.id, err, true);
+    };
+    const mcp = Jobs.isGithubRemote(remote) ? await capability('mcp') : null;
+    if (!mcp) {
+      await fallBack();
+      return;
+    }
+    let result;
+    try {
+      result = await mcp.callTool(REMOTE, 'create_session', { title: sessionTitle(job), prompt: jobPrompt(job), source_url: sourceUrl(remote) });
+    } catch (err) {
+      await fallBack(err);
+      return;
+    }
+    toast(`Queued ${job.id} and started a cloud session`);
+    const sessionId = sessionIdOf(result);
+    if (!sessionId) return;
+    try {
+      await writeJob(job.id, 'update', { sessionId, updatedAt: new Date().toISOString() });
+    } catch (err) {
+      // The session runs without it: the job doc only lacks the session id.
+    }
+  }
+
+  // The session id from create_session's result. The connector's result shape is not pinned down, so any of three names.
+  function sessionIdOf(result) {
+    const payload = isObject(result) ? result.payload : null;
+    if (!isObject(payload)) return null;
+    for (const key of ['session_id', 'id', 'sessionId']) {
+      if (typeof payload[key] === 'string' && payload[key] !== '') return payload[key];
+    }
+    return null;
+  }
+
+  function jobPrompt(job) {
+    if (job.type === 'verify') return `/rampart verify --project ${arg(job.project)} --finding ${arg(job.findingId)} --job ${arg(job.id)}`;
+    return `/rampart ${job.type} ${arg(job.layer)} --project ${arg(job.project)} --system ${arg(job.system)} --job ${arg(job.id)}`;
+  }
+
+  function sessionTitle(job) {
+    const what = job.type === 'verify' ? `verify ${job.findingId}` : `${job.type} ${job.layer}`;
+    return `Rampart ${what} · ${job.project}/${job.system}`;
+  }
+
+  // https:// and the remote without its scheme or user, an scp-style host:path turned into host/path, no trailing .git.
+  function sourceUrl(remote) {
+    const bare = String(remote).trim()
+      .replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+      .replace(/^[^/@]*@/, '')
+      .replace(/^(github\.com):/i, '$1/')
+      .replace(/\.git$/i, '')
+      .replace(/\/+$/, '');
+    return `https://${bare}`;
+  }
+
+  // What to tell the owner when the connector refused, for the refusals they can fix.
+  function connectorHint(err) {
+    const code = isObject(err) && typeof err.code === 'string' ? err.code : null;
+    if (code === 'server_not_connected') return `Add ${REMOTE} in claude.ai Settings → Connectors to start jobs from here. `;
+    if (code === 'needs_reauth') return `Reconnect ${REMOTE} in claude.ai Settings → Connectors. `;
+    if (code === 'not_in_manifest' || code === 'approval_required' || code === 'consent_required' || code === 'blocked_by_policy') {
+      return `This page may not use ${REMOTE} for you. `;
+    }
+    return '';
+  }
+
+  const MCP_CODES = Object.freeze([
+    'needs_reauth', 'server_not_connected', 'selection_required', 'server_not_found', 'server_unavailable', 'not_in_manifest',
+    'blocked_by_policy', 'self_only', 'approval_required', 'tool_error', 'bad_request', 'cancelled', 'rate_limited',
+    'upstream_error', 'not_granted', 'capability_disabled', 'capability_removed', 'transform_error', 'consent_required',
+    'user_changed',
+  ]);
+
+  // A rejection that does not prove the call never ran: server_unavailable, upstream_error, and (mcp.d.ts) any code this
+  // page does not know, which reads as upstream_error.
+  function outcomeUnknown(err) {
+    const code = isObject(err) && typeof err.code === 'string' ? err.code : null;
+    return code === null || code === 'server_unavailable' || code === 'upstream_error' || MCP_CODES.indexOf(code) === -1;
+  }
+
+  // The job stays queued and its row says to start /rampart watch. For a cloud start whose outcome is unknown the toast
+  // says a session may have started anyway (the executors' claim keeps a double run safe: the second claim loses).
+  function waitForWatch(id, err, cloud) {
+    state.waiting.add(id);
+    rerender();
+    const hint = cloud && err !== undefined && outcomeUnknown(err)
+      ? `${REMOTE} did not confirm the cloud session, so one may have started anyway; whichever claims the job first runs it. `
+      : connectorHint(err);
+    toast(`Queued ${id}. ${hint}To run it, start`, '/rampart watch', ERROR_TOAST_MS);
+  }
+
+  function findingRow(f, disposition, slug) {
     const sev = known(SEVERITIES, f.severity, null);
     const cls = known(CLASSES, f.class, null);
     const status = known(STATUSES, f.status, null);
-    return h('tr', { class: isActive(f) ? 'is-active' : 'is-closed' },
+    return h('tr', { class: isActive(f) ? 'is-active' : 'is-closed', 'data-key': String(f.id) },
       h('td', { class: 'id' }, String(f.id)),
       h('td', null, h('span', { class: `sev sev-${sev ? sev.toLowerCase() : 'unknown'}` }, sev ? SEVERITY_LABELS[sev] : String(f.severity))),
       h('td', null, h('span', { class: `cls cls-${cls || 'unknown'}` }, cls ? CLASS_LABELS[cls] : String(f.class))),
       h('td', { class: 'mono nowrap' }, String(f.system)),
-      h('td', { class: 'title-cell' }, findingDetails(f, disposition)),
+      h('td', { class: 'title-cell' }, findingDetails(f, disposition, slug)),
       h('td', { class: 'loc' }, formatLocation(f.location)),
       h('td', null, h('span', {
         class: `status status-${status || 'unknown'}`,
@@ -1099,17 +2178,27 @@ const RampartDashboard = (function () {
       h('td', { class: 'nowrap num' }, f.lastSeen ? h('time', { datetime: f.lastSeen, title: f.lastSeen }, day(f.lastSeen)) : '—'));
   }
 
-  function renderFindingRows(entry) {
-    const body = $('findings-body');
-    if (!body || !entry) return;
+  // The rows the filters let through (keyed by finding id), the line that counts them, and whether any filter is on.
+  function findingRows(entry) {
     const all = list(entry.findings).filter(isObject);
     const shown = sortFindings(filterFindings(all, state.filters));
     const dispositions = isObject(entry.dispositions) ? entry.dispositions : {};
-    body.replaceChildren(...(shown.length
-      ? shown.map((f) => findingRow(f, own(dispositions, f.id) ? dispositions[f.id] : null))
-      : [h('tr', { class: 'empty-row' }, h('td', { colspan: '8' }, all.length ? 'No findings match these filters.' : 'No findings recorded for this project.'))]));
-    $('findings-count').textContent = `Showing ${shown.length} of ${plural(all.length, 'finding', 'findings')}`;
-    $('clear-filters').hidden = Object.keys(DEFAULT_FILTERS).every((k) => state.filters[k] === DEFAULT_FILTERS[k]);
+    return {
+      rows: shown.length
+        ? shown.map((f) => findingRow(f, own(dispositions, f.id) ? dispositions[f.id] : null, entry.project.slug))
+        : [h('tr', { class: 'empty-row' }, h('td', { colspan: '8' }, all.length ? 'No findings match these filters.' : 'No findings recorded for this project.'))],
+      count: `Showing ${shown.length} of ${plural(all.length, 'finding', 'findings')}`,
+      filtered: !Object.keys(DEFAULT_FILTERS).every((k) => state.filters[k] === DEFAULT_FILTERS[k]),
+    };
+  }
+
+  function renderFindingRows(entry) {
+    const body = $('findings-body');
+    if (!body || !entry) return;
+    const view = findingRows(entry);
+    morphChildren(body, view.rows);
+    $('findings-count').textContent = view.count;
+    $('clear-filters').hidden = !view.filtered;
   }
 
   function findingsSection(entry) {
@@ -1118,14 +2207,15 @@ const RampartDashboard = (function () {
       filterSelect('severity', 'Severity', [['all', 'All severities']].concat(SEVERITIES.map((s) => [s, SEVERITY_LABELS[s]]))),
       filterSelect('status', 'Status', [['active', 'Open and regressed'], ['all', 'All statuses']].concat(STATUSES.map((s) => [s, STATUS_LABELS[s]]))),
       filterSelect('class', 'Class', [['all', 'All classes']].concat(CLASSES.map((c) => [c, CLASS_LABELS[c]]))));
+    const view = findingRows(entry);
     const tools = h('div', { class: 'filter-tools' },
-      h('span', { id: 'findings-count', 'aria-live': 'polite' }),
-      h('button', { type: 'button', class: 'link-btn', id: 'clear-filters', on: { click: clearFilters } }, 'Clear filters'));
+      h('span', { id: 'findings-count', 'aria-live': 'polite' }, view.count),
+      h('button', { type: 'button', class: 'link-btn', id: 'clear-filters', hidden: !view.filtered, on: { click: clearFilters } }, 'Clear filters'));
     const head = h('tr', null, ['ID', 'Severity', 'Class', 'System', 'Title', 'Location', 'Status', 'Last seen']
       .map((t) => h('th', { scope: 'col', class: t === 'Last seen' ? 'num' : null }, t)));
     return section('findings', 'Findings', 'Open a title for its evidence and recommendation.',
-      controls, tools,
-      h('div', { class: 'table-wrap' }, h('table', { class: 'findings' }, h('thead', null, head), h('tbody', { id: 'findings-body' }))));
+      exportTools(), controls, tools,
+      h('div', { class: 'table-wrap' }, h('table', { class: 'findings' }, h('thead', null, head), h('tbody', { id: 'findings-body' }, view.rows))));
   }
 
   function countsText(counts) {
@@ -1143,7 +2233,7 @@ const RampartDashboard = (function () {
     const rows = runs.map((r) => {
       const status = known(RUN_STATUSES, r.status, null);
       const when = [r.startedAt ? `started ${stamp(r.startedAt)}` : null, r.finishedAt ? `finished ${stamp(r.finishedAt)}` : null].filter(Boolean).join(', ');
-      return h('tr', null,
+      return h('tr', { 'data-key': String(r.runId) },
         h('td', { class: 'id', title: when || null }, String(r.runId)),
         h('td', null, String(r.job || '—')),
         h('td', { class: 'mono nowrap' }, list(r.layers).join(' ') || '—'),
@@ -1157,11 +2247,341 @@ const RampartDashboard = (function () {
       h('div', { class: 'table-wrap' }, h('table', { class: 'runs' }, h('thead', null, head), h('tbody', null, rows))));
   }
 
-  function renderDetail(entry) {
+  // A queued job is stale once its confirmation is over a day old: the owner may requeue it (confirm it again).
+  const isStale = (j, now) => j.status === 'queued' && timeOf(j.confirmedAt) !== null && now - timeOf(j.confirmedAt) > STALE_MS;
+
+  // The executor a job names, as a person reads it: its machine when the executors collection knows it.
+  function executorName(id, executors) {
+    const e = list(executors).find((x) => isObject(x) && x.id === id);
+    return e && e.machineId ? String(e.machineId) : String(id);
+  }
+
+  // A job's live status: queued (stale, or waiting for someone to start /rampart watch), claimed by an executor, running,
+  // done or failed with its summary. A stale job gets the owner's Requeue button.
+  function jobStatusCell(j, slug, executors, now) {
+    const status = known(JOB_STATUSES, j.status, null);
+    const stale = isStale(j, now);
+    const waiting = status === 'queued' && !stale &&
+      (state.waiting.has(String(j.id)) || (j.executorKind !== 'cloud' && !localExecutorOnline(now)));
+    let note = null;
+    if (stale) note = ` · stale since ${day(j.confirmedAt)}`;
+    else if (waiting) note = [' · start ', h('code', null, '/rampart watch')];
+    else if ((status === 'claimed' || status === 'running') && j.claimedBy) note = ` by ${executorName(j.claimedBy, executors)}`;
+    return h('td', null,
+      h('span', { class: `status status-${status || 'unknown'}` }, status ? JOB_STATUS_LABELS[status] : String(j.status)),
+      note ? h('span', { class: 'job-note' }, note) : null,
+      j.resultSummary && (status === 'done' || status === 'failed') ? h('span', { class: 'run-reason' }, String(j.resultSummary)) : null,
+      stale && canQueue()
+        ? h('div', { class: 'job-tools' }, h('button', {
+          type: 'button',
+          class: 'action action-job',
+          'aria-label': `Requeue ${j.id}: shows the cost, then confirms the job again`,
+          'data-write': true,
+          'data-action': 'requeue',
+          'data-project': slug,
+          'data-job': String(j.id),
+          disabled: state.jobWrites.has(String(j.id)),
+          on: { click: onAction },
+        }, 'Requeue'))
+        : null);
+  }
+
+  // Live mode only (static page data has no jobs): the project's jobs from the DB, newest confirmation first, keyed by id.
+  function jobsSection(entry) {
+    if (!Array.isArray(entry.jobs)) return null;
+    const jobs = entry.jobs.filter(isObject).slice().sort((a, b) =>
+      (timeOf(b.confirmedAt) || 0) - (timeOf(a.confirmedAt) || 0) || String(a.id).localeCompare(String(b.id)));
+    if (!jobs.length) return section('jobs', 'Jobs', null, h('p', { class: 'muted' }, 'No jobs for this project yet.'));
+    const executors = state.data && isObject(state.data.live) ? state.data.live.executors : [];
+    const now = Date.now();
+    const head = h('tr', null, ['Job', 'Type', 'Scope', 'Runs on', 'Status', 'Updated'].map((t) => h('th', { scope: 'col' }, t)));
+    const rows = jobs.map((j) => {
+      const scope = [j.system, j.layer, j.findingId].filter(Boolean).map(String).join(' · ');
+      return h('tr', { 'data-key': String(j.id), class: isStale(j, now) ? 'is-stale' : null },
+        h('td', { class: 'id' }, String(j.id)),
+        h('td', null, String(j.type || '—')),
+        h('td', { class: 'mono nowrap' }, scope || '—'),
+        h('td', null, j.executorKind === 'cloud' ? 'Cloud' : j.executorKind === 'local' ? 'Local' : '—'),
+        jobStatusCell(j, entry.project.slug, executors, now),
+        h('td', { class: 'nowrap' }, j.updatedAt ? h('time', { datetime: j.updatedAt, title: j.updatedAt }, stamp(j.updatedAt)) : '—'));
+    });
+    return section('jobs', 'Jobs', 'Newest first. A job queued over a day ago is stale; requeue it to confirm it again.',
+      h('div', { class: 'table-wrap' }, h('table', { class: 'jobs' }, h('thead', null, head), h('tbody', null, rows))));
+  }
+
+  // ---- settings (live mode, owner only) ----------------------------------------------------
+
+  // The project settings the page may change, written to projects/<slug>; the watch loop's pull applies them to
+  // project.json (scripts/sync-plan.cjs mergedSettings): cloudAllowed, defaultExecutor, huntEffort, and cadenceOverrides
+  // {<systemId>: {<layer>: days}}. Save writes only what changed, plus updatedAt, with update: nested objects merge, so a
+  // cadence change touches only its own path. The form has the decision form's gate (canWrite, R6).
+  const EXECUTOR_KINDS = Object.freeze(['local', 'cloud']);
+  const EFFORTS = Object.freeze(['low', 'medium', 'high']);
+  const CADENCE_MAX = 365;
+  const canConfigure = () => canDecide();
+
+  // Cloud can be turned on only when a system that is not reached through a host (R29) has its repo on github.com;
+  // Jobs.route still decides each job.
+  const cloudEligible = (project) =>
+    list(project.systems).some((s) => isObject(s) && !s.host && isObject(s.repo) && Jobs.isGithubRemote(s.repo.remote));
+
+  function currentSettings(project) {
+    return {
+      cloudAllowed: project.cloudAllowed === true,
+      defaultExecutor: known(EXECUTOR_KINDS, project.defaultExecutor, 'local'),
+      huntEffort: known(EFFORTS, project.huntEffort, 'medium'), // the cost estimate's default
+    };
+  }
+
+  // A layer's cadence as the page shows it: an override saved here that no sync has applied yet, else the system's own
+  // cadenceDays. A null cadenceOverrides (consumed by a push, R26) is no override.
+  function cadenceOf(entry, system, layer) {
+    const base = isObject(system.layers[layer]) && Number.isInteger(system.layers[layer].cadenceDays) ? system.layers[layer].cadenceDays : null;
+    const overrides = isObject(entry.cadenceOverrides) && isObject(entry.cadenceOverrides[system.id]) ? entry.cadenceOverrides[system.id] : {};
+    const pending = overrides[layer];
+    if (Number.isInteger(pending) && pending >= 1 && pending !== base) return { days: pending, pending: true };
+    return { days: base, pending: false };
+  }
+
+  // The entry as the settings form shows it while a save is in flight: the patch over the project and its overrides.
+  function withSettingsInFlight(entry) {
+    const patch = state.settingsSaving.get(String(entry.project.slug));
+    if (!patch) return entry;
+    const top = Object.assign({}, patch);
+    const cadenceOverrides = top.cadenceOverrides;
+    delete top.cadenceOverrides;
+    delete top.updatedAt;
+    const overrides = Object.assign({}, isObject(entry.cadenceOverrides) ? entry.cadenceOverrides : {});
+    for (const id of Object.keys(cadenceOverrides || {})) overrides[id] = Object.assign({}, isObject(overrides[id]) ? overrides[id] : {}, cadenceOverrides[id]);
+    return Object.assign({}, entry, { project: Object.assign({}, entry.project, top), cadenceOverrides: overrides });
+  }
+
+  function settingsSelect(id, name, label, options, value, busy) {
+    const select = h('select', { id, name, 'data-write': true, 'data-initial': value, disabled: busy },
+      options.map(([v, text]) => h('option', { value: v }, text)));
+    select.value = value;
+    return h('div', { class: 'settings-field' }, h('label', { for: id }, label), select);
+  }
+
+  function settingsSection(entry) {
+    if (!canConfigure()) return null;
+    const slug = String(entry.project.slug);
+    const busy = state.settingsSaving.has(slug);
+    const view = withSettingsInFlight(entry);
+    const now = currentSettings(view.project);
+    const eligible = cloudEligible(view.project);
+    const id = (name) => `settings-${slug}-${name}`;
+    const errorId = id('error');
+    const cadence = list(view.project.systems).filter((s) => isObject(s) && declaredLayers(s).length).map((sys) =>
+      h('fieldset', { class: 'settings-system', 'data-key': String(sys.id) },
+        h('legend', null, sys.name && sys.name !== sys.id ? `${sys.name} (${sys.id})` : String(sys.id)),
+        declaredLayers(sys).map((L) => {
+          const c = cadenceOf(view, sys, L);
+          const inputId = id(`cadence-${sys.id}-${L}`);
+          return h('div', { class: 'settings-field settings-days' },
+            h('label', { for: inputId }, `${L}, days`),
+            h('input', {
+              id: inputId, name: 'cadence', type: 'number', inputmode: 'numeric', min: '1', max: String(CADENCE_MAX), step: '1',
+              value: c.days === null ? '' : String(c.days), 'data-initial': c.days === null ? '' : String(c.days),
+              'data-system': String(sys.id), 'data-layer': L, 'data-write': true,
+              disabled: busy, 'aria-describedby': errorId,
+            }),
+            c.pending ? h('span', { class: 'settings-pending' }, 'Saved; applies on the next sync') : null);
+        })));
+    const form = h('form', {
+      class: 'settings', 'data-write': true, 'data-settings': slug, novalidate: true, 'aria-busy': busy ? 'true' : null,
+      on: { input: markDirty, change: markDirty, submit: saveSettings },
+    },
+    h('fieldset', { class: 'settings-group' },
+      h('legend', { class: 'label' }, 'Where jobs run'),
+      h('div', { class: 'settings-check' },
+        h('input', {
+          type: 'checkbox', id: id('cloud'), name: 'cloudAllowed', 'data-write': true, checked: now.cloudAllowed,
+          'data-initial': String(now.cloudAllowed),
+          disabled: busy || (!eligible && !now.cloudAllowed), 'aria-describedby': id('cloud-why'),
+        }),
+        h('label', { for: id('cloud') }, 'Allow cloud sessions')),
+      h('p', { class: 'settings-why', id: id('cloud-why') }, eligible
+        ? 'Cloud runs arrive in a later version; until then every job runs on a local executor.'
+        : 'Cloud sessions need a system whose repo is on github.com, and this project has none.'),
+      settingsSelect(id('executor'), 'defaultExecutor', 'Default executor', [['local', 'Local'], ['cloud', 'Cloud']], now.defaultExecutor, busy),
+      settingsSelect(id('effort'), 'huntEffort', 'L3 hunt effort', [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']], now.huntEffort, busy)),
+    h('fieldset', { class: 'settings-group' },
+      h('legend', { class: 'label' }, 'Cadence (days between audits, 1 to 365)'),
+      h('div', { class: 'settings-systems' }, cadence.length ? cadence : h('p', { class: 'muted' }, 'No layers declared yet.'))),
+    h('div', { class: 'settings-foot' },
+      h('button', { type: 'submit', class: 'settings-save', 'data-write': true, disabled: busy }, busy ? 'Saving…' : 'Save settings'),
+      h('p', { class: 'settings-error', id: errorId, role: 'alert', hidden: true })));
+    const el = section('settings', 'Settings', 'Rampart applies a saved change to the project on its next sync.', form);
+    el.setAttribute('data-key', 'settings');
+    return el;
+  }
+
+  // The DB write. async, so a path the store's builder refuses (it throws) arrives as a rejection like any other.
+  async function writeSettings(slug, patch) {
+    return state.live.db.doc(`projects/${slug}`).update(patch);
+  }
+
+  // Save: write the controls the owner changed from what the form showed (each carries its rendered value in data-initial),
+  // checked first, plus updatedAt. Untouched controls are neither checked nor written, so a value changed elsewhere since
+  // the form was drawn is never written back, and a stored value this form could not set (a cadence over 365) never blocks
+  // a save. The form shows the change at once; when the write settles the DB's documents speak again, so a refused write
+  // reverts the form, and a toast says what failed.
+  function saveSettings(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const slug = form.getAttribute('data-settings');
+    if (!canConfigure() || state.settingsSaving.has(slug)) return;
+    const error = form.querySelector('.settings-error');
+    for (const el of form.querySelectorAll('[aria-invalid]')) el.removeAttribute('aria-invalid');
+    const refuse = (message, field) => {
+      error.textContent = message;
+      error.hidden = false;
+      if (field) {
+        field.setAttribute('aria-invalid', 'true');
+        field.focus();
+      }
+    };
+    const entry = state.entries.find((e) => e.project.slug === slug);
+    if (!entry) return refuse('This project is no longer in the dashboard data.');
+    const changed = (el, value) => String(value) !== el.getAttribute('data-initial');
+    const patch = {};
+    const cloudBox = form.querySelector('input[name="cloudAllowed"]');
+    const cloud = cloudBox.checked === true;
+    if (changed(cloudBox, cloud)) {
+      if (cloud && !cloudEligible(entry.project)) return refuse('Cloud sessions need a system whose repo is on github.com.', cloudBox);
+      patch.cloudAllowed = cloud;
+    }
+    const executor = form.querySelector('select[name="defaultExecutor"]');
+    if (changed(executor, executor.value)) {
+      if (EXECUTOR_KINDS.indexOf(executor.value) === -1) return refuse('Choose local or cloud as the default executor.', executor);
+      patch.defaultExecutor = executor.value;
+    }
+    const effort = form.querySelector('select[name="huntEffort"]');
+    if (changed(effort, effort.value)) {
+      if (EFFORTS.indexOf(effort.value) === -1) return refuse('Choose low, medium or high as the hunt effort.', effort);
+      patch.huntEffort = effort.value;
+    }
+    const overrides = {};
+    for (const input of form.querySelectorAll('input[name="cadence"]')) {
+      const text = String(input.value || '').trim();
+      if (!changed(input, text)) continue;
+      const systemId = input.getAttribute('data-system');
+      const layer = input.getAttribute('data-layer');
+      const system = list(entry.project.systems).find((s) => isObject(s) && String(s.id) === systemId);
+      if (!system || !isObject(system.layers) || !isObject(system.layers[layer])) {
+        return refuse(`${systemId} no longer declares ${layer}. Reload the page.`, input);
+      }
+      const days = /^\d+$/.test(text) ? Number(text) : NaN;
+      if (!(days >= 1 && days <= CADENCE_MAX)) {
+        return refuse(`The ${layer} cadence of ${system.name || systemId} must be a whole number of days from 1 to ${CADENCE_MAX}.`, input);
+      }
+      (overrides[systemId] = overrides[systemId] || {})[layer] = days;
+    }
+    if (Object.keys(overrides).length) patch.cadenceOverrides = overrides;
+    if (!Object.keys(patch).length) return refuse('Nothing to save: these are the current settings.');
+    patch.updatedAt = new Date().toISOString();
+    error.hidden = true;
+    form.removeAttribute('data-dirty');
+    state.settingsSaving.set(slug, patch);
+    rerender();
+    const name = entry.project.name || slug;
+    const settled = () => {
+      state.settingsSaving.delete(slug);
+      rerender();
+    };
+    writeSettings(slug, patch).then(() => {
+      settled();
+      toast(`Saved the settings for ${name}. Rampart applies them on its next sync.`);
+    }, (err) => {
+      settled();
+      toast(`Could not save the settings for ${name}. ${writeFailure(err)}`, null, ERROR_TOAST_MS);
+    });
+  }
+
+  // ---- export (every viewer the host lets save files, live or static) ----------------------
+
+  // The downloads capability is asked for once, when a project opens; the buttons render only when the host gives it.
+  function askDownloads() {
+    if (state.downloadsAsked) return;
+    state.downloadsAsked = true;
+    capability('downloads').then((ns) => {
+      if (!ns || typeof ns.save !== 'function') return;
+      state.downloads = ns;
+      rerender();
+    });
+  }
+
+  // The project's findings as the page already has them (privacy-filtered by buildData or the push): JSONL, or SARIF for the
+  // open ones. The allowlist of downloads.d.ts has neither .jsonl nor .sarif, so the files are .jsonl.txt and .sarif.json.
+  function exportTools() {
+    if (!state.downloads) return null;
+    const button = (kind, label) => h('button', {
+      type: 'button', class: 'export-btn', id: `export-${kind}`, 'data-export': kind, disabled: state.exporting, on: { click: exportFindings },
+    }, label);
+    return h('div', { class: 'export', 'data-key': 'export', role: 'group', 'aria-label': 'Download the findings' },
+      button('jsonl', 'Download findings (JSONL)'), button('sarif', 'Download SARIF'));
+  }
+
+  // Refusals that leave saving possible in this view; every other code (unavailable, not_granted, extension_not_enabled,
+  // the lifecycle codes and any code this page does not know) means it is not, and the buttons go.
+  const DOWNLOAD_RETRYABLE = Object.freeze(['declined', 'rate_limited', 'too_large', 'rejected_extension', 'bad_request', 'transform_error']);
+
+  // What the toast says when a save is refused, by error code (downloads.d.ts; an unknown code reads as unavailable). A
+  // declined save is the viewer's answer, not an error: null, no toast.
+  function downloadFailure(code) {
+    if (code === 'declined') return null;
+    if (code === 'rate_limited') return 'Another download is waiting for your answer. Finish it, then try again.';
+    if (code === 'too_large') return 'The file is too large to download here.';
+    if (code === 'rejected_extension') return 'This file type cannot be downloaded here.';
+    if (code === 'extension_not_enabled') return 'This file type is not available in this view.'; // final: no retry
+    if (code === 'bad_request' || code === 'transform_error') return 'The file could not be prepared. Reload the page and try again.';
+    return 'Downloads are not available in this view.';
+  }
+
+  // One save prompt at a time; both buttons are disabled while it is open, and the focus returns to the pressed button
+  // when it settles (a disabled button drops the focus).
+  async function exportFindings(event) {
+    const button = event.currentTarget;
+    const kind = button.getAttribute('data-export');
+    const downloads = state.downloads;
+    const entry = entriesOf(state.data).find((e) => e.project.slug === state.slug);
+    if (!downloads || !entry || state.exporting) return;
+    const slug = entry.project.slug;
+    const findings = list(entry.findings).filter(isObject);
+    const file = kind === 'sarif'
+      ? { filename: `${slug}-findings.sarif.json`, data: `${JSON.stringify(toSarif(findings, { toolVersion: state.version }), null, 2)}\n` }
+      : { filename: `${slug}-findings.jsonl.txt`, data: `${findings.map((f) => JSON.stringify(f)).join('\n')}\n` };
+    state.exporting = true;
+    rerender();
+    try {
+      const result = await downloads.save(file);
+      state.exporting = false;
+      rerender();
+      refocus(button);
+      if (isObject(result) && result.status === 'saved') toast(`Downloaded ${file.filename}`);
+    } catch (err) {
+      const code = isObject(err) && typeof err.code === 'string' ? err.code : 'unavailable';
+      if (DOWNLOAD_RETRYABLE.indexOf(code) === -1) state.downloads = null;
+      state.exporting = false;
+      rerender();
+      refocus(button);
+      const message = downloadFailure(code);
+      if (message) toast(message, null, ERROR_TOAST_MS);
+    }
+  }
+
+  // Only when the focus fell to the page: a viewer who moved it somewhere else meanwhile keeps it there.
+  const refocus = (el) => {
+    const at = document.activeElement;
+    if ((!at || at === document.body) && document.contains(el) && !el.disabled) el.focus({ preventScroll: true });
+  };
+
+  function detailChildren(entry) {
     const p = entry.project;
     const systems = list(p.systems).filter(isObject);
     const reviewed = lastReviewed(entry.score);
-    $('detail-view').replaceChildren(
+    return [
       h('div', { class: 'detail-bar' },
         h('button', { type: 'button', class: 'back', id: 'back-to-tiles', on: { click: goTiles } },
           h('span', { 'aria-hidden': 'true' }, '←'), 'All projects')),
@@ -1178,9 +2598,17 @@ const RampartDashboard = (function () {
       h('div', { class: 'detail-summary' }, countsBlock(entry.findings)),
       sheetSection(entry),
       findingsSection(entry),
-      runsSection(entry));
-    renderFindingRows(entry);
+      jobsSection(entry),
+      settingsSection(entry),
+      runsSection(entry),
+    ].filter(Boolean);
+  }
+
+  // Opening a project: a fresh view, scrolled to the top, focus on its heading.
+  function renderDetail(entry) {
+    $('detail-view').replaceChildren(...detailChildren(entry));
     show('detail');
+    askDownloads();
     window.scrollTo(0, 0);
     $('detail-heading').focus({ preventScroll: true });
   }
@@ -1259,13 +2687,30 @@ const RampartDashboard = (function () {
     if (back) focusCard(back, false);
   }
 
+  // "Static snapshot <generatedAt>", or "Live · synced <latest meta/sync time> · executor <online|offline>".
+  function modeBadge() {
+    const data = state.data || {};
+    const at = (iso) => h('time', { datetime: iso, title: iso }, stamp(iso));
+    if (!state.live) return h('span', { class: 'mode-badge', id: 'mode-badge' }, h('span', { class: 'mode' }, 'Static snapshot'), ' ', at(data.generatedAt));
+    const live = isObject(data.live) ? data.live : {};
+    if (state.live.failed()) {
+      return h('span', { class: 'mode-badge', id: 'mode-badge' },
+        h('span', { class: 'mode' }, 'Live'), ' · updates stopped · last synced ', live.syncedAt ? at(live.syncedAt) : 'never');
+    }
+    const online = executorOnline(live.executors, Date.now());
+    return h('span', { class: 'mode-badge', id: 'mode-badge' },
+      h('span', { class: 'mode' }, 'Live'),
+      ' · synced ', live.syncedAt ? at(live.syncedAt) : 'never',
+      ' · executor ', h('span', { class: `exec exec-${online ? 'online' : 'offline'}` }, online ? 'online' : 'offline'));
+  }
+
   function renderMasthead() {
     const meta = $('masthead-meta');
     if (!state.data) {
       meta.hidden = true;
       return;
     }
-    meta.replaceChildren(h('span', { class: 'mode' }, 'Static snapshot'), h('span', null, plural(state.entries.length, 'project', 'projects')));
+    morphChildren(meta, [modeBadge(), h('span', null, plural(state.entries.length, 'project', 'projects'))]);
     meta.hidden = false;
   }
 
@@ -1275,30 +2720,47 @@ const RampartDashboard = (function () {
     show('empty');
   }
 
+  // The first call draws the view the address asks for. A later call while tiles or a project are showing (a live update)
+  // patches them in place: no scroll, no focus move, filters kept. A project that disappears sends the view back to the tiles.
   function render(data) {
+    const showing = state.view === 'tiles' || state.view === 'detail';
     state.data = isData(data) ? data : null;
-    state.entries = entriesOf(data);
+    state.entries = entriesOf(data).map(withDecisionsInFlight);
     renderMasthead();
     if (!state.entries.length) {
       renderEmpty(false);
       return;
     }
     renderTiles();
-    state.view = null;
-    route();
+    if (!showing) {
+      state.view = null;
+      route();
+      return;
+    }
+    const entry = state.view === 'detail' ? currentEntry() : null;
+    if (state.view === 'detail' && !entry) {
+      route();
+    } else if (entry) {
+      state.filters = normalizeFilters(entry, state.filters);
+      morphChildren($('detail-view'), detailChildren(entry));
+    } else {
+      updateNav();
+    }
   }
 
   // ---- copy and toast ----------------------------------------------------------------------
 
   let toastTimer = null;
+  const TOAST_MS = 2600;
+  const ERROR_TOAST_MS = 6000; // a failure stays up long enough to read
 
-  function toast(message, command) {
+  function toast(message, command, ms = TOAST_MS) {
     const el = $('toast');
     el.replaceChildren(message);
     if (command) el.appendChild(h('code', null, command));
     el.classList.add('is-on');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.remove('is-on'), 2600);
+    toastTimer = setTimeout(() => el.classList.remove('is-on'), ms);
   }
 
   // When the clipboard API is missing or refuses, put the text in the off-screen input, select it and try the old copy
@@ -1345,13 +2807,173 @@ const RampartDashboard = (function () {
     }
   }
 
-  // Static mode only, for now: the inline slot. Returns a promise so a live source can take its place.
-  function loadData() {
-    return Promise.resolve(readInlineData());
+  // A live source over the dashboard DB: one onSnapshot per collection, held for the life of the page. A collection has
+  // answered once it delivers a definitive snapshot or a non-empty one (an empty page from cache may be a cold cache, not
+  // an empty collection) or ends with a terminal error; ready() turns true when all have, or after ANSWER_TIMEOUT_MS so
+  // the view never hangs. current() is the page data from the latest snapshots; onChange(fn) runs fn after each delivery;
+  // failed() is the code of the first terminal error (the documents last seen stay), or null.
+  function liveSource(db) {
+    const docs = {};
+    const answered = new Set();
+    const listeners = [];
+    let failed = null;
+    let timer = null;
+    const notify = () => listeners.slice().forEach((fn) => fn());
+    const answer = (name) => {
+      answered.add(name);
+      if (answered.size === COLLECTIONS.length && timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+    timer = setTimeout(() => {
+      timer = null;
+      COLLECTIONS.forEach((name) => answered.add(name));
+      notify();
+    }, ANSWER_TIMEOUT_MS);
+    const unsubscribe = COLLECTIONS.map((name) => {
+      const stopped = (err) => {
+        failed = failed || (isObject(err) && typeof err.code === 'string' ? err.code : 'unavailable');
+        answer(name);
+        notify();
+      };
+      try {
+        return db.collection(name).onSnapshot((snap) => {
+          const page = list(snap && snap.docs).filter((d) => d && d.exists).map((d) => ({ id: d.id, data: d.data() }));
+          docs[name] = page;
+          if (page.length || !(snap && isObject(snap.metadata) && snap.metadata.fromCache)) answer(name);
+          notify();
+        }, stopped);
+      } catch (err) {
+        stopped(err);
+        return () => {};
+      }
+    });
+    return {
+      db,
+      ready: () => answered.size === COLLECTIONS.length,
+      failed: () => failed,
+      current: () => pageDataFromDocs(docs),
+      onChange: (fn) => listeners.push(fn),
+      close: () => {
+        if (timer !== null) clearTimeout(timer);
+        unsubscribe.forEach((stop) => stop());
+      },
+    };
+  }
+
+  const isSource = (v) => isObject(v) && typeof v.current === 'function' && typeof v.onChange === 'function';
+
+  // A capability namespace from the host, or null: no host (a saved copy of the page), not granted, or a failed call.
+  async function capability(name) {
+    const host = typeof window !== 'undefined' ? window.claude : undefined;
+    if (!host || typeof host.use !== 'function') return null;
+    try {
+      return (await host.use(name)) || null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // The inline slot when it holds data (static mode, unchanged from Plan 1); else a live source when the host serves the db;
+  // else null, which renders the empty state.
+  async function loadData() {
+    const inline = readInlineData();
+    if (inline !== null) return inline;
+    const db = await capability('db');
+    return db ? liveSource(db) : null;
+  }
+
+  // ---- who may write -----------------------------------------------------------------------
+
+  // Controls that write to the DB render only for the artifact's owner, and not when the platform says the owner cannot
+  // write shared data (can() null means "not told": keep them, and let a refused write decide). Everyone else, a signed-out
+  // viewer and every page without a db reads only. <main data-access> mirrors it for styling.
+  const canWrite = () => state.access === 'write';
+
+  function setAccess(level) {
+    state.access = level;
+    const main = $('main');
+    if (main) main.setAttribute('data-access', level);
+  }
+
+  // The owner's first visit records who the owner is (meta/owner), so executors can tell the owner's jobs from anyone
+  // else's. Written once, only when absent; a refused write is left for the next visit.
+  async function recordOwner(db, user) {
+    try {
+      const ref = db.doc('meta/owner');
+      if ((await ref.get()).exists) return;
+      const ownerId = await user.id();
+      if (!ownerId) return;
+      await ref.set({ ownerId, at: new Date().toISOString() });
+    } catch (err) {
+      // Nothing to do: see above.
+    }
+  }
+
+  // Who is viewing. Any failure here (a call that rejects) leaves the page read-only; it never blanks the view. A writer's
+  // user id signs their decisions; without one (null, or id() failing) no decision control renders.
+  async function connectUser(db) {
+    const user = await capability('user');
+    if (!user) return;
+    let owner = false;
+    let writable = false;
+    try {
+      owner = (await user.isOwner()) === true;
+      writable = owner && (await user.can('data.write')) !== false;
+    } catch (err) {
+      owner = false;
+      writable = false;
+    }
+    let userId = null;
+    if (writable) {
+      try {
+        const id = await user.id();
+        userId = typeof id === 'string' && id !== '' ? id : null;
+      } catch (err) {
+        userId = null;
+      }
+    }
+    state.userId = userId;
+    state.user = writable ? user : null;
+    setAccess(writable ? 'write' : 'read');
+    if (!canQueue()) closeSheet();
+    if (state.view === 'tiles' || state.view === 'detail') render(state.data);
+    if (owner) await recordOwner(db, user);
+  }
+
+  // Live mode: draw once every collection has answered, then patch on each delivery; the badge re-checks the executor
+  // heartbeat every minute, since an executor going quiet sends no snapshot.
+  // Before any data has shown, a terminal error with no projects to show is the unavailable view (a live message, not the
+  // static mode's hints); after, the view stays and the badge says updates stopped.
+  function startLive(source) {
+    state.live = source;
+    const draw = () => {
+      if (!source.ready()) return;
+      const data = source.current();
+      const showing = state.view === 'tiles' || state.view === 'detail';
+      if (source.failed() && !showing && !hasProjects(data)) {
+        state.data = data;
+        state.entries = [];
+        renderMasthead();
+        show('unavailable');
+        return;
+      }
+      render(data);
+    };
+    source.onChange(draw);
+    draw();
+    if (typeof setInterval === 'function') {
+      setInterval(() => {
+        if (state.data) renderMasthead();
+      }, BADGE_REFRESH_MS);
+    }
+    connectUser(source.db).catch(() => setAccess('read'));
   }
 
   function boot() {
     const main = $('main');
+    if (main && main.hasAttribute('data-version')) state.version = String(main.getAttribute('data-version') || '');
     if (main && main.hasAttribute('data-engines')) state.engines = parseEngines(main.getAttribute('data-engines'));
     $('carousel-prev').addEventListener('click', () => scrollCards(-1));
     $('carousel-next').addEventListener('click', () => scrollCards(1));
@@ -1370,7 +2992,8 @@ const RampartDashboard = (function () {
     window.addEventListener('popstate', route);
     window.addEventListener('hashchange', route);
     document.addEventListener('keydown', onKey);
-    loadData().then(render).catch((err) => {
+    if (readInlineData() === null) show('loading');
+    loadData().then((source) => (isSource(source) ? startLive(source) : render(source))).catch((err) => {
       if (typeof console !== 'undefined') console.error('Rampart dashboard:', err);
       renderEmpty(true);
     });
@@ -1382,6 +3005,7 @@ const RampartDashboard = (function () {
     LAYERS, ACTION_LABELS, DEFAULT_FILTERS, DEFAULT_ENGINES, parseEngines, runnableLayers,
     isData, hasProjects, openCounts, freshness, lastReviewed, auditCommand, formatLocation,
     parseHash, buildHash, filterFindings, sortFindings, loadData, render,
+    pageDataFromDocs, executorOnline, liveSource, canWrite, toSarif,
   };
 })();
 </script>

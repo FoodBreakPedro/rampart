@@ -20,6 +20,7 @@
     },
     "defaultExecutor": { "enum": ["local", "cloud"] },
     "cloudAllowed": { "type": "boolean" },
+    "huntEffort": { "enum": ["low", "medium", "high"], "description": "Optional hunt effort for this project, set from the dashboard." },
     "systems": {
       "type": "array",
       "items": {

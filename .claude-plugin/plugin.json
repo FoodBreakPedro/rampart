@@ -1,6 +1,6 @@
 {
   "name": "rampart",
-  "version": "0.2.0-alpha.1",
+  "version": "0.4.0-alpha.1",
   "description": "Layered security and vulnerability reviews across all your systems: inventory, L1/L2/L3 and infra audits with independent verification, a per-user record, and a scored dashboard.",
   "author": {
     "name": "Pedro Zabala"

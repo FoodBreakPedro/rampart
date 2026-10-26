@@ -44,6 +44,9 @@ const finding = (over = {}) => ({
 });
 
 // A run with a units.json, as init and assemble leave it.
+// Run times are millisecond ISO stamps: a run that starts in the millisecond the last one finished would overlap it.
+const tick = () => { const t = Date.now(); while (Date.now() === t); };
+
 function setup({ layer = 'L3', system = 'web', units, findings = [], runPatch = {}, unitsPatch = {} } = {}) {
   store.writeProject(project());
   const run = store.createRun(SLUG, { job: 'audit', layers: [layer], systems: [system], executor: 'local' });
@@ -247,6 +250,7 @@ test('the headline carries the project score, grade and trend', () => {
 
 test('a later run re-seeing a finding keeps it in the older report; a finding first seen later is absent', () => {
   const a = setup({ findings: [finding()] });
+  tick();
   const b = setup({ findings: [finding(), finding({ id: 'bbbbbbbbbbbb', title: 'Only in B' })] });
   const reportA = renderReport(SLUG, a.runId);
   assert.match(reportA, /Record access not scoped/);

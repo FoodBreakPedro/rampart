@@ -87,3 +87,9 @@ test('T14: a script the recipes run with no arguments (render-static) is pre-app
   assert.ok(bare, 'some recipe runs a script with no arguments');
   assert.ok(tools.includes('Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/*.cjs")'), 'a rule that ends in " *" does not match a command with no arguments');
 });
+
+test('T9: the skill pre-approves the live dashboard tools and keeps Glob (watch.md globs for verify.md)', () => {
+  const tools = frontMatter(read('skills', 'rampart', 'SKILL.md'), 'allowed-tools');
+  for (const t of ['Glob', 'Artifact', 'ArtifactData', 'ScheduleWakeup', 'Agent(rampart:inventory-mapper, rampart:explore, rampart:hunter, rampart:verifier, rampart:infra-prober)']) assert.ok(tools.includes(t), t);
+  assert.ok(!tools.some((t) => /^Bash\((?!node |git |ls |date )/.test(t)), 'no new shell rule');
+});

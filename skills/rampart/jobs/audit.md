@@ -54,6 +54,8 @@ Let `<start>` be the earliest `run.startedAt` of this job's checks. This job's n
 - The new and regressed findings, highest severity first, at most ten, each by id, title, severity and location only; past ten, "and <N> more on the dashboard".
 - The grade, score and trend, and the dashboard path.
 
+Then the Live dashboard step at the end of this recipe.
+
 ## L2, L3 and INFRA: before anything runs
 
 L2 hunts what a branch changed, L3 hunts the whole repository, INFRA probes a host. They run Rampart's own pipeline: one `rampart:hunter` agent per unit and pack class (INFRA: one `rampart:infra-prober` per host), then independent `rampart:verifier` agents vote on every candidate, and hunt-io keeps only what passes the verification bar. One system per run: an audit of several systems runs them one after another.
@@ -171,3 +173,9 @@ Score and render as the shared rules say. Then summarise, per system:
 - The report's path.
 
 Then the grade, score and trend from the score sheet's first line, and the dashboard path. Skips the summary must also name: systems dropped in "before anything runs" (no checkout, no layer, nothing to scan), a hunt not run because no effort was chosen or the cost was declined, and Supabase advisors skipped.
+
+Then the Live dashboard step at the end of this recipe.
+
+## Live dashboard
+
+Every layer's job ends here. When `node "${CLAUDE_PLUGIN_ROOT}/scripts/store.cjs" dashboard --json` shows a `url`, follow the Sync section of [dashboard](${CLAUDE_SKILL_DIR}/jobs/dashboard.md) for this project, last, and add its one line to the summary; a failed sync is a note, not a failed audit. With no `url`, nothing more.

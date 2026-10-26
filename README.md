@@ -6,7 +6,7 @@ The shape follows a three-level framework. Level 1, for every app: secrets over 
 
 ## Status
 
-Pre-release. This alpha, `0.2.0-alpha.1`, covers:
+Pre-release. This alpha, `0.4.0-alpha.1`, covers:
 
 - **inventory**: map a folder's systems into a project and record your owner attestation.
 - **audit L1**: gitleaks over a repository's full history, trivy or the npm/pnpm audit on its lockfile, and a grade of each live URL's security headers; then the score.
@@ -16,6 +16,8 @@ Pre-release. This alpha, `0.2.0-alpha.1`, covers:
 - **verify**: re-check open hunt findings against the current code, closing the ones that no longer reproduce.
 - **doctor**: which tools this machine has, and what degrades without them.
 - **dashboard --static**: every project's score sheet as a local HTML page.
+- **dashboard**: the live claude.ai dashboard, a private artifact with dispositions, job buttons, settings and JSONL/SARIF export; `dashboard --sync` mirrors your local record into it.
+- **watch** and **schedule**: a local executor that runs the jobs queued on the dashboard, and a weekly sync with overdue L1 audits.
 
 ### The three layers and the hunt
 
@@ -28,9 +30,8 @@ Level 1 is pure scripts and costs no model tokens. Levels 2 and 3, and the INFRA
 
 L2, L3 and INFRA need Claude Code's Workflow tool: if `/config` shows a "Dynamic workflows" row, it must be on. Each run writes a `REPORT.md` in its run directory.
 
-The rest of v0.1 arrives in more plans:
+The rest of v0.1 arrives in one more plan:
 
-- **Plan 3, live dashboard and executors**: the claude.ai artifact dashboard with dispositions and Run buttons, the local `watch` executor and `schedule`.
 - **Plan 4, rampart-lite, evals and the start of the fix flow**: the portable `rampart-lite` skill, evals run with `claude plugin eval`, and `fix` with an independent patch reviewer. (Importing a claude-security report already works: `/rampart audit L2|L3 --import`.)
 
 ## Requirements
