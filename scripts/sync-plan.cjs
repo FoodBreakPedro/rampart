@@ -21,10 +21,14 @@
 // push writes <dir>/docs/<collection>/<id>.json per doc and <dir>/batches.json = {cursor, batches: [[{op, collection,
 // doc_id, file_path, if_version?}, ...]]}. pull reads a JSON array of docs or a tree <dir>/<collection>/<id>.json whose
 // files are bare bodies or {id, data, version} wrappers. Exit 0 ok, 1 anything else, 2 bad arguments.
-//      node scripts/sync-plan.cjs versions --in <dir> --out <file.json>
+//      node scripts/sync-plan.cjs versions --in <dir> [--listings <dir>] --out <file.json>
 //        the push --versions map {"<collection>/<doc_id>": version} from an ArtifactData out_dir tree read just before the
 //        push (the same snapshot the pull read). Each file is a {id, data, version} wrapper or a body with version or _version
 //        beside its fields; a file with no integer version fails (exit 1, naming it) rather than leaving a doc unpinned.
+//        With --listings <dir> the versions come from the read's result text saved there as <collection>.txt (the files are
+//        bare bodies): lines `- "<id>"  <n> bytes  version <v>  "<path>"`; a listed doc with no file, a file not listed, a
+//        path outside --in or a version that is not a positive integer fails (exit 1).
+//        pull, versions and meta-sync treat a missing --in with an existing parent as an empty snapshot (a fresh database).
 //      node scripts/sync-plan.cjs page-hash [--file <page.html>]
 //        sha256:<hex> of the live page (default the plugin's dashboard/index.html), for config.json dashboard.pageHash.
 //      node scripts/sync-plan.cjs page-copy --to <dir>
@@ -294,7 +298,7 @@ class UsageError extends Error {}
 const USAGE = [
   'usage: node scripts/sync-plan.cjs push --project <slug> [--since <iso>] [--versions <file.json>] --out <dir>',
   '       node scripts/sync-plan.cjs pull --project <slug> --in <file.json | dir>',
-  '       node scripts/sync-plan.cjs versions --in <dir> --out <file.json>',
+  '       node scripts/sync-plan.cjs versions --in <dir> [--listings <dir>] --out <file.json>',
   '       node scripts/sync-plan.cjs page-hash [--file <page.html>]',
   '       node scripts/sync-plan.cjs page-copy --to <dir>',
   '       node scripts/sync-plan.cjs meta-sync --in <dir> [--cursor <iso> [--full]]',
@@ -307,7 +311,7 @@ function parseArgs(argv) {
       args: argv,
       options: {
         project: { type: 'string' }, since: { type: 'string' }, versions: { type: 'string' }, out: { type: 'string' }, in: { type: 'string' },
-        file: { type: 'string' }, cursor: { type: 'string' }, full: { type: 'boolean' }, to: { type: 'string' },
+        file: { type: 'string' }, cursor: { type: 'string' }, full: { type: 'boolean' }, to: { type: 'string' }, listings: { type: 'string' },
       },
       allowPositionals: true,
       strict: true,
@@ -433,6 +437,35 @@ function treeFiles(dir) {
   return out;
 }
 
+// The listing lines an ArtifactData read prints: `- "<id>"  <n> bytes  version <v>  "<path>"`; every other line is ignored.
+const LISTING_RE = /^- "([^"]+)"\s+\d+ bytes\s+version (\S+)\s+"(.+)"\s*$/;
+
+// {"<collection>/<doc_id>": version} from the listing text files in listings (none when the folder is absent), each path
+// resolved against dir: the file must sit at <dir>/<collection>/<name>.json, and the tree and the listings must agree.
+function versionsFromListings(dir, listings, fresh) {
+  const map = {};
+  const names = isDir(listings) ? fs.readdirSync(listings).filter((n) => n.endsWith('.txt')).sort() : [];
+  for (const name of names) {
+    for (const line of fs.readFileSync(path.join(listings, name), 'utf8').split(/\r?\n/)) {
+      const m = LISTING_RE.exec(line);
+      if (!m) continue;
+      const rel = path.relative(dir, path.resolve(m[3]));
+      const parts = rel.split(path.sep);
+      if (path.isAbsolute(rel) || parts.length !== 2 || parts[0] === '..' || !COLLECTION_RE.test(parts[0]) || !parts[1].endsWith('.json')) {
+        throw new Error(`versions: ${name} lists a path outside --in`);
+      }
+      const key = `${parts[0]}/${parts[1].slice(0, -5)}`;
+      if (!/^[1-9][0-9]*$/.test(m[2]) || !Number.isSafeInteger(Number(m[2]))) throw new Error(`versions: ${key} is listed with version ${m[2]}, not a positive integer`);
+      if (!fs.existsSync(path.join(dir, ...parts))) throw new Error(`versions: ${key}.json is listed but has no file under --in`);
+      map[key] = Number(m[2]);
+    }
+  }
+  for (const [collection, docId] of fresh ? [] : treeFiles(dir)) {
+    if (!Object.hasOwn(map, `${collection}/${docId}`)) throw new Error(`versions: ${collection}/${docId}.json is not listed by the read`);
+  }
+  return map;
+}
+
 function buildVersions(dir) {
   const map = {};
   for (const [collection, docId, file] of treeFiles(dir)) {
@@ -481,7 +514,7 @@ const isDir = (p) => {
 };
 
 const PAGE = path.join(__dirname, '..', 'dashboard', 'index.html');
-const TOOL_FLAGS = { versions: ['in', 'out'], 'page-hash': ['file'], 'page-copy': ['to'], 'meta-sync': ['in', 'cursor', 'full'] };
+const TOOL_FLAGS = { versions: ['in', 'out', 'listings'], 'page-hash': ['file'], 'page-copy': ['to'], 'meta-sync': ['in', 'cursor', 'full'] };
 
 // Copies the plugin's page into <to>/rampart-dashboard/index.html; returns {hash, file}.
 function pageCopy(to) {
@@ -508,10 +541,11 @@ function mainTool(verb, values) {
   }
   if (!values.in) throw new UsageError(`${verb} needs --in`);
   const dir = path.resolve(values.in);
-  if (!isDir(dir)) throw new UsageError(`${verb}: --in is not a folder`);
+  const fresh = snapshotIsEmpty(dir, verb);
+  if (!fresh && !isDir(dir)) throw new UsageError(`${verb}: --in is not a folder`);
   if (verb === 'versions') {
     if (!values.out) throw new UsageError('versions needs --out');
-    const map = buildVersions(dir);
+    const map = values.listings ? versionsFromListings(dir, path.resolve(values.listings), fresh) : fresh ? {} : buildVersions(dir);
     writeAtomic(path.resolve(values.out), `${JSON.stringify(map, null, 2)}\n`);
     process.stdout.write(`${Object.keys(map).length} versions\n`);
     return;
@@ -523,11 +557,20 @@ function mainTool(verb, values) {
   process.stdout.write(`${JSON.stringify(metaSync(dir, values.cursor, values.full === true))}\n`);
 }
 
+// A read of an empty collection saves no folder, so on a fresh database --in does not exist: with its parent in place that
+// is an empty snapshot (true); without the parent it is a mistake (UsageError).
+function snapshotIsEmpty(dir, verb) {
+  if (fs.existsSync(dir)) return false;
+  if (!isDir(path.dirname(dir))) throw new UsageError(`${verb}: --in not found`);
+  return true;
+}
+
 function readPullInput(input) {
   let stat;
   try {
     stat = fs.statSync(input);
   } catch {
+    if (snapshotIsEmpty(input, 'pull')) return [];
     throw new UsageError('pull: --in not found');
   }
   if (stat.isFile()) {
@@ -551,7 +594,7 @@ function main(argv) {
   const { verb, values } = parseArgs(argv);
   if (Object.hasOwn(TOOL_FLAGS, verb)) return mainTool(verb, values);
   if (verb !== 'push' && verb !== 'pull') throw new UsageError(`unknown verb ${verb}`);
-  for (const flag of ['file', 'cursor', 'full', 'to']) if (values[flag] !== undefined) throw new UsageError(`${verb} does not take --${flag}`);
+  for (const flag of ['file', 'cursor', 'full', 'to', 'listings']) if (values[flag] !== undefined) throw new UsageError(`${verb} does not take --${flag}`);
   if (!values.project) throw new UsageError(`${verb} needs --project`);
   if (verb === 'push') {
     if (!values.out) throw new UsageError('push needs --out');

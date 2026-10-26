@@ -257,11 +257,12 @@ test('dashboard: sync pulls and builds versions from one snapshot, then pushes p
   };
   const read = at('`out_dir: "<sync>/db"`');
   const pull = at('sync-plan.cjs" pull --project <slug> --in "<sync>/db"');
-  const versions = at('sync-plan.cjs" versions --in "<sync>/db" --out "<sync>/versions.json"');
+  const versions = at('sync-plan.cjs" versions --in "<sync>/db" --listings "<sync>/listings" --out "<sync>/versions.json"');
   const push = at('sync-plan.cjs" push --project <slug> --versions "<sync>/versions.json" --out "<sync>/push/<slug>"');
   const batch = at('`ArtifactData batch`');
   assert.ok(read < pull && pull < versions && versions < push && push < batch, 'read, pull, versions, push, batch in that order');
   for (const c of ['`projects`', '`findings`', '`runs`', '`jobs`', '`meta`']) assert.ok(sync.includes(c), `Sync reads ${c}`);
+  assert.match(sync, /Write the result text, copied verbatim, to `<sync>\/listings\/<collection>\.txt`/);
   assert.match(sync, /redo the whole cycle/);
   assert.match(sync, /never re-read/i);
   assert.match(sync, /sync-plan\.cjs" meta-sync --in "<sync>\/db" --cursor <cursor>/);

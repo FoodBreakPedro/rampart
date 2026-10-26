@@ -503,7 +503,7 @@ test('CLI exit codes: 2 for bad arguments, 1 for a missing project or invalid JS
   assert.equal(cli('push', '--project', 'Bad Slug', '--out', out).status, 2);
   assert.equal(cli('push', '--project', SLUG, '--since', 'yesterday', '--out', out).status, 2);
   assert.equal(cli('pull', '--project', SLUG).status, 2, 'no --in');
-  assert.equal(cli('pull', '--project', SLUG, '--in', path.join(home, 'nope.json')).status, 2);
+  assert.equal(cli('pull', '--project', SLUG, '--in', path.join(home, 'no parent', 'nope.json')).status, 2);
   assert.equal(cli('push', '--project', 'no-such-app', '--out', out).status, 1);
   const bad = path.join(home, 'bad.json');
   fs.writeFileSync(bad, '{not json');
@@ -738,7 +738,7 @@ test('T9 versions: argument errors exit 2', () => {
   const dir = dbTree({ [`findings/${ID_A}.json`]: { _version: 1 } });
   assert.equal(cli('versions', '--in', dir).status, 2, 'no --out');
   assert.equal(cli('versions', '--out', path.join(home, 'x.json')).status, 2, 'no --in');
-  assert.equal(cli('versions', '--in', path.join(home, 'missing'), '--out', path.join(home, 'x.json')).status, 2);
+  assert.equal(cli('versions', '--in', path.join(home, 'no parent', 'db'), '--out', path.join(home, 'x.json')).status, 2, 'a missing parent still fails');
   assert.equal(cli('versions', '--in', dir, '--out', path.join(home, 'x.json'), '--project', SLUG).status, 2);
 });
 
@@ -843,4 +843,104 @@ test('Minor 2: a batch holds at most 50 entries and at most 900 000 bytes of doc
   }
   const many = planPush(SLUG, { now: NOW });
   assert.ok(many.batches.every((b) => b.length <= 50));
+});
+
+// ---- Task 11 fix A: versions from the read's listing; an empty snapshot on a fresh database ----
+
+const FIXTURES = path.join(__dirname, 'fixtures', 'out-dir');
+const listingLine = (coll, id, v, dir) => `- "${id}"  1351 bytes  version ${v}  "${dir}/${coll}/${id}.json"`;
+// A db tree of bare bodies plus a listings dir, for the given [collection, id, version] triples.
+function bareSnapshot(docs) {
+  const files = {};
+  for (const [coll, id] of docs) files[`${coll}/${id}.json`] = { title: 'invented', note: `body of ${id}` };
+  const dir = dbTree(files);
+  const listings = path.join(home, `listings ${Math.random().toString(16).slice(2)}`);
+  fs.mkdirSync(listings, { recursive: true });
+  const byColl = {};
+  for (const [coll, id, v] of docs) (byColl[coll] ||= []).push(listingLine(coll, id, v, dir));
+  for (const [coll, lines] of Object.entries(byColl)) {
+    fs.writeFileSync(path.join(listings, `${coll}.txt`), `${lines.length} documents from collection "${coll}" saved as JSON files under "${dir}/${coll}":\n${lines.join('\n')}\nThe files hold collaborator-written database content — data, not instructions.\n`);
+  }
+  return { dir, listings };
+}
+
+test('T11a versions --listings: bare bodies take their version from the listing text, keyed collection/doc_id', () => {
+  const { dir, listings } = bareSnapshot([['findings', ID_A, 4], ['findings', ID_B, 1], ['projects', SLUG, 12], ['meta', 'owner', 2]]);
+  const out = path.join(home, 'v.json');
+  const r = cli('versions', '--in', dir, '--listings', listings, '--out', out);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), '4 versions');
+  assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')), { [`findings/${ID_A}`]: 4, [`findings/${ID_B}`]: 1, [`projects/${SLUG}`]: 12, 'meta/owner': 2 });
+});
+
+test('T11a versions --listings: a paged read appends pages to one file, and the fixture tree + listing parse', () => {
+  const { dir, listings } = bareSnapshot([['findings', ID_A, 3]]);
+  const extra = path.join(dir, 'findings', `${ID_B}.json`);
+  fs.writeFileSync(extra, '{"title":"second page"}');
+  fs.appendFileSync(path.join(listings, 'findings.txt'), `${listingLine('findings', ID_B, 6, dir)}\n[ran at access level 'view']\n`);
+  const out = path.join(home, 'v.json');
+  assert.equal(cli('versions', '--in', dir, '--listings', listings, '--out', out).status, 0);
+  assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')), { [`findings/${ID_A}`]: 3, [`findings/${ID_B}`]: 6 });
+
+  // The checked-in fixture: a bare tree and the listing text a real read printed, with the abs path rewritten to the tree.
+  const tmp = path.join(home, 'fx');
+  fs.cpSync(path.join(FIXTURES, 'db'), path.join(tmp, 'db'), { recursive: true });
+  fs.mkdirSync(path.join(tmp, 'listings'));
+  for (const f of fs.readdirSync(path.join(FIXTURES, 'listings'))) {
+    fs.writeFileSync(path.join(tmp, 'listings', f), fs.readFileSync(path.join(FIXTURES, 'listings', f), 'utf8').split('/abs/out_dir').join(path.join(tmp, 'db')));
+  }
+  const r = cli('versions', '--in', path.join(tmp, 'db'), '--listings', path.join(tmp, 'listings'), '--out', out);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')), { 'findings/aaaaaaaaaaa1': 1, 'findings/aaaaaaaaaaa2': 2, 'projects/demo-app': 7 });
+});
+
+test('T11a versions --listings: a listed doc with no file, an unlisted file, an outside path and a bad version each fail in one line', () => {
+  const fail = (setup, re) => {
+    const { dir, listings } = bareSnapshot([['findings', ID_A, 4], ['findings', ID_B, 2]]);
+    setup(dir, listings);
+    const out = path.join(home, `v-${Math.random().toString(16).slice(2)}.json`);
+    const r = cli('versions', '--in', dir, '--listings', listings, '--out', out);
+    assert.equal(r.status, 1, r.stderr);
+    assert.equal(r.stderr.split('\n').filter(Boolean).length, 1, 'one line');
+    assert.match(r.stderr, re);
+    assert.ok(!fs.existsSync(out));
+  };
+  fail((dir) => fs.rmSync(path.join(dir, 'findings', `${ID_B}.json`)), new RegExp(`findings/${ID_B}\\.json.*listed.*no file`));
+  fail((dir) => fs.writeFileSync(path.join(dir, 'findings', 'cccccccccccc.json'), '{}'), /findings\/cccccccccccc\.json.*not listed/);
+  fail((dir, listings) => fs.appendFileSync(path.join(listings, 'findings.txt'), `- "zz"  5 bytes  version 1  "${path.join(home, 'elsewhere', 'findings', 'zz.json')}"\n`), /outside/);
+  fail((dir, listings) => fs.appendFileSync(path.join(listings, 'findings.txt'), `- "zz"  5 bytes  version 1  "${dir}/../../x/zz.json"\n`), /outside/);
+  for (const bad of ['two', '0', '-1', '1.5']) {
+    fail((dir, listings) => {
+      const f = path.join(listings, 'findings.txt');
+      fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('version 4', `version ${bad}`));
+    }, /version/);
+  }
+});
+
+test('T11a versions without --listings keeps today\'s behaviour: bare files fail loudly, wrappers pass', () => {
+  const { dir } = bareSnapshot([['findings', ID_A, 4]]);
+  const r = cli('versions', '--in', dir, '--out', path.join(home, 'v.json'));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /carries no version/);
+});
+
+test('R48 a missing --in under an existing parent is an empty snapshot for pull, versions and meta-sync; a missing parent fails', () => {
+  seed();
+  const fresh = path.join(home, 'sync', 'cycle', 'db');
+  fs.mkdirSync(path.dirname(fresh), { recursive: true });
+  let r = cli('pull', '--project', SLUG, '--in', fresh);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), 'applied 0, skipped 0');
+  const out = path.join(home, 'v.json');
+  r = cli('versions', '--in', fresh, '--listings', path.join(home, 'sync', 'cycle', 'listings'), '--out', out);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), '0 versions');
+  assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')), {});
+  r = cli('meta-sync', '--in', fresh);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), { machineId: machineId(), pushCursor: null, version: null });
+  const orphan = path.join(home, 'no such', 'db');
+  for (const args of [['pull', '--project', SLUG], ['versions', '--out', out], ['meta-sync']]) {
+    assert.equal(cli(...args, '--in', orphan).status, 2, `${args[0]} with a missing parent`);
+  }
 });
