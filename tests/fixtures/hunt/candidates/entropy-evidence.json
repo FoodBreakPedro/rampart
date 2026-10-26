@@ -1,0 +1,20 @@
+[
+  {
+    "ref": "c1",
+    "classId": "authz-scoping",
+    "title": "Opaque token in the users route",
+    "severity": "MEDIUM",
+    "confidence": "HIGH",
+    "cwe": [
+      "CWE-639"
+    ],
+    "preconditions": "Signed in as any user.",
+    "recommendation": "Scope the query to the session user.",
+    "location": {
+      "path": "app/api/users/route.ts",
+      "symbol": "GET"
+    },
+    "evidence": "header x-internal is compared with q8Zx3Lm9Vb2NkR7tYw4Pc1Hd in the handler",
+    "exploitScenario": "The token is reused for q8Zx3Lm9Vb2NkR7tYw4Pc1Hd style access."
+  }
+]

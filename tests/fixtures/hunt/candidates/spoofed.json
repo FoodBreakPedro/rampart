@@ -1,0 +1,29 @@
+[
+  {
+    "ref": "c1",
+    "candidateId": "000000000000",
+    "system": "evil",
+    "layer": "L1",
+    "pack": "evil-pack",
+    "packVersion": "9.9.9",
+    "hunter": {
+      "agent": "evil",
+      "unit": "evil"
+    },
+    "classId": "authz-scoping",
+    "title": "Users route returns any user by id",
+    "severity": "MEDIUM",
+    "confidence": "HIGH",
+    "cwe": [
+      "CWE-639"
+    ],
+    "preconditions": "Signed in as any user.",
+    "recommendation": "Scope the query to the session user.",
+    "location": {
+      "path": "app/api/users/route.ts",
+      "symbol": "GET"
+    },
+    "evidence": "GET reads params.id with no session comparison.",
+    "exploitScenario": "A signed-in user reads another profile."
+  }
+]

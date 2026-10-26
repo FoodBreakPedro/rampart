@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rampart coverage ledger",
+  "description": "projects/<slug>/coverage.json: which units (repo directories, host probes) each run covered, and with which pack versions. Keys of `units` are <system>|<layer>|<unitId>; every value must match $defs.unitEntry (the store checks each entry, because the validator has no per-key schema).",
+  "type": "object",
+  "required": ["project", "units"],
+  "additionalProperties": false,
+  "properties": {
+    "project": { "type": "string", "pattern": "^[a-z0-9-]{2,40}$" },
+    "units": { "type": "object" }
+  },
+  "$defs": {
+    "unitEntry": {
+      "type": "object",
+      "required": ["system", "layer", "lastRun", "packVersions", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "system": { "type": "string", "minLength": 1 },
+        "layer": { "enum": ["L1", "L2", "L3", "INFRA"] },
+        "lastRun": { "type": "string", "minLength": 1 },
+        "packVersions": { "type": "object" },
+        "status": { "enum": ["covered", "skipped", "failed"] },
+        "classes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Optional: the pack class ids hunted on this unit at these pack versions (added by Plan 2's fix wave; an entry without it records no classes)." },
+        "effort": { "enum": ["low", "medium", "high"], "description": "Optional: the effort of the run that stamped this entry." }
+      }
+    }
+  }
+}

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.0-alpha.1 — 2026-10-26
+
+The hunt engine: Rampart's own agent audits for changes, whole repositories and self-hosted hosts.
+
+- **Grades are no longer capped at C.** Repo systems declare L2 and L3 and hosts declare INFRA; those layers now have engines, so a finished L2, L3 or INFRA run earns its coverage credit and a clean project can reach an A.
+- **`/rampart audit L3`**: a deep hunt of a whole repository. The repository is split into units, and the `rampart:audit` workflow runs one `hunter` agent per unit and pack class, at `low` (the five logic-bug classes: record scoping, tenant isolation, bulk export, sessions, search injection), `medium` (every class, reachable code) or `high` (every class, every unit) effort, with the agent count and a rough token estimate shown before anything runs.
+- **`/rampart audit L2`**: the same hunt on what a branch changed against its base (`--base`, default the system's default branch); only the units holding changed files are hunted.
+- **Independent verification.** Every candidate goes to fresh `verifier` agents told to disprove it. It becomes a finding only when a majority confirm it, with two confirmations for anything HIGH or CRITICAL; rejected and undecided candidates stay in the run directory, and the run's `findings.json` lists their ids. A unit whose hunter did not return is marked failed, never clean, and closes no findings.
+- **A hunt closes only what it looked for.** A finding is closed as fixed only in a covered unit whose hunters hunted its class, and for L2 only in a file the hunters read; a unit whose hunter returned invalid entries or the most candidates it may (10) closes nothing, and the report says so. A run that covered fewer than half its units finishes failed, with no coverage credit.
+- **Coverage remembers the classes.** The coverage ledger records the classes hunted on each unit and the effort; `coverage.cjs gaps` lists a unit until every class of its packs was hunted, and `REPORT.md` names the classes hunted and, under Skips, the ones a low effort left out.
+- **`/rampart audit INFRA`**: the read-only probes of a host's packs (Docker host, Supabase, n8n, WordPress) over SSH or HTTP, with environment values scrubbed and every output redacted before it is written; one `infra-prober` agent compares the observations with the pack's baseline, and verifiers judge each candidate from the same observations. It refuses to run from a cloud session. A probe counts as covered only when it answered: exit 0 (or an exit code its pack declares healthy with `okExit`), or an HTTP status below 500; a permission error, a stopped Docker daemon or a 503 leaves its probe uncovered, and nothing is closed until every probe answered.
+- **The live dashboard runs hunts too.** Its Run buttons now cover L2, L3 and INFRA, `/rampart watch` runs those audits and `verify` jobs from the queue, `verify` ends with the dashboard sync like the other jobs, and the post-push hook's `/rampart audit L2` suggestion is on.
+- **`/rampart verify`**: re-judges open hunt findings against the current code with one fresh verifier each; a finding it can no longer reproduce is closed as fixed.
+- **A `REPORT.md` per run**: title, headline, coverage, findings by severity, skips and the score after the run.
+- **Review packs**: eight versioned packs (`packs/`) for Next.js, Node APIs, Expo, Cloudflare Workers, Supabase, n8n, Docker hosts and WordPress, each with hunt classes (look for, confirm by, disprove by, severity, CWE), a baseline and probes; `scripts/packs.cjs` lists, shows and validates them.
+- **claude-security import**: `/rampart audit L2|L3 --import` records a claude-security report's findings (panel-verified, so stored as verified) without hunting, and never changes a finding's status. An attended L2 or L3 audit offers the hand-off once when the plugin is installed.
+- The skill also pre-approves a plugin script run with no arguments, so a session outside auto mode no longer stops on a permission prompt at the final dashboard render.
+- A grep probe whose pack declares `okExit: 0,1` (docker-host's `container-hostconfig`, where no match means no risky container flags) counts a match of nothing as a clean answer instead of a failed probe; any other grep that exits 1 is not an answer.
+
+### Known limitations
+
+- The `verifier` cannot run probes itself: an INFRA candidate is judged only from the observations the run already recorded.
+- Some probes exit non-zero with a normal answer (`cat` of a Docker daemon configuration that does not exist, `trivy --version` where Trivy is not installed, the APT auto-upgrades file on a non-Debian host). The prober still reads them, but their probe is not covered, so on such a host an INFRA run closes no findings until the pack declares those exits with `okExit`.
+- Agent write confinement is prompt-only: hunters, verifiers and the prober are told to write one file in the run directory, and nothing enforces it beyond your session's permissions.
+- Hunters and verifiers read git history only when the session's working directory is the repository root; otherwise they judge the working tree alone.
+- The INFRA environment scrub is line-based: a minified one-line JSON object passes to `redact()` only.
+- The cost shown before a hunt is a rough estimate (a fixed token figure per agent run), not a measurement.
+- One flaw can surface as several findings, one per pack class that catches it (an unscoped export found as record scoping, tenant isolation and bulk export); each is verified on its own.
+- The `infra-prober`'s extra probes run only when your session allows the probe script: its agent definition lists the command but does not grant the permission, so outside auto mode or a matching allow rule it works from the recipe's probes alone.
+- In a headless session (`claude -p`) nothing can be asked: the inventory saves nothing without the attestation, and an audit runs only when the request names the effort (`--effort`) and accepts the cost in words.
+- Real gitleaks and trivy runs, and real SSH hosts, were not exercised on the build machine; acceptance used fixtures, a fake `ssh` and canned probe output.
+
 ## 0.3.0-alpha.1 — 2026-10-26
 
 The live dashboard (Plan 3). Acceptance was run against a live published artifact with fixture data.

@@ -38,3 +38,20 @@ When `config.json` holds a dashboard URL, the DB is master for `findings`, `runs
 
 - Writes go through `ArtifactData`. A batch entry is `{op, collection, doc_id, data, if_version?}`, at most 50 entries per batch. `if_version` is set when the document's version is known from a read made just before the push, so a stale push loses instead of overwriting.
 - A claim is compare-and-swap: `get jobs/<id>`; if `status === 'queued'`, `update` it with the claim patch and `if_version` set to the version just read. A version conflict means another executor won the race: skip the job.
+
+## Run directory (local store)
+
+Not part of the dashboard DB: what one run leaves on the machine that ran it, under `~/.rampart/projects/<slug>/runs/<run-id>/`. Agents write one file each, so parallel agents never append to a shared file; hunt-io rewrites each file in its stored, redacted form when it ingests it.
+
+- `run.json`: the run summary (`run-schema.json`): job, layers, systems, status, counts, revision.
+- `units.json` (L2, L3, INFRA): the plan `hunt-io.cjs init` wrote (layer, effort, system, units, classes, hunters), with each unit's `status` (`covered`, `failed`, `skipped`) and `reason` added by `assemble`.
+- `candidates/<hunterKey>.json`: one JSON array per hunter (`[]` when it found nothing), `hunterKey` = `<fileKey(unit)>__<classId>`; for INFRA one file per system, `<fileKey(system)>__infra-prober.json`. Stored form: `candidate-schema.json`.
+- `votes/<hunterKey>__<ref>__<n>.json`: one JSON object per verifier vote (`vote-schema.json`).
+- `observations.json` (INFRA): what each probe printed, scrubbed, and the probes skipped with their reasons; `raw/probe-<id>.txt` holds each probe's scrubbed output.
+- `findings.json`: `{verified, closed, rejected, undecided}`: the ids this run upserted as verified and the ids it closed, and the candidate ids the verifiers rejected or left undecided (never findings), written by `assemble`.
+- `invalid.json`: agent entries hunt-io could not use, with the reason (never their content).
+- `REPORT.md`: the human report (`report-spec.md`).
+- `verify.json` (verify runs): the findings re-judged and the outcome of each; their one-element `candidates/<id>__verify.json` and `votes/<id>__verify__c1__1.json` follow the same names.
+- `raw/`: tool reports (L1), redacted before they are written.
+
+`fileKey(id)` replaces every character outside `A-Z a-z 0-9 . _ -` with `+`.
