@@ -1259,3 +1259,23 @@ test('CLI exits 1 for a bad status, class or unknown finding id, and 2 for usage
   }
   assert.equal(readText(projectPath('findings.jsonl')), before);
 });
+
+test('annotateFinding adds an external id and verification without touching status, lastSeen or the disposition', () => {
+  store.writeProject(project());
+  const run = store.createRun(SLUG, RUN_ARGS);
+  store.upsertFindings(SLUG, [finding({ verification: undefined })], run.runId);
+  store.setDisposition(SLUG, ID_A, { status: 'accepted_risk', reason: 'known', by: 'me' });
+  const before = store.readFindings(SLUG)[0];
+  const disp = JSON.stringify(store.readDispositions(SLUG));
+  tick();
+  const patch = { externalIds: { claudeSecurityPluginFindingId: 'cs-1' }, verification: { verifiers: 3, confirmed: 2, run: RUN } };
+  assert.equal(store.annotateFinding(SLUG, ID_A, patch), true);
+  const after = store.readFindings(SLUG)[0];
+  assert.equal(after.status, 'accepted_risk');
+  assert.equal(after.lastSeen, before.lastSeen);
+  assert.equal(after.externalIds.claudeSecurityPluginFindingId, 'cs-1');
+  assert.deepEqual(after.verification, patch.verification);
+  assert.equal(JSON.stringify(store.readDispositions(SLUG)), disp);
+  assert.equal(store.annotateFinding(SLUG, ID_A, patch), false);
+  assert.throws(() => store.annotateFinding(SLUG, ID_B, patch), /no finding/);
+});

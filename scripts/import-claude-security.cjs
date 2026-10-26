@@ -26,6 +26,7 @@ const RESULTS_NAME = 'CLAUDE-SECURITY-RESULTS.jsonl';
 const LAYERS = ['L2', 'L3'];
 const SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 const CONFIDENCES = ['HIGH', 'MEDIUM', 'LOW'];
+const RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
 const CWE_RE = /^CWE-\d+$/;
 const MAX_TITLE = 200;
 const MAX_TEXT = 2000;
@@ -158,6 +159,9 @@ function mergedInto(current, incoming) {
   };
 }
 
+// True when a is the stronger of two records for one finding: higher severity, then higher confidence.
+const stronger = (a, b) => RANK[a.severity] > RANK[b.severity] || (a.severity === b.severity && RANK[a.confidence] > RANK[b.confidence]);
+
 // ---- import -------------------------------------------------------------------------------
 
 // Import the newest report under dir (default: the current directory) into one system of a project and record the run.
@@ -193,19 +197,42 @@ function importClaudeSecurity({ project, system, layer, dir = process.cwd() } = 
     });
 
     const existing = store.readFindings(project);
+    // One entry per finding id: records of one report that resolve to the same finding count once, the stronger kept.
+    const targets = new Map();
+    let duplicates = 0;
+    for (const m of mapped) {
+      const current = findExisting(existing, m);
+      const id = current ? current.id : m.finding.id;
+      const prior = targets.get(id);
+      if (!prior) {
+        targets.set(id, { current, m });
+        continue;
+      }
+      duplicates++;
+      if (stronger(m.finding, prior.m.finding)) targets.set(id, { current, m });
+    }
     let merged = 0;
     let added = 0;
-    const findings = mapped.map((m) => {
-      const current = findExisting(existing, m);
+    let annotated = { updated: 0, unchanged: 0 };
+    const toUpsert = [];
+    for (const { current, m } of targets.values()) {
       if (!current) {
         added++;
-        return m.finding;
+        toUpsert.push(m.finding);
+        continue;
       }
       merged++;
-      return mergedInto(current, m.finding);
-    });
-    const upsert = store.upsertFindings(project, findings, run.runId);
-    const counts = { imported: mapped.length, merged, added, skippedRecords: skipped.length, ...upsert };
+      const next = mergedInto(current, m.finding);
+      // An import never changes a status: only open and regressed findings go through the upsert; a fixed or triaged one
+      // just gets the external id and the verification recorded, with status, disposition and lastSeen left alone.
+      if (current.status === 'open' || current.status === 'regressed') toUpsert.push(next);
+      else if (store.annotateFinding(project, current.id, { externalIds: next.externalIds, verification: next.verification })) annotated.updated++;
+      else annotated.unchanged++;
+    }
+    const upsert = store.upsertFindings(project, toUpsert, run.runId);
+    upsert.updated += annotated.updated;
+    upsert.unchanged += annotated.unchanged;
+    const counts = { imported: mapped.length, merged, added, duplicates, skippedRecords: skipped.length, ...upsert };
     const runCounts = { ...upsert, hardening: 0 };
     return {
       run: store.finishRun(project, run.runId, { status: 'done', counts: runCounts, tool: { name: 'claude-security' } }),
@@ -258,6 +285,7 @@ if (require.main === module) {
     usage: USAGE,
     details,
     parse,
+    json: (r) => ({ run: r.run, counts: r.counts, skipped: r.skipped }),
     scan: (o) => importClaudeSecurity({ project: o.project, system: o.system, layer: o.layer, dir: o.dir }),
   }, process.argv.slice(2));
 }

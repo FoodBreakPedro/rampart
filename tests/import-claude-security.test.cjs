@@ -190,3 +190,65 @@ test('CLI --json prints the run and counts; bad arguments exit 2', () => {
   assert.equal(run(['--project', SLUG, '--system', SYSTEM]).status, 2);
   assert.equal(run(['--project', SLUG, '--system', SYSTEM, '--layer', 'L1']).status, 2);
 });
+
+test('an import never changes a status: fixed and accepted_risk targets only gain the external id', () => {
+  const fixed = seedExisting();
+  const location = { path: 'src/auth/reset.ts', symbol: 'sendReset' };
+  const ruleId = 'logging/token';
+  const risk = {
+    id: findingId({ project: SLUG, system: SYSTEM, ruleId, location }),
+    project: SLUG, system: SYSTEM, layer: 'L3', source: 'rampart-hunter', pack: null, ruleId, title: 'Reset token logged',
+    severity: 'MEDIUM', confidence: 'HIGH', cwe: ['CWE-532'], class: 'verified', location, evidence: 'e',
+    status: 'open', externalIds: { claudeSecurityPluginFindingId: null, cve: null },
+  };
+  const seedRun = store.createRun(SLUG, { job: 'audit', layers: ['L3'], systems: [SYSTEM], executor: 'local' });
+  store.upsertFindings(SLUG, [risk], seedRun.runId);
+  store.setDisposition(SLUG, fixed.id, { status: 'fixed', reason: 'patched', by: 'me' });
+  store.setDisposition(SLUG, risk.id, { status: 'accepted_risk', reason: 'known', by: 'me' });
+  const before = store.readFindings(SLUG);
+  const dispositions = JSON.stringify(store.readDispositions(SLUG));
+
+  const first = importFixture().counts;
+  assert.equal(first.merged, 2);
+  assert.equal(first.added, 1);
+  assert.equal(first.regressed, 0);
+  const after = store.readFindings(SLUG);
+  for (const f of [fixed, risk]) {
+    const was = before.find((b) => b.id === f.id);
+    const now = after.find((a) => a.id === f.id);
+    assert.equal(now.status, was.status);
+    assert.equal(now.lastSeen, was.lastSeen);
+    assert.ok(now.externalIds.claudeSecurityPluginFindingId);
+  }
+  assert.equal(JSON.stringify(store.readDispositions(SLUG)), dispositions);
+
+  const again = importFixture().counts;
+  assert.equal(again.updated, 0);
+  assert.equal(again.unchanged, 3);
+  assert.equal(again.regressed, 0);
+  assert.deepEqual(store.readFindings(SLUG).map((f) => [f.id, f.status, f.lastSeen]).slice(0, 2), after.map((f) => [f.id, f.status, f.lastSeen]).slice(0, 2));
+});
+
+test('records of one report that resolve to the same finding count once, keeping the stronger', () => {
+  const base = JSON.parse(fixtureLines()[1]);
+  const weak = JSON.stringify({ ...base, severity: 'LOW', confidence: 'low', claudeSecurityPluginFindingId: 'dup-1' });
+  const strong = JSON.stringify({ ...base, severity: 'CRITICAL', confidence: 'high', claudeSecurityPluginFindingId: 'dup-2' });
+  const dir = writeReport('CLAUDE-SECURITY-2026-10-23-000000', [weak, strong, weak]);
+  const { counts } = importClaudeSecurity({ project: SLUG, system: SYSTEM, layer: 'L3', dir });
+  assert.equal(counts.imported, 3);
+  assert.equal(counts.added, 1);
+  assert.equal(counts.duplicates, 2);
+  const all = store.readFindings(SLUG);
+  assert.equal(all.length, 1);
+  assert.equal(all[0].severity, 'CRITICAL');
+});
+
+test('CLI --json includes skipped lines with their fixed reasons', () => {
+  const base = JSON.parse(fixtureLines()[0]);
+  const dir = writeReport('CLAUDE-SECURITY-2026-10-24-000000', [JSON.stringify({ ...base, file: '' }), 'garbage FAKE-SNIPPET-SECRET']);
+  const r = spawnSync(process.execPath, [CLI, '--project', SLUG, '--system', SYSTEM, '--layer', 'L3', '--dir', dir, '--json'], { encoding: 'utf8', env: { ...process.env, RAMPART_HOME: home } });
+  assert.equal(r.status, 0, r.stderr);
+  const out = JSON.parse(r.stdout);
+  assert.deepEqual(out.skipped.map((s) => s.line), [1, 2]);
+  assert.ok(!r.stdout.includes('FAKE-SNIPPET'));
+});

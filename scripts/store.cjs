@@ -338,6 +338,23 @@ function setDisposition(slug, id, { status, reason, by } = {}) {
   return finding;
 }
 
+// Record an external id and/or a verification on a stored finding without touching its status, disposition, lastSeen or any
+// other field (an import of someone else's report is not a sighting). patch is {externalIds?, verification?}; externalIds is
+// merged key by key. Returns true when something changed (the file is rewritten only then), false when it was already so.
+function annotateFinding(slug, id, patch = {}) {
+  checkSlug(slug);
+  if (!isObject(patch)) throw new TypeError('patch must be an object');
+  const { findings, finding } = loadFinding(slug, id);
+  const next = { ...finding };
+  if (patch.externalIds !== undefined) next.externalIds = { ...(finding.externalIds || {}), ...patch.externalIds };
+  if (patch.verification !== undefined) next.verification = patch.verification;
+  assertValid('finding', next, 'finding');
+  if (canon(next) === canon(finding)) return false;
+  findings[findings.findIndex((f) => f.id === id)] = next;
+  writeFindings(slug, findings);
+  return true;
+}
+
 // Promote or demote a finding (the L1 secrets triage uses it); the note is appended to evidence.
 function setClass(slug, id, cls, note) {
   checkSlug(slug);
@@ -629,7 +646,7 @@ if (require.main === module) {
 
 module.exports = {
   listProjects, readProject, writeProject,
-  readFindings, upsertFindings, closeMissing, readDispositions, setDisposition, setClass,
+  readFindings, upsertFindings, closeMissing, readDispositions, setDisposition, setClass, annotateFinding,
   createRun, finishRun, readRuns, writeRaw,
   readConfig, writeConfig, appendScore, readScores, readCoverage, writeCoverage,
 };
