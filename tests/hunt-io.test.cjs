@@ -270,6 +270,10 @@ test('assemble upserts verified findings only and marks a unit whose hunter neve
   const ledger = store.readCoverage(SLUG);
   assert.equal(ledger.units[`${SYS}|${LAYER}|app/api/users`].status, 'covered');
   assert.equal(ledger.units[`${SYS}|${LAYER}|app/api/export`].status, 'failed');
+  // R47: a covered unit records the classes hunted on it and the run's effort
+  assert.deepEqual(ledger.units[`${SYS}|${LAYER}|app/api/users`].classes, ['authz-scoping', 'bulk-export']);
+  assert.equal(ledger.units[`${SYS}|${LAYER}|app/api/users`].effort, 'high');
+  assert.ok(!('classes' in ledger.units[`${SYS}|${LAYER}|app/api/export`]));
   const doc = JSON.parse(fs.readFileSync(path.join(s.dir, 'units.json'), 'utf8'));
   assert.equal(doc.units.find((u) => u.id === 'app/api/export').status, 'failed');
   assert.equal(doc.units.find((u) => u.id === 'app/api/users').status, 'covered');
@@ -480,6 +484,9 @@ test('init at low effort plans only the LOW classes, and only on reachable units
     assert.deepEqual(low.args.units.map((u) => u.unit), ['app/api/x']);
     const doc = JSON.parse(fs.readFileSync(path.join(low.runDir, 'units.json'), 'utf8'));
     assert.deepEqual(doc.hunters.map((h) => h.unit), Array(hio.LOW_CLASSES.length).fill('app/api/x'));
+    // R47: the classes the effort left out are kept in units.json for the report
+    assert.equal(doc.classesLeftOut.length, 14 - hio.LOW_CLASSES.length);
+    assert.ok(doc.classesLeftOut.every((c) => !hio.LOW_CLASSES.includes(c.classId) && c.pack === 'web-nextjs' && typeof c.title === 'string' && !('text' in c)));
     const onTarget = JSON.parse(cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L3', '--effort', 'low', '--repo', TARGET).stdout);
     assert.deepEqual(onTarget.args.classes.map((c) => c.classId).sort(), [...hio.LOW_CLASSES].sort());
     assert.equal(onTarget.args.units.length, 5);
@@ -488,6 +495,7 @@ test('init at low effort plans only the LOW classes, and only on reachable units
     const medium = JSON.parse(cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L3', '--effort', 'medium', '--repo', repo).stdout);
     assert.deepEqual(medium.args.units.map((u) => u.unit), ['app/api/x']);
     assert.equal(medium.args.classes.length, 14);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(medium.runDir, 'units.json'), 'utf8')).classesLeftOut, []);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }

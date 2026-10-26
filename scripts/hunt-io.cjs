@@ -510,7 +510,10 @@ function initRun(slug, { system: systemId, layer, effort = 'medium', repo: repoO
   // An L2 unit keeps the files its hunters read: assemble closes a finding only in those files (an unchanged file of the same
   // directory was not looked at). L3 units are whole directories, so their file lists stay out of units.json.
   const unitsDoc = units.map(({ paths, ...u }) => (layer === 'L2' && Array.isArray(paths) ? { ...u, paths } : u));
-  writeAtomic(path.join(dir, 'units.json'), toJson({ layer, effort, system: systemId, repoRoot, units: unitsDoc, classes, hunters }));
+  // The classes the effort filter left out, so the report can say what this run did not hunt.
+  const hunted = new Set(classes.map((c) => `${c.pack}/${c.classId}`));
+  const classesLeftOut = infra ? [] : plan.classes.filter((c) => !hunted.has(`${c.pack}/${c.classId}`)).map(({ pack, packVersion, classId, title }) => ({ pack, packVersion, classId, title }));
+  writeAtomic(path.join(dir, 'units.json'), toJson({ layer, effort, system: systemId, repoRoot, units: unitsDoc, classes, classesLeftOut, hunters }));
   return {
     runId: id,
     runDir: dir,
@@ -622,10 +625,15 @@ function assemble(slug, runId) {
   // Skipped units are left out of the ledger: its gaps treat a skipped entry as covered.
   const packs = coverage.packVersionsFor(store.readProject(slug).systems.find((s) => s.id === doc.system) || {}, doc.layer);
   let ledger = store.readCoverage(slug);
-  for (const status of ['covered', 'failed']) {
-    const group = units.filter((u) => u.status === status);
-    if (group.length) ledger = coverage.markCovered(ledger, { system: doc.system, layer: doc.layer, units: group, runId, packs, status });
+  // A covered unit records the classes hunted on it (every class of the run for INFRA, whose one prober reads them all) and the
+  // effort, so gaps() still lists it until the classes a lower effort left out are hunted too.
+  const effort = ['low', 'medium', 'high'].includes(doc.effort) ? doc.effort : undefined;
+  const classesOf = (u) => (infra ? (doc.classes || []).map((c) => c.classId) : (doc.hunters || []).filter((h) => h.unit === u.id).map((h) => h.classId));
+  for (const u of units.filter((x) => x.status === 'covered')) {
+    ledger = coverage.markCovered(ledger, { system: doc.system, layer: doc.layer, units: [u], runId, packs, status: 'covered', classes: classesOf(u), effort });
   }
+  const failedUnits = units.filter((u) => u.status === 'failed');
+  if (failedUnits.length) ledger = coverage.markCovered(ledger, { system: doc.system, layer: doc.layer, units: failedUnits, runId, packs, status: 'failed', effort });
   store.writeCoverage(slug, ledger);
   writeAtomic(path.join(dir, 'units.json'), toJson({ ...doc, units }));
   // The run's own finding list (ids only): the report reads it, since a finding's lastSeen moves on with every later run.

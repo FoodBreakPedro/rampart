@@ -16,9 +16,12 @@
 //                                        reachable is false for tests|test|__tests__|fixtures|docs|scripts roots (background only).
 //                                        opts.paths: also keep each unit's repo-relative files, sorted, as `paths`.
 //   unitsForHost(system, pack)           one {id: 'probe:<probeId>', kind: 'probe', reachable: true} per pack probe.
-//   markCovered(ledger, {...})           the ledger with the given units stamped (pure; the input is not changed).
-//   gaps(ledger, {...})                  the units that still need a hunt: never covered, status failed, or covered against an
-//                                        older or different version of any pack in `packs`.
+//   markCovered(ledger, {...})           the ledger with the given units stamped (pure; the input is not changed), with the
+//                                        class ids hunted (`classes`) and the run's `effort` when given.
+//   gaps(ledger, {...})                  the units that still need a hunt: never covered, status failed, covered against an
+//                                        older or different version of any pack in `packs`, or (given `classes`, every class
+//                                        of the layer) covered without every class hunted, with `missingClasses`.
+//   classIdsFor(system, layer)           every class id of the layer's packs (undefined for L1): the `classes` for gaps.
 // CLI: node scripts/coverage.cjs units|gaps|show --project <slug> --system <id> [--repo <path>] [--layer L1|L2|L3|INFRA] [--reachable] [--json]
 //   --reachable keeps only reachable units (the background ones - docs, scripts, tests - are listed with reachable false otherwise).
 // (--layer defaults to L2). Exit 0 ok, 2 for a usage error or a project, system or repo that does not resolve, 1 for anything else.
@@ -101,21 +104,58 @@ function unitsForHost(system, pack) {
 const keyOf = (system, layer, unitId) => `${system}|${layer}|${unitId}`;
 const idOf = (unit) => (typeof unit === 'string' ? unit : unit.id);
 
-function markCovered(ledger, { system, layer, units, runId, packs, status = 'covered' }) {
+const EFFORTS = ['low', 'medium', 'high'];
+const samePacks = (a, b) => {
+  const ka = Object.keys(a || {});
+  return ka.length === Object.keys(b || {}).length && ka.every((k) => a[k] === b[k]);
+};
+const sortedUnique = (list) => [...new Set(list)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+// classes (optional): the class ids this run hunted on the units. A covered unit that was already covered against the same pack
+// versions keeps the classes earlier runs hunted too, so a low run after a high one does not forget the rest. effort (optional)
+// is the effort of this run.
+function markCovered(ledger, { system, layer, units, runId, packs, status = 'covered', classes, effort }) {
   if (!STATUSES.includes(status)) throw new RangeError(`status must be one of ${STATUSES.join(', ')}`);
+  if (classes !== undefined && (!Array.isArray(classes) || classes.some((c) => typeof c !== 'string' || c === ''))) throw new TypeError('classes must be an array of class ids');
+  if (effort !== undefined && !EFFORTS.includes(effort)) throw new RangeError(`effort must be one of ${EFFORTS.join(', ')}`);
   const next = { ...ledger, units: { ...ledger.units } };
   for (const unit of units) {
-    next.units[keyOf(system, layer, idOf(unit))] = { system, layer, lastRun: runId, packVersions: { ...packs }, status };
+    const key = keyOf(system, layer, idOf(unit));
+    const entry = { system, layer, lastRun: runId, packVersions: { ...packs }, status };
+    if (classes !== undefined) {
+      const prev = ledger.units[key];
+      const keep = status === 'covered' && prev && prev.status === 'covered' && Array.isArray(prev.classes) && samePacks(prev.packVersions, packs);
+      entry.classes = sortedUnique([...(keep ? prev.classes : []), ...classes]);
+    }
+    if (effort !== undefined) entry.effort = effort;
+    next.units[key] = entry;
   }
   return next;
 }
 
-function gaps(ledger, { system, layer, units, packs }) {
-  return units.filter((unit) => {
+// classes (optional): every class id of the layer's packs. When given, a covered unit is still a gap until each of them was hunted
+// on it (returned with missingClasses: the ones not yet hunted); an entry that records no classes counts as none hunted.
+function gaps(ledger, { system, layer, units, packs, classes }) {
+  const out = [];
+  for (const unit of units) {
     const entry = ledger.units[keyOf(system, layer, idOf(unit))];
-    if (!entry || entry.status === 'failed') return true;
-    return Object.entries(packs || {}).some(([name, version]) => entry.packVersions[name] !== version);
-  });
+    if (!entry || entry.status === 'failed' || Object.entries(packs || {}).some(([name, version]) => entry.packVersions[name] !== version)) {
+      out.push(unit);
+      continue;
+    }
+    if (!Array.isArray(classes)) continue;
+    const hunted = new Set(Array.isArray(entry.classes) ? entry.classes : []);
+    const missing = sortedUnique(classes.filter((c) => !hunted.has(c)));
+    if (missing.length) out.push(typeof unit === 'string' ? { id: unit, missingClasses: missing } : { ...unit, missingClasses: missing });
+  }
+  return out;
+}
+
+// Every class id of the system's packs for the layer (none for L1, which has no hunt classes).
+function classIdsFor(system, layer) {
+  if (layer === 'L1') return undefined;
+  const kind = layer === 'INFRA' ? 'host' : 'code';
+  return sortedUnique(packsFor(system).filter((p) => (p.kinds || []).includes(kind)).flatMap((p) => (p.classes || []).map((c) => c.id)));
 }
 
 // ---- the command line ---------------------------------------------------------------------
@@ -162,7 +202,7 @@ function main(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
     } else {
       const units = unitsFor(ctx, opts);
       const packs = packVersionsFor(ctx.system, opts.layer);
-      result = opts.command === 'units' ? units : gaps(ledger, { system: opts.system, layer: opts.layer, units, packs });
+      result = opts.command === 'units' ? units : gaps(ledger, { system: opts.system, layer: opts.layer, units, packs, classes: classIdsFor(ctx.system, opts.layer) });
       if (opts.reachable) result = result.filter((u) => u.reachable);
     }
     stdout.write(`${opts.json ? JSON.stringify(result, null, 2) : render(opts.command, result)}\n`);
@@ -180,9 +220,9 @@ function render(command, result) {
     return rows.length ? rows.join('\n') : 'no coverage recorded';
   }
   if (result.length === 0) return command === 'gaps' ? 'no gaps' : 'no units';
-  return result.map((u) => `${u.id}${u.kind === 'dir' ? `  ${u.files} file${u.files === 1 ? '' : 's'}` : ''}${u.reachable ? '' : '  (background)'}`).join('\n');
+  return result.map((u) => `${u.id}${u.kind === 'dir' ? `  ${u.files} file${u.files === 1 ? '' : 's'}` : ''}${u.reachable ? '' : '  (background)'}${u.missingClasses ? `  (not yet hunted: ${u.missingClasses.join(', ')})` : ''}`).join('\n');
 }
 
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
-module.exports = { unitOf, unitContains, packVersionsFor, isIgnored, isReachable, unitsForRepo, unitsForHost, markCovered, gaps, main, DEFAULT_IGNORE };
+module.exports = { unitOf, unitContains, packVersionsFor, classIdsFor, isIgnored, isReachable, unitsForRepo, unitsForHost, markCovered, gaps, main, DEFAULT_IGNORE };

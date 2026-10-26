@@ -156,6 +156,31 @@ test('status failed is a gap; skipped is not; a later covered mark clears the fa
   assert.equal(led.units['web|L2|lib'].status, 'covered');
 });
 
+test('R47: a unit covered with only some classes is a gap that names the classes not yet hunted', () => {
+  const units = cov.unitsForRepo(TARGET);
+  const all = ['authz-scoping', 'bulk-export', 'ssrf'];
+  let led = cov.markCovered(base(), { system: 'web', layer: 'L3', units, runId: 'R1', packs: PACKS, classes: ['authz-scoping'], effort: 'low' });
+  assert.deepEqual(led.units['web|L3|lib'], { system: 'web', layer: 'L3', lastRun: 'R1', packVersions: PACKS, status: 'covered', classes: ['authz-scoping'], effort: 'low' });
+  const g = cov.gaps(led, { system: 'web', layer: 'L3', units, packs: PACKS, classes: all });
+  assert.deepEqual(ids(g), ids(units));
+  assert.deepEqual(g[0].missingClasses, ['bulk-export', 'ssrf']);
+  // without a class list (L1, or a caller that does not ask) the pack versions alone decide, as before
+  assert.deepEqual(cov.gaps(led, { system: 'web', layer: 'L3', units, packs: PACKS }), []);
+  // a later run at the same pack versions adds its classes to the ones already hunted
+  led = cov.markCovered(led, { system: 'web', layer: 'L3', units, runId: 'R2', packs: PACKS, classes: ['bulk-export', 'ssrf'], effort: 'medium' });
+  assert.deepEqual(led.units['web|L3|lib'].classes, ['authz-scoping', 'bulk-export', 'ssrf']);
+  assert.deepEqual(cov.gaps(led, { system: 'web', layer: 'L3', units, packs: PACKS, classes: all }), []);
+  // a pack bump starts the class list again
+  const bumped = { 'web-nextjs': '9.0.0' };
+  led = cov.markCovered(led, { system: 'web', layer: 'L3', units, runId: 'R3', packs: bumped, classes: ['ssrf'], effort: 'low' });
+  assert.deepEqual(led.units['web|L3|lib'].classes, ['ssrf']);
+  // an entry recorded without classes (before they were tracked) says nothing about classes: it is a gap when classes are asked for
+  const old = cov.markCovered(base(), { system: 'web', layer: 'L3', units, runId: 'R0', packs: PACKS });
+  assert.equal(cov.gaps(old, { system: 'web', layer: 'L3', units, packs: PACKS, classes: all }).length, units.length);
+  store.writeCoverage(SLUG, led);
+  assert.deepEqual(store.readCoverage(SLUG), led);
+});
+
 test('markCovered rejects a bad status', () => {
   assert.throws(() => cov.markCovered(base(), { system: 'web', layer: 'L2', units: [], runId: 'R', packs: {}, status: 'done' }), /status/);
 });
@@ -200,7 +225,16 @@ test('CLI units, gaps and show work end to end with --repo', () => {
   assert.equal(JSON.parse(r.stdout).length, 5);
   const units = cov.unitsForRepo(TARGET);
   const packs = Object.fromEntries(require('../scripts/packs.cjs').packsFor(sys).map((k) => [k.name, k.version]));
-  store.writeCoverage(p.slug, cov.markCovered(store.readCoverage(p.slug), { system: sys.id, layer: 'L2', units, runId: 'R1', packs }));
+  // R47: covered with one class only, every unit is still a gap naming the classes not yet hunted
+  const all = cov.classIdsFor(sys, 'L2');
+  assert.ok(all.length > 1);
+  store.writeCoverage(p.slug, cov.markCovered(store.readCoverage(p.slug), { system: sys.id, layer: 'L2', units, runId: 'R0', packs, classes: [all[0]], effort: 'low' }));
+  r = run(['gaps', '--project', p.slug, '--system', sys.id, '--repo', TARGET, '--json']);
+  assert.equal(JSON.parse(r.stdout).length, 5);
+  assert.deepEqual(JSON.parse(r.stdout)[0].missingClasses, all.slice(1));
+  r = run(['gaps', '--project', p.slug, '--system', sys.id, '--repo', TARGET]);
+  assert.match(r.stdout, /not yet hunted: /);
+  store.writeCoverage(p.slug, cov.markCovered(store.readCoverage(p.slug), { system: sys.id, layer: 'L2', units, runId: 'R1', packs, classes: all, effort: 'high' }));
   r = run(['gaps', '--project', p.slug, '--system', sys.id, '--repo', TARGET, '--json']);
   assert.deepEqual(JSON.parse(r.stdout), []);
   r = run(['show', '--project', p.slug, '--system', sys.id, '--json']);

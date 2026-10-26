@@ -93,6 +93,22 @@ test('a skipped unit is listed under Skips with its reason, and invalid candidat
   assert.match(skips, /2 invalid candidate\(s\) ignored; findings in this unit were not closed/);
 });
 
+test('R47: Coverage names the classes hunted and Skips the classes the effort left out', () => {
+  const { runId } = setup({ unitsPatch: { effort: 'low', classesLeftOut: [
+    { pack: 'web-nextjs', packVersion: '1.0.0', classId: 'ssrf', title: 'SSRF' },
+    { pack: 'web-nextjs', packVersion: '1.0.0', classId: 'open-redirect', title: 'Open redirect' },
+  ] } });
+  const md = renderReport(SLUG, runId);
+  const coverage = md.split('## Coverage')[1].split('## Findings')[0];
+  assert.match(coverage, /- Classes hunted: authz-scoping/);
+  assert.match(coverage, /- Effort: low/);
+  const skips = md.split('## Skips')[1].split('## Score')[0];
+  assert.match(skips, /Classes not hunted at low effort \(2\): open-redirect, ssrf; a medium or high audit hunts them/);
+  // a units.json without classesLeftOut (an older run) adds no such line
+  const old = setup();
+  assert.ok(!renderReport(SLUG, old.runId).includes('Classes not hunted'));
+});
+
 test('a skipped run puts its own reason under Skips', () => {
   const { runId } = setup({ layer: 'INFRA', system: 'db', units: [], runPatch: { status: 'skipped', reason: 'host unreachable (connect timeout)' } });
   const md = renderReport(SLUG, runId);

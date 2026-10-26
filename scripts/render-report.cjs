@@ -126,6 +126,9 @@ function coverageSection(run, units) {
     lines.push(`- Units examined: ${covered.length}${covered.length ? ` (${unitList(covered.map((u) => u.id))})` : ''}`);
     const packs = [...new Set((units.classes || []).map((c) => `${c.pack}@${c.packVersion}`))].sort();
     lines.push(`- Packs: ${packs.length ? packs.map((p) => clean(p)).join(', ') : 'none'}`);
+    const hunted = [...new Set((units.classes || []).map((c) => c.classId))].sort();
+    if (hunted.length) lines.push(`- Classes hunted: ${hunted.map((c) => clean(c, 80)).join(', ')}`);
+    if (typeof units.effort === 'string' && units.layer !== 'INFRA') lines.push(`- Effort: ${clean(units.effort, 20)}`);
     const rev = revisionText(run);
     if (rev) lines.push(`- Revision: ${rev}`);
     if (run.tool && run.tool.name) lines.push(`- Tool: ${clean(run.tool.name)}${run.tool.version ? ` ${clean(run.tool.version)}` : ''}`);
@@ -150,6 +153,10 @@ function findingsSection(touched) {
 function skipsSection(run, units) {
   const items = [];
   if ((run.status === 'skipped' || run.status === 'failed') && run.reason) items.push(`Run ${run.status}: ${clean(run.reason, 300)}`);
+  const leftOut = units && Array.isArray(units.classesLeftOut) ? [...new Set(units.classesLeftOut.map((c) => c && c.classId).filter((c) => typeof c === 'string'))].sort() : [];
+  if (leftOut.length) {
+    items.push(`Classes not hunted at ${clean(units.effort || 'this', 20)} effort (${leftOut.length}): ${leftOut.map((c) => clean(c, 80)).join(', ')}; a medium or high audit hunts them`);
+  }
   for (const u of (units && units.units) || []) {
     const id = clean(u.id, 80);
     if (u.status === 'failed' || u.status === 'skipped') items.push(`${id}: ${u.status}${u.reason ? `, ${clean(u.reason, 300)}` : ''}`);

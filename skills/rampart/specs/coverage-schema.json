@@ -19,7 +19,9 @@
         "layer": { "enum": ["L1", "L2", "L3", "INFRA"] },
         "lastRun": { "type": "string", "minLength": 1 },
         "packVersions": { "type": "object" },
-        "status": { "enum": ["covered", "skipped", "failed"] }
+        "status": { "enum": ["covered", "skipped", "failed"] },
+        "classes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Optional: the pack class ids hunted on this unit at these pack versions (added by Plan 2's fix wave; an entry without it records no classes)." },
+        "effort": { "enum": ["low", "medium", "high"], "description": "Optional: the effort of the run that stamped this entry." }
       }
     }
   }
