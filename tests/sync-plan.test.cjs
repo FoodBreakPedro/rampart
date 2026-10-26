@@ -8,7 +8,8 @@ const store = require('../scripts/store.cjs');
 const { validate, loadSchema } = require('../scripts/lib/validate.cjs');
 const { runDir, machineId } = require('../scripts/lib/paths.cjs');
 const { buildPage, publicProject } = require('../scripts/render-static.cjs');
-const { planPush, applyPull } = require('../scripts/sync-plan.cjs');
+const { planPush, planPacksPush, applyPull } = require('../scripts/sync-plan.cjs');
+const { listPacks, PACKS_DIR } = require('../scripts/packs.cjs');
 
 const SYNC = path.join(__dirname, '..', 'scripts', 'sync-plan.cjs');
 const SLUG = 'example-app';
@@ -167,6 +168,56 @@ test('publicProject host handles every ssh form: no user, no port, no @, ssh://,
   assert.deepEqual(urlOf('http://example.test'), { url: 'http://example.test/' });
   assert.equal(urlOf('javascript:alert(1)'), undefined, 'not an http(s) url');
   assert.equal(urlOf('not a url'), undefined);
+});
+
+// ---- planPacksPush -----------------------------------------------------------------------------
+
+// A copy of two real packs in a temp folder, so a test can move a file's mtime.
+function packsCopy() {
+  const dir = fs.mkdtempSync(path.join(home, 'packs-'));
+  for (const name of ['n8n', 'web-nextjs']) fs.copyFileSync(path.join(PACKS_DIR, `${name}.md`), path.join(dir, `${name}.md`));
+  fs.writeFileSync(path.join(dir, 'broken.md'), 'no front-matter here\n');
+  for (const name of ['n8n', 'web-nextjs', 'broken']) fs.utimesSync(path.join(dir, `${name}.md`), new Date(PAST), new Date(PAST));
+  return dir;
+}
+
+test('planPacksPush with no since plans every installed pack once, with only the public pack facts', () => {
+  const plan = planPacksPush();
+  assert.deepEqual(plan.docs.map((d) => d.id), listPacks());
+  for (const d of plan.docs) {
+    assert.equal(d.collection, 'packs');
+    assert.deepEqual(Object.keys(d.data).sort(), ['appliesTo', 'classes', 'kinds', 'lastReviewed', 'name', 'probes', 'updatedAt', 'version']);
+    assert.equal(d.data.name, d.id);
+    assert.match(d.data.version, /^\d+\.\d+\.\d+$/);
+    assert.equal(typeof d.data.classes, 'number');
+    assert.ok(!Number.isNaN(Date.parse(d.data.updatedAt)));
+  }
+  assert.ok(plan.batches.flat().every((e) => e.op === 'set'), 'unknown versions are set');
+});
+
+test('planPacksPush after a cursor: an unchanged pack the DB holds is skipped, one the DB lacks or a changed file is planned', () => {
+  const dir = packsCopy();
+  const known = { 'packs/n8n': 3, 'packs/web-nextjs': 5 };
+  assert.deepEqual(planPacksPush({ since: NOW.toISOString(), versions: known, dir }).docs, [], 'nothing changed');
+  const missing = planPacksPush({ since: NOW.toISOString(), versions: { 'packs/n8n': 3 }, dir });
+  assert.deepEqual(missing.docs.map((d) => d.id), ['web-nextjs'], 'a pack the DB does not hold yet is pushed whatever the cursor');
+  assert.equal(missing.batches[0][0].op, 'set');
+  fs.utimesSync(path.join(dir, 'n8n.md'), new Date(FUTURE), new Date(FUTURE));
+  const changed = planPacksPush({ since: NOW.toISOString(), versions: known, dir });
+  assert.deepEqual(changed.docs.map((d) => d.id), ['n8n'], 'a pack file written after the cursor is pushed');
+  assert.deepEqual(changed.batches[0][0], { op: 'update', collection: 'packs', doc_id: 'n8n', data: changed.docs[0].data, if_version: 3 });
+});
+
+test('planPacksPush leaves out a pack it cannot read and rejects a bad since or versions', () => {
+  const dir = packsCopy();
+  assert.deepEqual(planPacksPush({ dir }).docs.map((d) => d.id), ['n8n', 'web-nextjs']);
+  assert.throws(() => planPacksPush({ since: 'yesterday', dir }), RangeError);
+  assert.throws(() => planPacksPush({ versions: [], dir }), TypeError);
+});
+
+test('planPush never plans packs: they go once per cycle through push --packs', () => {
+  seed();
+  assert.ok(planPush(SLUG, { now: NOW }).docs.every((d) => d.collection !== 'packs'));
 });
 
 // ---- planPush ---------------------------------------------------------------------------------
@@ -1033,4 +1084,19 @@ test('R48 a missing --in under an existing parent is an empty snapshot for pull,
   for (const args of [['pull', '--project', SLUG], ['versions', '--out', out], ['meta-sync']]) {
     assert.equal(cli(...args, '--in', orphan).status, 2, `${args[0]} with a missing parent`);
   }
+});
+
+test('push --packs writes the packs plan; --packs with --project, with pull, or push with neither exits 2', () => {
+  const out = path.join(home, 'push-packs');
+  const r = cli('push', '--packs', '--out', out);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, new RegExp(`^${listPacks().length} docs in 1 batches, cursor `));
+  const { batches } = JSON.parse(fs.readFileSync(path.join(out, 'batches.json'), 'utf8'));
+  for (const entry of batches[0]) {
+    assert.equal(entry.collection, 'packs');
+    assert.ok(fs.existsSync(entry.file_path), entry.file_path);
+  }
+  assert.equal(cli('push', '--packs', '--project', SLUG, '--out', out).status, 2);
+  assert.equal(cli('pull', '--packs', '--in', out).status, 2);
+  assert.equal(cli('push', '--out', out).status, 2);
 });

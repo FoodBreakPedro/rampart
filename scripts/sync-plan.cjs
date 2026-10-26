@@ -7,6 +7,12 @@
 //     batches: the same docs as ArtifactData batch entries {op, collection, doc_id, data, if_version?}, at most 50 each.
 //       op is 'update' with if_version when versions has "<collection>/<id>", else 'set'.
 //     cursor: the time the plan started; pass it as `since` next time.
+//   planPacksPush({since, versions, dir}) -> {docs, batches, cursor}
+//     docs: [{collection: 'packs', id, data}] for each installed pack (packs/*.md at the plugin root, or dir) whose file changed
+//       at or after `since`, or that the DB does not hold yet (no "packs/<name>" in versions). data is {name, version,
+//       lastReviewed, appliesTo, kinds, classes, probes, updatedAt}: classes and probes are counts, updatedAt the file's mtime.
+//       Packs belong to the plugin, not to a project, so they are planned once per sync cycle, never in a project's push
+//       (a second push of the same doc in one cycle would carry a stale if_version). A pack that cannot be read is left out.
 //   applyPull(slug, docs) -> {applied, skipped}
 //     docs: [{collection, id, data}] read from the DB. Jobs are mirrored to ~/.rampart/jobs, project settings and
 //     finding dispositions are merged by the rules below. Other collections are ignored (neither applied nor skipped).
@@ -15,8 +21,9 @@
 // decisions by people the later one stands; the same decision pulled twice applies once; an automated (by 'rampart') page disposition applies only when its doc is newer than the
 // local finding; for jobs and project settings the newer updatedAt wins.
 // Nothing private is planned: projects go through publicProject, findings are the stored (redacted) records, and a run doc
-// carries its summary and REPORT.md, never raw tool output, with local folders and URL queries scrubbed (R51). Packs docs are not planned yet (Plan 2 owns packs).
+// carries its summary and REPORT.md, never raw tool output, with local folders and URL queries scrubbed (R51). A packs doc holds only what the public pack file says.
 // CLI: node scripts/sync-plan.cjs push --project <slug> [--since <iso>] [--versions <file.json>] --out <dir>
+//      node scripts/sync-plan.cjs push --packs [--since <iso>] [--versions <file.json>] --out <dir>
 //      node scripts/sync-plan.cjs pull --project <slug> --in <file-or-dir>
 // push writes <dir>/docs/<collection>/<id>.json per doc and <dir>/batches.json = {cursor, batches: [[{op, collection,
 // doc_id, file_path, if_version?}, ...]]}. pull reads a JSON array of docs or a tree <dir>/<collection>/<id>.json whose
@@ -51,6 +58,7 @@ const { publicProject, publicFinding, publicRun, scrubText, projectScore, redact
 const { runDir, machineId } = require('./lib/paths.cjs');
 const { redact } = require('./lib/redact.cjs');
 const { writeAtomic } = require('./lib/atomic.cjs');
+const { listPacks, readPack, PACKS_DIR } = require('./packs.cjs');
 
 const BATCH_SIZE = 50;
 const BATCH_MAX_BYTES = 900000; // doc file bytes per batch, so the batch body (limit 1 MiB) has headroom
@@ -193,6 +201,38 @@ function planPush(slug, { since, versions = {}, now = new Date() } = {}) {
   return { docs, batches: toBatches(docs, versions), cursor };
 }
 
+// The installed packs as DB docs: those changed since the cut-off, plus any the DB does not hold yet, so a dashboard whose push
+// cursor predates the packs still gets them on its next sync.
+function planPacksPush({ since, versions = {}, dir = PACKS_DIR } = {}) {
+  const cut = sinceMs(since);
+  const cursor = new Date().toISOString();
+  if (!isObject(versions)) throw new TypeError('versions must be an object');
+  const docs = [];
+  for (const name of listPacks(dir)) {
+    let pack;
+    let mtime;
+    try {
+      pack = readPack(name, dir);
+      mtime = fs.statSync(path.join(dir, `${name}.md`)).mtime.toISOString();
+    } catch {
+      continue;
+    }
+    if (!changedAfter(cut, mtime) && versions[`packs/${name}`] !== undefined) continue;
+    const data = {
+      name: pack.name,
+      version: pack.version,
+      lastReviewed: pack.lastReviewed,
+      appliesTo: pack.appliesTo,
+      kinds: pack.kinds,
+      classes: Array.isArray(pack.classes) ? pack.classes.length : 0,
+      probes: Array.isArray(pack.probes) ? pack.probes.length : 0,
+      updatedAt: mtime,
+    };
+    docs.push({ collection: 'packs', id: name, data });
+  }
+  return { docs, batches: toBatches(docs, versions), cursor };
+}
+
 // ---- pull ---------------------------------------------------------------------------------
 
 // A job from the page: mirrored for the watch loop unless the local copy is as new or newer.
@@ -301,6 +341,7 @@ class UsageError extends Error {}
 
 const USAGE = [
   'usage: node scripts/sync-plan.cjs push --project <slug> [--since <iso>] [--versions <file.json>] --out <dir>',
+  '       node scripts/sync-plan.cjs push --packs [--since <iso>] [--versions <file.json>] --out <dir>',
   '       node scripts/sync-plan.cjs pull --project <slug> --in <file.json | dir>',
   '       node scripts/sync-plan.cjs versions --in <dir> [--listings <dir>] --out <file.json>',
   '       node scripts/sync-plan.cjs page-hash [--file <page.html>]',
@@ -316,7 +357,7 @@ function parseArgs(argv) {
       options: {
         project: { type: 'string' }, since: { type: 'string' }, versions: { type: 'string' }, out: { type: 'string' }, in: { type: 'string' },
         file: { type: 'string' }, cursor: { type: 'string' }, full: { type: 'boolean' }, to: { type: 'string' }, listings: { type: 'string' },
-        clean: { type: 'boolean' },
+        clean: { type: 'boolean' }, packs: { type: 'boolean' },
       },
       allowPositionals: true,
       strict: true,
@@ -634,13 +675,16 @@ function main(argv) {
   if (Object.hasOwn(TOOL_FLAGS, verb)) return mainTool(verb, values);
   if (verb !== 'push' && verb !== 'pull') throw new UsageError(`unknown verb ${verb}`);
   for (const flag of ['file', 'cursor', 'full', 'to', 'listings', 'clean']) if (values[flag] !== undefined) throw new UsageError(`${verb} does not take --${flag}`);
-  if (!values.project) throw new UsageError(`${verb} needs --project`);
+  if (values.packs && (verb !== 'push' || values.project)) throw new UsageError('--packs goes with push, without --project');
+  if (!values.project && !values.packs) throw new UsageError(verb === 'push' ? 'push needs --project or --packs' : `${verb} needs --project`);
   if (verb === 'push') {
     if (!values.out) throw new UsageError('push needs --out');
     if (values.in) throw new UsageError('push does not take --in');
     const versions = values.versions ? readJsonFile(values.versions, 'push') : {};
     if (!isObject(versions)) throw new UsageError('--versions must hold a JSON object');
-    const plan = planPush(values.project, { since: values.since, versions });
+    const plan = values.packs
+      ? planPacksPush({ since: values.since, versions })
+      : planPush(values.project, { since: values.since, versions });
     const batches = writePlan(plan, path.resolve(values.out));
     process.stdout.write(`${plan.docs.length} docs in ${batches.length} batches, cursor ${plan.cursor}\n`);
     return;
@@ -662,4 +706,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { planPush, applyPull };
+module.exports = { planPush, planPacksPush, applyPull };

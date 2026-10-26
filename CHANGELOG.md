@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Packs reach the live dashboard.** The sync now pushes each installed pack's public facts (name, version, last reviewed, what it applies to, class and probe counts) to the DB's `packs` collection, once per cycle through `sync-plan.cjs push --packs`, and reads that collection in its snapshot so later pushes are pinned. A dashboard synced before this version gets every pack on its next sync. The page does not show them yet.
+
 ## 0.4.0-alpha.1 — 2026-10-26
 
 The hunt engine: Rampart's own agent audits for changes, whole repositories and self-hosted hosts.
