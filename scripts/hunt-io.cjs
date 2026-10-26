@@ -19,7 +19,9 @@
 //   readCandidates / readVotes           stored forms (ingest first)
 //   tally(candidates, votes)             {verified, rejected, undecided}, each [{candidate, votes}]: the verification bar
 //   initRun(slug, opts)                  plan a run; assemble(slug, runId): tally, upsert, close, cover, finish
-// CLI: node scripts/hunt-io.cjs init|assemble|list ... (see USAGE). Exit 0 ok, 2 usage error or a gate that did not pass, 1 other.
+//   initVerify / reverify               a verify run: one verifier per stored finding, then apply the votes (see below)
+// CLI: node scripts/hunt-io.cjs init|assemble|list|init-verify|reverify ... (see USAGE); init --dry-run prints the cost per effort
+// and creates nothing. Exit 0 ok, 2 usage error or a gate that did not pass, 1 other.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -53,6 +55,8 @@ const INJECTION_RE = /\b(ignore (all|any|previous|prior)|disregard (the|all|prev
 const MAX_TITLE = 200;
 const MAX_TEXT = 2000;
 const GIT_TIMEOUT_MS = 60000;
+// A rough average for one hunter or verifier run, for the cost shown before an audit (an estimate, not a budget).
+const TOKENS_PER_AGENT = 50000;
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isText = (v) => typeof v === 'string' && v !== '';
@@ -404,11 +408,24 @@ function revisionOf(repo) {
   }
 }
 
-// Plan a run for one system and layer. Gates (project, owner attestation, system) throw RangeError before anything is created.
-// An L2 audit with an empty diff returns {empty: true, ...} and creates nothing. Otherwise returns {runId, runDir, args}.
-function initRun(slug, { system: systemId, layer, effort = 'medium', repo: repoOverride, base, runId } = {}) {
+// Each host pack's Baseline section, then each of its probes' id and expect line, verbatim from the pack: the INFRA prober's and
+// verifiers' `baseline`.
+const baselineOf = (packs) =>
+  packs.map((p) => [`${p.name}@${p.version} Baseline:`, p.baseline, '', `${p.name}@${p.version} probes:`, ...(p.probes || []).map((pr) => `- ${pr.id}: ${pr.expect}`)].join('\n')).join('\n\n');
+
+// The units and classes an effort leaves: low = the LOW classes on reachable units, medium = every class on reachable units,
+// high = every class on every unit.
+function byEffort(units, classes, effort) {
+  return {
+    units: effort === 'high' ? units : units.filter((u) => u.reachable),
+    classes: effort === 'low' ? classes.filter((c) => LOW_CLASSES.includes(c.classId)) : classes,
+  };
+}
+
+// What a run for one system and layer would hunt, before any effort filter. Gates (project, owner attestation, system, an
+// INFRA audit in a cloud session) throw RangeError. An L2 audit with an empty diff returns {empty: true, ...}.
+function planRun(slug, { system: systemId, layer, repo: repoOverride, base } = {}) {
   if (!['L2', 'L3', 'INFRA'].includes(layer)) throw new RangeError('layer must be L2, L3 or INFRA');
-  if (!['low', 'medium', 'high'].includes(effort)) throw new RangeError('effort must be low, medium or high');
   const project = store.readProject(slug);
   if (!project) throw new RangeError(`project ${slug} not found`);
   if (!isObject(project.ownerAttestation) || !isText(project.ownerAttestation.statement)) {
@@ -417,27 +434,52 @@ function initRun(slug, { system: systemId, layer, effort = 'medium', repo: repoO
   const ctx = resolveSystem(slug, systemId);
   const system = ctx.system;
   const infra = layer === 'INFRA';
+  // Spec 5.8: infra jobs never go to a cloud executor. Claude Code cloud sessions set CLAUDE_CODE_REMOTE.
+  if (infra && process.env.CLAUDE_CODE_REMOTE === 'true') throw new RangeError('INFRA audits never run on a cloud executor; run it from a local session');
   const packs = packsFor(system).filter((p) => (p.kinds || []).includes(infra ? 'host' : 'code'));
   if (!packs.length) throw new RangeError(`system ${systemId} has no ${infra ? 'host' : 'code'} pack`);
+  const classes = classesOf(packs);
+  if (infra) return { system, packs, classes, repoRoot: null, units: packs.flatMap((p) => coverage.unitsForHost(system, p)) };
+  const repoRoot = resolveRepo(ctx, repoOverride);
+  if (layer === 'L3') return { system, packs, classes, repoRoot, units: coverage.unitsForRepo(repoRoot, { paths: true }) };
+  const scope = diffScope(repoRoot, { base, defaultBranch: system.repo && system.repo.defaultBranch });
+  if (scope.empty) return { empty: true, base: scope.base, message: `nothing to scan: no changed files against ${scope.base}` };
+  // The hunter of an L2 unit reads the unit's changed files that still exist (the ones diffScope counted).
+  const kept = scope.files.filter((f) => f.status !== 'D' && !coverage.isIgnored(f.path)).map((f) => f.path).sort(byString);
+  return { system, packs, classes, repoRoot, units: scope.units.map((u) => ({ ...u, paths: kept.filter((p) => coverage.unitOf(p) === u.id) })) };
+}
 
-  let repoRoot = null;
-  let units;
-  let classes = classesOf(packs);
-  if (infra) {
-    units = packs.flatMap((p) => coverage.unitsForHost(system, p));
-  } else {
-    repoRoot = resolveRepo(ctx, repoOverride);
-    if (layer === 'L3') units = coverage.unitsForRepo(repoRoot, { paths: true });
-    else {
-      const scope = diffScope(repoRoot, { base, defaultBranch: system.repo && system.repo.defaultBranch });
-      if (scope.empty) return { empty: true, base: scope.base, message: `nothing to scan: no changed files against ${scope.base}` };
-      // The hunter of an L2 unit reads the unit's changed files that still exist (the ones diffScope counted).
-      const kept = scope.files.filter((f) => f.status !== 'D' && !coverage.isIgnored(f.path)).map((f) => f.path).sort(byString);
-      units = scope.units.map((u) => ({ ...u, paths: kept.filter((p) => coverage.unitOf(p) === u.id) }));
-    }
-    if (effort !== 'high') units = units.filter((u) => u.reachable);
-    if (effort === 'low') classes = classes.filter((c) => LOW_CLASSES.includes(c.classId));
+// The cost of a run without creating it: per effort, units, classes, hunters (units x classes) and agent runs (a hunter and,
+// on average, about one verifier each: 2 per hunter), with a rough token figure. INFRA has no effort: one prober and up to
+// three verifiers for each of at most 10 candidates.
+function dryRun(slug, opts = {}) {
+  const plan = planRun(slug, opts);
+  if (plan.empty) return plan;
+  const head = { dryRun: true, layer: opts.layer, system: plan.system.id, repoRoot: plan.repoRoot };
+  if (opts.layer === 'INFRA') {
+    const agentsMax = 1 + 10 * 3;
+    return { ...head, infra: { probes: plan.units.length, classes: plan.classes.length, agentsMax, tokensMax: agentsMax * TOKENS_PER_AGENT } };
   }
+  const efforts = {};
+  for (const effort of ['low', 'medium', 'high']) {
+    const { units, classes } = byEffort(plan.units, plan.classes, effort);
+    const hunters = units.length * classes.length;
+    efforts[effort] = { units: units.length, classes: classes.length, hunters, agents: 2 * hunters, tokens: 2 * hunters * TOKENS_PER_AGENT };
+  }
+  return { ...head, efforts };
+}
+
+// Plan a run for one system and layer. Gates (project, owner attestation, system) throw RangeError before anything is created.
+// An L2 audit with an empty diff returns {empty: true, ...} and creates nothing. Otherwise returns {runId, runDir, args}.
+function initRun(slug, { system: systemId, layer, effort = 'medium', repo: repoOverride, base, runId } = {}) {
+  if (!['L2', 'L3', 'INFRA'].includes(layer)) throw new RangeError('layer must be L2, L3 or INFRA');
+  if (!['low', 'medium', 'high'].includes(effort)) throw new RangeError('effort must be low, medium or high');
+  const plan = planRun(slug, { system: systemId, layer, repo: repoOverride, base });
+  if (plan.empty) return plan;
+  const { system, packs, repoRoot } = plan;
+  const infra = layer === 'INFRA';
+  let { units, classes } = plan;
+  if (!infra) ({ units, classes } = byEffort(units, classes, effort));
   if (!units.length || (!infra && !classes.length)) throw new RangeError('nothing to hunt: no unit and class remain after the effort filter');
 
   let id = runId;
@@ -465,6 +507,7 @@ function initRun(slug, { system: systemId, layer, effort = 'medium', repo: repoO
       classes: classes.map(({ pack, packVersion, classId, title, text }) => ({ pack, packVersion, classId, title, text })),
       runDir: dir,
       effort,
+      ...(infra ? { baseline: baselineOf(packs) } : {}),
     },
   };
 }
@@ -575,12 +618,191 @@ function listCandidates(slug, runId) {
   return ingest(slug, runId).candidates.map((c) => ({ candidateRef: `${c.hunter.agent}#${c.ref}`, file: `candidates/${c.hunter.agent}.json`, severity: c.severity, classId: c.classId, title: c.title }));
 }
 
+// ---- verify: re-run a verifier on stored findings ------------------------------------------
+
+// A verify run re-judges stored hunt findings against the current code: one verifier each, no hunt. Its run directory holds
+//   verify.json                        {system, repoRoot, entries: [{finding, key, outcome?, reason?}]}
+//   candidates/<key>.json              a one-element array (ref c1) written from the stored finding, for the verifier to read
+//   votes/<key>__c1__1.json            the verifier's vote
+// with key = <fileKey(finding id)>__verify. The run has job verify and no layers: a re-check covers no unit, so it earns no
+// coverage credit. reverify applies the votes: rejected -> fixed (by rampart, "no longer reproducible in run <runId>"),
+// confirmed -> still open, seen again (lastSeen and verification.run move on), anything else -> unchanged, with the reason.
+
+const VERIFY_STATUSES = ['open', 'regressed'];
+const verifyKey = (findingId) => `${fileKey(findingId)}__verify`;
+
+// Why a stored finding cannot be re-verified, or null when it can.
+function notVerifiable(f, systemId) {
+  if (systemId !== undefined && f.system !== systemId) return `finding ${f.id} belongs to system ${f.system}, not ${systemId}`;
+  if (f.source !== 'rampart-hunter') return `finding ${f.id} came from ${f.source}, not from a Rampart hunt`;
+  if (f.class !== 'verified') return `finding ${f.id} is class ${f.class}, not verified`;
+  if (!VERIFY_STATUSES.includes(f.status)) return `finding ${f.id} is ${f.status}, not open`;
+  if (!isObject(f.location) || !isText(f.location.path)) return `finding ${f.id} has no code location`;
+  return null;
+}
+
+// The class a finding was hunted under, from its pack as it is today: {pack, packVersion, classId, title, text} or {reason}.
+function classOfFinding(f) {
+  const packName = typeof f.pack === 'string' ? f.pack.split('@')[0] : '';
+  const classId = typeof f.ruleId === 'string' && f.ruleId.startsWith(`${packName}/`) ? f.ruleId.slice(packName.length + 1) : '';
+  if (!packName || !classId) return { reason: `finding ${f.id} names no pack class` };
+  let pack;
+  try {
+    pack = require('./packs.cjs').readPack(packName);
+  } catch {
+    return { reason: `pack ${packName} is not installed` };
+  }
+  const cls = (pack.classes || []).find((c) => c.id === classId);
+  if (!cls) return { reason: `class ${classId} is no longer in pack ${packName}` };
+  return { pack: pack.name, packVersion: pack.version, classId, title: cls.title, text: classText(pack.name, classId) };
+}
+
+// Plan a verify run. --finding <id> (its system is the finding's) or --system <id> with all: every open verified hunt finding
+// of that system. Gates as for init. A finding that cannot be re-verified is refused when named, skipped with a reason under
+// all. Nothing to verify returns {nothing: true, ...} and creates no run. Otherwise {runId, runDir, repoRoot, verifications,
+// skipped}, each verification carrying the verifier's dispatch fields and the finding's id, title, severity and location.
+function initVerify(slug, { system: systemId, finding: findingId, all = false, repo: repoOverride } = {}) {
+  if (Boolean(findingId) === Boolean(all)) throw new RangeError('give exactly one of --finding <id> or --all');
+  if (all && !systemId) throw new RangeError('--all needs --system');
+  const project = store.readProject(slug);
+  if (!project) throw new RangeError(`project ${slug} not found`);
+  if (!isObject(project.ownerAttestation) || !isText(project.ownerAttestation.statement)) {
+    throw new RangeError(`project ${slug} has no ownerAttestation; add the owner statement before verifying`);
+  }
+  const findings = store.readFindings(slug);
+  let chosen;
+  let sys = systemId;
+  if (findingId) {
+    const f = findings.find((x) => x.id === findingId);
+    if (!f) throw new RangeError(`no finding ${findingId} in project ${slug}`);
+    const why = notVerifiable(f, systemId);
+    if (why) throw new RangeError(why);
+    sys = f.system;
+    chosen = [f];
+  } else {
+    chosen = findings.filter((f) => notVerifiable(f, systemId) === null).sort((a, b) => byString(a.id, b.id));
+  }
+  const ctx = resolveSystem(slug, sys);
+  const plans = [];
+  const skipped = [];
+  for (const f of chosen) {
+    const cls = classOfFinding(f);
+    if (cls.reason) {
+      if (findingId) throw new RangeError(cls.reason);
+      skipped.push({ finding: f.id, reason: cls.reason });
+    } else plans.push({ f, cls });
+  }
+  if (!plans.length) return { nothing: true, verifications: [], skipped, message: 'nothing to verify: no open verified finding from a Rampart hunt' };
+  const repoRoot = resolveRepo(ctx, repoOverride);
+
+  const runId = store.createRun(slug, { job: 'verify', layers: [], systems: [sys], executor: 'local' }).runId;
+  const dir = ensureRunDirs(slug, runId);
+  const revision = revisionOf(repoRoot);
+  if (revision) store.finishRun(slug, runId, { revision });
+  const verifications = plans.map(({ f, cls }) => {
+    const key = verifyKey(f.id);
+    const candidate = {
+      ref: 'c1', classId: cls.classId, title: f.title, severity: f.severity, confidence: f.confidence, cwe: f.cwe || [],
+      location: f.location, evidence: f.evidence, exploitScenario: f.exploitScenario || '', preconditions: f.preconditions || '',
+      recommendation: f.recommendation || '',
+    };
+    const candidateFile = path.join(dir, 'candidates', `${key}.json`);
+    writeAtomic(candidateFile, toJson([candidate]));
+    return {
+      finding: f.id, title: f.title, severity: f.severity, location: f.location,
+      candidateFile, candidateRef: `${key}#c1`,
+      classText: `${cls.pack}@${cls.packVersion} ${cls.classId}: ${cls.title}\n\n${cls.text}`,
+      outputPath: path.join(dir, 'votes', `${key}__c1__1.json`),
+    };
+  });
+  writeAtomic(path.join(dir, 'verify.json'), toJson({ system: sys, repoRoot, entries: plans.map(({ f }) => ({ finding: f.id, key: verifyKey(f.id) })) }));
+  return { runId, runDir: dir, repoRoot, verifications, skipped };
+}
+
+// The usable votes of one verify entry; every vote file of it is rewritten in its stored (redacted) form, or stubbed.
+function verifyVotes(dir, entry) {
+  const votes = [];
+  const cand = { candidateId: entry.finding, hunter: { agent: entry.key }, ref: 'c1' };
+  for (const name of jsonFiles(path.join(dir, 'votes')).filter((n) => n.startsWith(`${entry.key}__`))) {
+    const file = path.join(dir, 'votes', name);
+    const r = readJsonFile(file);
+    const n = r.bad ? { reason: 'not valid JSON' } : normalizeVote(r.value, name, [cand]);
+    if (!n.vote) {
+      stub(file, n.reason);
+      continue;
+    }
+    if (toJson(n.vote) !== r.text) writeAtomic(file, toJson(n.vote));
+    votes.push(n.vote);
+  }
+  return votes;
+}
+
+// Apply the votes of a verify run: every entry without an outcome, or only the one --finding names. The run finishes once every
+// entry has an outcome: done, or failed when no verifier left a usable vote. Returns {results: [{finding, outcome, reason}], run}.
+function reverify(slug, runId, { finding: only } = {}) {
+  const dir = dirOf(slug, runId);
+  const run = readJsonFile(path.join(dir, 'run.json')).value;
+  if (!isObject(run) || run.job !== 'verify') throw new RangeError(`run ${runId} is not a verify run of project ${slug}`);
+  if (run.status !== 'running') throw new RangeError(`run ${runId} is already ${run.status}; reverify runs once`);
+  const docFile = path.join(dir, 'verify.json');
+  const doc = readJsonFile(docFile).value;
+  if (!isObject(doc) || !Array.isArray(doc.entries)) throw new RangeError(`run ${runId} has no readable verify.json (run hunt-io init-verify first)`);
+  const todo = doc.entries.filter((e) => (only === undefined ? !e.outcome : e.finding === only));
+  if (only !== undefined && !todo.length) throw new RangeError(`finding ${only} is not part of run ${runId}`);
+  if (only !== undefined && todo[0].outcome) throw new RangeError(`finding ${only} was already re-verified in run ${runId}`);
+
+  const results = [];
+  for (const entry of todo) {
+    const votes = verifyVotes(dir, entry);
+    const n = votes.length;
+    const confirmed = votes.filter((v) => v.verdict === 'confirmed').length;
+    const rejected = votes.filter((v) => v.verdict === 'rejected').length;
+    const current = store.readFindings(slug).find((f) => f.id === entry.finding);
+    let outcome = 'unchanged';
+    let reason;
+    if (!n) reason = 'no usable vote: the verifier did not return';
+    else if (!current) reason = 'the finding is no longer in the store';
+    else if (!VERIFY_STATUSES.includes(current.status)) reason = `the finding is now ${current.status}; left as it is`;
+    else if (rejected > n / 2) {
+      store.setDisposition(slug, entry.finding, { status: 'fixed', reason: `no longer reproducible in run ${runId}`, by: 'rampart' });
+      outcome = 'fixed';
+      reason = 'the verifier could not reproduce it';
+    } else if (confirmed > n / 2) {
+      store.upsertFindings(slug, [{ ...current, verification: { ...(current.verification || { verifiers: n, confirmed }), run: runId } }], runId);
+      outcome = 'still-open';
+      reason = 'the verifier confirmed it in the current code';
+    } else reason = 'the verifier was unsure; left as it is';
+    entry.outcome = outcome;
+    entry.reason = reason;
+    entry.votes = n;
+    entry.verdict = n ? (confirmed > n / 2 ? 'confirmed' : rejected > n / 2 ? 'rejected' : 'undecided') : 'none';
+    results.push({ finding: entry.finding, outcome, reason });
+  }
+  writeAtomic(docFile, toJson(doc));
+
+  let finished = run;
+  if (doc.entries.every((e) => e.outcome)) {
+    const count = (v) => doc.entries.filter((e) => e.verdict === v).length;
+    const counts = {
+      added: 0, updated: 0, unchanged: doc.entries.filter((e) => e.outcome !== 'fixed').length, hardening: 0,
+      closed: doc.entries.filter((e) => e.outcome === 'fixed').length,
+      candidates: doc.entries.length, verified: count('confirmed'), rejected: count('rejected'), undecided: count('undecided') + count('none'),
+    };
+    finished = doc.entries.some((e) => e.votes > 0)
+      ? store.finishRun(slug, runId, { status: 'done', counts })
+      : store.finishRun(slug, runId, { status: 'failed', reason: 'no verifier left a usable vote', counts });
+  }
+  return { results, run: finished };
+}
+
 // ---- the command line ---------------------------------------------------------------------
 
 const USAGE = [
   'usage: node scripts/hunt-io.cjs init --project <slug> --system <id> --layer L2|L3|INFRA [--effort low|medium|high] [--repo <path>] [--base <ref>] [--run <runId>] [--json]',
   '       node scripts/hunt-io.cjs assemble --project <slug> --run <runId> [--json]',
   '       node scripts/hunt-io.cjs list --project <slug> --run <runId> [--json]',
+  '       node scripts/hunt-io.cjs init-verify --project <slug> (--finding <id> | --system <id> --all) [--repo <path>] [--json]',
+  '       node scripts/hunt-io.cjs reverify --project <slug> --run <runId> [--finding <id>] [--json]',
 ].join('\n');
 
 class UsageError extends Error {}
@@ -589,7 +811,10 @@ const OPTIONS = {
   init: ['project', 'system', 'layer', 'effort', 'repo', 'base', 'run'],
   assemble: ['project', 'run'],
   list: ['project', 'run'],
+  'init-verify': ['project', 'system', 'finding', 'repo'],
+  reverify: ['project', 'run', 'finding'],
 };
+const FLAGS = { init: ['dry-run'], 'init-verify': ['all'] };
 
 function parse(argv) {
   const [command, ...rest] = argv;
@@ -598,14 +823,18 @@ function parse(argv) {
   try {
     ({ values } = util.parseArgs({
       args: rest,
-      options: { ...Object.fromEntries(OPTIONS[command].map((n) => [n, { type: 'string' }])), json: { type: 'boolean' } },
+      options: {
+        ...Object.fromEntries(OPTIONS[command].map((n) => [n, { type: 'string' }])),
+        ...Object.fromEntries((FLAGS[command] || []).map((n) => [n, { type: 'boolean' }])),
+        json: { type: 'boolean' },
+      },
       strict: true,
       allowPositionals: false,
     }));
   } catch (err) {
     throw new UsageError(err.message.split('\n')[0]);
   }
-  const required = command === 'init' ? ['project', 'system', 'layer'] : ['project', 'run'];
+  const required = command === 'init' ? ['project', 'system', 'layer'] : command === 'init-verify' ? ['project'] : ['project', 'run'];
   for (const name of required) if (values[name] === undefined) throw new UsageError(`--${name} is required`);
   return { command, ...values };
 }
@@ -615,8 +844,18 @@ function main(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
     const o = parse(argv);
     let result;
     if (o.command === 'init') {
-      result = initRun(o.project, { system: o.system, layer: o.layer, effort: o.effort, repo: o.repo, base: o.base, runId: o.run });
+      const opts = { system: o.system, layer: o.layer, effort: o.effort, repo: o.repo, base: o.base, runId: o.run };
+      if (o['dry-run'] && o.effort !== undefined && !['low', 'medium', 'high'].includes(o.effort)) throw new RangeError('effort must be low, medium or high');
+      result = o['dry-run'] ? dryRun(o.project, opts) : initRun(o.project, opts);
       stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else if (o.command === 'init-verify') {
+      result = initVerify(o.project, { system: o.system, finding: o.finding, all: o.all, repo: o.repo });
+      stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else if (o.command === 'reverify') {
+      result = reverify(o.project, o.run, { finding: o.finding });
+      stdout.write(o.json
+        ? `${JSON.stringify(result, null, 2)}\n`
+        : `${result.results.map((r) => `${r.finding}  ${r.outcome}  ${r.reason}`).join('\n') || 'nothing re-verified'}\nrun ${result.run.runId}: ${result.run.status}\n`);
     } else if (o.command === 'list') {
       result = listCandidates(o.project, o.run);
       stdout.write(o.json ? `${JSON.stringify(result, null, 2)}\n` : `${result.map((r) => `${r.candidateRef}  ${r.severity}  ${r.title}`).join('\n') || 'no candidates'}\n`);
@@ -638,5 +877,6 @@ function main(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
 module.exports = {
-  LOW_CLASSES, fileKey, hunterKey, infraKey, ingest, writeCandidate, writeVote, readCandidates, readVotes, tally, initRun, assemble, listCandidates, main,
+  LOW_CLASSES, TOKENS_PER_AGENT, fileKey, hunterKey, infraKey, ingest, writeCandidate, writeVote, readCandidates, readVotes, tally, initRun, dryRun, assemble,
+  listCandidates, initVerify, reverify, main,
 };
