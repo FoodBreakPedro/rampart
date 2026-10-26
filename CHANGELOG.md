@@ -12,7 +12,7 @@ The live dashboard (Plan 3). Acceptance was run against a live published artifac
 - **`/rampart dashboard --sync` mirrors the local store into the dashboard database.** It writes versioned documents and leaves the local store as the source for audits.
 - **`/rampart watch` runs queued jobs.** It claims a job with a version-pinned write, so two executors never run one job. Use `/loop /rampart watch` to keep it running.
 - **`/rampart schedule` sets up a weekly sync and the overdue L1 audits.**
-- **Two hooks.** SessionStart reports what is queued or overdue; the post-push hook syncs after a push.
+- **Two hooks.** SessionStart adds a one-line note when a tool a stored project needs is missing, from a doctor report cached per day, and is silent otherwise. After a `git push` from a stored project's repo folder, the post-push hook suggests `/rampart audit L2 --project <slug>` once per session, but only once L2 is available (the hunt engine); on this release alone it stays silent.
 
 ### Known limitations
 
