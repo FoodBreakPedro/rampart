@@ -265,6 +265,7 @@ test('dashboard: sync pulls and builds versions from one snapshot, then pushes p
   assert.match(sync, /Write the result text, copied verbatim, to `<sync>\/listings\/<collection>\.txt`/);
   assert.match(sync, /redo the whole cycle/);
   assert.match(sync, /never re-read/i);
+  assert.match(sync, /sync-plan\.cjs" meta-sync --in "<sync>\/db" --versions "<sync>\/versions\.json"`/);
   assert.match(sync, /sync-plan\.cjs" meta-sync --in "<sync>\/db" --cursor <cursor>/);
   assert.match(sync, /`update meta\/sync` with `data` the printed JSON and `if_version` the version/);
   assert.match(sync, /`set meta\/sync`[^.]*creates the document/);

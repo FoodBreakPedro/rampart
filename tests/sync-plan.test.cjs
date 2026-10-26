@@ -802,6 +802,23 @@ test('T9 meta-sync: reads this machine\'s push cursor from meta/sync and prints 
   assert.equal(cli('meta-sync').status, 2);
 });
 
+test('R49 meta-sync --versions prints the version from the versions map; bare meta/sync files work', () => {
+  const me = machineId();
+  const prev = '2026-10-20T00:00:00.000Z';
+  const bare = { [me]: { pushedAt: prev, pulledAt: prev, pushCursor: prev, pullCursor: prev } };
+  const dir = dbTree({ 'meta/sync.json': bare });
+  const vf = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rampart-r49-')), 'versions.json');
+  fs.writeFileSync(vf, JSON.stringify({ 'meta/sync': 4, 'projects/p': 2 }));
+  let r = cli('meta-sync', '--in', dir, '--versions', vf);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), { machineId: me, pushCursor: prev, version: 4 });
+  fs.writeFileSync(vf, JSON.stringify({ 'projects/p': 2 }));
+  assert.equal(JSON.parse(cli('meta-sync', '--in', dir, '--versions', vf).stdout).version, null, 'absent from the map is null');
+  r = cli('meta-sync', '--in', dir, '--versions', path.join(path.dirname(vf), 'nope.json'));
+  assert.notEqual(r.status, 0, 'a missing versions file fails');
+  assert.equal(JSON.parse(cli('meta-sync', '--in', dir).stdout).version, null, 'without --versions a bare file has no version');
+});
+
 // ---- Task 9 fix round 1 ------------------------------------------------------------------------
 
 test('R41 page-copy: copies the plugin page into --to <dir> and prints {hash, file}, the hash being the plugin page\'s', () => {

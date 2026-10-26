@@ -34,7 +34,7 @@
 //      node scripts/sync-plan.cjs page-copy --to <dir>
 //        copies the plugin's page to <dir>/rampart-dashboard/index.html and prints {hash, file}: the Artifact tool publishes
 //        only files under the session's working directory or scratchpad, and an installed plugin is under neither.
-//      node scripts/sync-plan.cjs meta-sync --in <dir> [--cursor <iso> [--full]]
+//      node scripts/sync-plan.cjs meta-sync --in <dir> [--versions <file.json>] [--cursor <iso> [--full]]
 //        without --cursor: {machineId, pushCursor, version} from <dir>/meta/sync.json (null when none). With it: the data
 //        for meta/sync, this machine's entry only {pushedAt, pulledAt, pushCursor, pullCursor}; pushCursor moves to --cursor
 //        only with --full (every project pushed), so a one-project sync never skips another project's changes.
@@ -301,7 +301,7 @@ const USAGE = [
   '       node scripts/sync-plan.cjs versions --in <dir> [--listings <dir>] --out <file.json>',
   '       node scripts/sync-plan.cjs page-hash [--file <page.html>]',
   '       node scripts/sync-plan.cjs page-copy --to <dir>',
-  '       node scripts/sync-plan.cjs meta-sync --in <dir> [--cursor <iso> [--full]]',
+  '       node scripts/sync-plan.cjs meta-sync --in <dir> [--versions <file.json>] [--cursor <iso> [--full]]',
 ].join('\n');
 
 function parseArgs(argv) {
@@ -497,8 +497,15 @@ function syncEntry(dir) {
   return { entry, version: versionOf(content) ?? null };
 }
 
-function metaSync(dir, cursor, full) {
-  const { entry, version } = syncEntry(dir);
+function metaSync(dir, cursor, full, versionsFile) {
+  const { entry, version: fileVersion } = syncEntry(dir);
+  let version = fileVersion;
+  if (versionsFile !== undefined) {
+    const map = readJsonFile(versionsFile, 'meta-sync');
+    if (!isObject(map)) throw new Error('meta-sync: --versions is not a version map');
+    const v = map['meta/sync'];
+    version = Number.isInteger(v) && v > 0 ? v : null;
+  }
   const previous = entry && typeof entry.pushCursor === 'string' && ISO_DATE_RE.test(entry.pushCursor) ? entry.pushCursor : null;
   if (cursor === undefined) return { machineId: machineId(), pushCursor: previous, version };
   const now = new Date().toISOString();
@@ -514,7 +521,7 @@ const isDir = (p) => {
 };
 
 const PAGE = path.join(__dirname, '..', 'dashboard', 'index.html');
-const TOOL_FLAGS = { versions: ['in', 'out', 'listings'], 'page-hash': ['file'], 'page-copy': ['to'], 'meta-sync': ['in', 'cursor', 'full'] };
+const TOOL_FLAGS = { versions: ['in', 'out', 'listings'], 'page-hash': ['file'], 'page-copy': ['to'], 'meta-sync': ['in', 'cursor', 'full', 'versions'] };
 
 // Copies the plugin's page into <to>/rampart-dashboard/index.html; returns {hash, file}.
 function pageCopy(to) {
@@ -554,7 +561,7 @@ function mainTool(verb, values) {
   if (values.cursor !== undefined && !(ISO_DATE_RE.test(values.cursor) && Number.isFinite(Date.parse(values.cursor)))) {
     throw new UsageError('--cursor must be an ISO date-time');
   }
-  process.stdout.write(`${JSON.stringify(metaSync(dir, values.cursor, values.full === true))}\n`);
+  process.stdout.write(`${JSON.stringify(metaSync(dir, values.cursor, values.full === true, values.versions ? path.resolve(values.versions) : undefined))}\n`);
 }
 
 // A read of an empty collection saves no folder, so on a fresh database --in does not exist: with its parent in place that
