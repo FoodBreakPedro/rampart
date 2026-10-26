@@ -688,3 +688,116 @@ test('CLI push never deletes outside <out>/docs even when an earlier batches.jso
   assert.equal(cli('push', '--project', SLUG, '--out', out).status, 0);
   assert.equal(fs.readFileSync(victim, 'utf8'), 'safe');
 });
+
+// ---- Task 9: versions map, page hash, meta/sync, and the pulled body's version field ----------
+
+// An ArtifactData out_dir tree: <dir>/<collection>/<doc_id>.json, each file as written by a read.
+function dbTree(files) {
+  const dir = path.join(home, `db ${Math.random().toString(16).slice(2)}`);
+  for (const [rel, content] of Object.entries(files)) {
+    const file = path.join(dir, ...rel.split('/'));
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, typeof content === 'string' ? content : JSON.stringify(content, null, 2));
+  }
+  return dir;
+}
+
+test('T9 versions: builds {"<collection>/<id>": version} from {id, data, version} wrappers and from version or _version beside the fields', () => {
+  const dir = dbTree({
+    [`findings/${ID_A}.json`]: { id: ID_A, data: { id: ID_A, title: 'x' }, version: 3 },
+    [`findings/${ID_B}.json`]: { id: ID_B, title: 'y', _version: 7 },
+    [`projects/${SLUG}.json`]: { slug: SLUG, version: 2 },
+    'runs/2026-10-23T18-02-11Z.json': { id: 'whatever', data: { runId: '2026-10-23T18-02-11Z' }, version: 1 },
+    'meta/owner.json': { ownerId: 'u_x', _version: 5 },
+    'notes.txt': 'ignored',
+  });
+  const out = path.join(home, 'v out', 'versions.json');
+  const r = cli('versions', '--in', dir, '--out', out);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), '5 versions');
+  assert.deepEqual(JSON.parse(fs.readFileSync(out, 'utf8')), {
+    [`findings/${ID_A}`]: 3, [`findings/${ID_B}`]: 7, [`projects/${SLUG}`]: 2, 'runs/2026-10-23T18-02-11Z': 1, 'meta/owner': 5,
+  }, 'the key is the file name (the doc_id), never an id inside the file');
+});
+
+test('T9 versions: a file with no integer version fails loudly, naming the file, and writes no map', () => {
+  for (const content of [{ id: ID_A, title: 'no version' }, { id: ID_A, data: { id: ID_A }, version: 'v2' }, { id: ID_A, _version: 0 }]) {
+    const dir = dbTree({ [`findings/${ID_B}.json`]: { id: ID_B, _version: 1 }, [`findings/${ID_A}.json`]: content });
+    const out = path.join(home, `v-${Math.random().toString(16).slice(2)}.json`);
+    const r = cli('versions', '--in', dir, '--out', out);
+    assert.equal(r.status, 1, JSON.stringify(content));
+    assert.equal(r.stderr.split('\n').filter(Boolean).length, 1, 'one line');
+    assert.match(r.stderr, new RegExp(`findings/${ID_A}\\.json carries no version`));
+    assert.ok(!fs.existsSync(out));
+  }
+  const bad = dbTree({ [`findings/${ID_A}.json`]: '{not json' });
+  assert.equal(cli('versions', '--in', bad, '--out', path.join(home, 'x.json')).status, 1);
+});
+
+test('T9 versions: argument errors exit 2', () => {
+  const dir = dbTree({ [`findings/${ID_A}.json`]: { _version: 1 } });
+  assert.equal(cli('versions', '--in', dir).status, 2, 'no --out');
+  assert.equal(cli('versions', '--out', path.join(home, 'x.json')).status, 2, 'no --in');
+  assert.equal(cli('versions', '--in', path.join(home, 'missing'), '--out', path.join(home, 'x.json')).status, 2);
+  assert.equal(cli('versions', '--in', dir, '--out', path.join(home, 'x.json'), '--project', SLUG).status, 2);
+});
+
+test('T9 pull: a bare body carrying version or _version beside its fields is applied without them', () => {
+  seed();
+  const dir = dbTree({ 'jobs/job-7.json': { ...job({ id: 'job-7' }), _version: 4 }, 'jobs/job-8.json': { ...job({ id: 'job-8' }), version: 2 } });
+  const r = cli('pull', '--project', SLUG, '--in', dir);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout.trim(), 'applied 2, skipped 0');
+  assert.ok(!('_version' in store.readJob('job-7')) && !('version' in store.readJob('job-8')));
+});
+
+test('T9 page-hash: prints sha256:<hex> of the page, stable, and changes with the file', () => {
+  const page = path.join(home, 'index.html');
+  fs.writeFileSync(page, '<p>one</p>');
+  const a = cli('page-hash', '--file', page);
+  assert.equal(a.status, 0, a.stderr);
+  assert.equal(a.stdout.trim(), `sha256:${require('node:crypto').createHash('sha256').update('<p>one</p>').digest('hex')}`);
+  assert.equal(cli('page-hash', '--file', page).stdout, a.stdout);
+  fs.writeFileSync(page, '<p>two</p>');
+  assert.notEqual(cli('page-hash', '--file', page).stdout, a.stdout);
+  const plugin = cli('page-hash');
+  assert.equal(plugin.status, 0, 'defaults to the plugin\'s dashboard/index.html');
+  assert.match(plugin.stdout.trim(), /^sha256:[0-9a-f]{64}$/);
+  assert.equal(store.setDashboard({ pageHash: plugin.stdout.trim() }).pageHash, plugin.stdout.trim(), 'dashboard-set accepts it');
+  assert.equal(cli('page-hash', '--file', path.join(home, 'missing.html')).status, 2);
+});
+
+test('T9 meta-sync: reads this machine\'s push cursor from meta/sync and prints the next meta/sync data', () => {
+  const me = machineId();
+  const empty = dbTree({ 'meta/owner.json': { ownerId: 'u_x', _version: 1 } });
+  let r = cli('meta-sync', '--in', empty);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), { machineId: me, pushCursor: null, version: null });
+
+  const prev = '2026-10-20T00:00:00.000Z';
+  const other = { pushedAt: PAST, pulledAt: PAST, pushCursor: PAST, pullCursor: PAST };
+  for (const content of [
+    { id: 'sync', data: { [me]: { pushedAt: prev, pulledAt: prev, pushCursor: prev, pullCursor: prev }, other }, version: 9 },
+    { [me]: { pushedAt: prev, pulledAt: prev, pushCursor: prev, pullCursor: prev }, other, _version: 9 },
+  ]) {
+    const dir = dbTree({ 'meta/sync.json': content });
+    r = cli('meta-sync', '--in', dir);
+    assert.deepEqual(JSON.parse(r.stdout), { machineId: me, pushCursor: prev, version: 9 }, 'the version pins the meta/sync update');
+
+    const cursor = '2026-10-26T10:00:00.000Z';
+    r = cli('meta-sync', '--in', dir, '--cursor', cursor, '--full');
+    assert.equal(r.status, 0, r.stderr);
+    const full = JSON.parse(r.stdout);
+    assert.deepEqual(Object.keys(full), [me], 'only this machine\'s entry: an update merges it beside the others');
+    assert.equal(full[me].pushCursor, cursor);
+    assert.ok(Number.isFinite(Date.parse(full[me].pushedAt)) && full[me].pulledAt === full[me].pushedAt && full[me].pullCursor === full[me].pushedAt);
+
+    r = cli('meta-sync', '--in', dir, '--cursor', cursor);
+    assert.equal(JSON.parse(r.stdout)[me].pushCursor, prev, 'a one-project sync keeps the cursor of the last full sync');
+  }
+  r = cli('meta-sync', '--in', empty, '--cursor', '2026-10-26T10:00:00.000Z');
+  assert.equal(JSON.parse(r.stdout)[me].pushCursor, null);
+  assert.equal(cli('meta-sync', '--in', empty, '--cursor', 'yesterday').status, 2);
+  assert.equal(cli('meta-sync', '--in', empty, '--full').status, 2, '--full needs --cursor');
+  assert.equal(cli('meta-sync').status, 2);
+});

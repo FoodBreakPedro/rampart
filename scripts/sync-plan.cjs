@@ -21,13 +21,24 @@
 // push writes <dir>/docs/<collection>/<id>.json per doc and <dir>/batches.json = {cursor, batches: [[{op, collection,
 // doc_id, file_path, if_version?}, ...]]}. pull reads a JSON array of docs or a tree <dir>/<collection>/<id>.json whose
 // files are bare bodies or {id, data, version} wrappers. Exit 0 ok, 1 anything else, 2 bad arguments.
+//      node scripts/sync-plan.cjs versions --in <dir> --out <file.json>
+//        the push --versions map {"<collection>/<doc_id>": version} from an ArtifactData out_dir tree read just before the
+//        push (the same snapshot the pull read). Each file is a {id, data, version} wrapper or a body with version or _version
+//        beside its fields; a file with no integer version fails (exit 1, naming it) rather than leaving a doc unpinned.
+//      node scripts/sync-plan.cjs page-hash [--file <page.html>]
+//        sha256:<hex> of the live page (default the plugin's dashboard/index.html), for config.json dashboard.pageHash.
+//      node scripts/sync-plan.cjs meta-sync --in <dir> [--cursor <iso> [--full]]
+//        without --cursor: {machineId, pushCursor, version} from <dir>/meta/sync.json (null when none). With it: the data
+//        for meta/sync, this machine's entry only {pushedAt, pulledAt, pushCursor, pullCursor}; pushCursor moves to --cursor
+//        only with --full (every project pushed), so a one-project sync never skips another project's changes.
 
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const path = require('node:path');
 const util = require('node:util');
 const store = require('./store.cjs');
 const { publicProject, publicFinding, projectScore, redactDeep } = require('./render-static.cjs');
-const { runDir } = require('./lib/paths.cjs');
+const { runDir, machineId } = require('./lib/paths.cjs');
 const { redact } = require('./lib/redact.cjs');
 const { writeAtomic } = require('./lib/atomic.cjs');
 
@@ -263,6 +274,9 @@ class UsageError extends Error {}
 const USAGE = [
   'usage: node scripts/sync-plan.cjs push --project <slug> [--since <iso>] [--versions <file.json>] --out <dir>',
   '       node scripts/sync-plan.cjs pull --project <slug> --in <file.json | dir>',
+  '       node scripts/sync-plan.cjs versions --in <dir> --out <file.json>',
+  '       node scripts/sync-plan.cjs page-hash [--file <page.html>]',
+  '       node scripts/sync-plan.cjs meta-sync --in <dir> [--cursor <iso> [--full]]',
 ].join('\n');
 
 function parseArgs(argv) {
@@ -272,6 +286,7 @@ function parseArgs(argv) {
       args: argv,
       options: {
         project: { type: 'string' }, since: { type: 'string' }, versions: { type: 'string' }, out: { type: 'string' }, in: { type: 'string' },
+        file: { type: 'string' }, cursor: { type: 'string' }, full: { type: 'boolean' },
       },
       allowPositionals: true,
       strict: true,
@@ -281,7 +296,7 @@ function parseArgs(argv) {
   }
   const { values, positionals } = parsed;
   for (const [name, value] of Object.entries(values)) if (value === '') throw new UsageError(`--${name} needs a value`);
-  if (positionals.length !== 1) throw new UsageError('missing verb (push or pull)');
+  if (positionals.length !== 1) throw new UsageError('missing verb (push, pull, versions, page-hash or meta-sync)');
   return { verb: positionals[0], values };
 }
 
@@ -365,9 +380,109 @@ function writePlan(plan, out) {
 
 // A document from a pulled file: either {collection, id|doc_id, data} already, or a bare body / {id, data, version} wrapper
 // found at <collection>/<id>.json.
+// A bare body may carry its version beside its fields (version or _version); that is the DB's, not the document's, so it is
+// dropped before the body is applied (a job with an extra field would not pass its schema).
 function docFromFile(collection, id, content) {
   const wrapped = isObject(content) && isObject(content.data) && !('project' in content) && !('slug' in content);
-  return { collection, id: wrapped && content.id !== undefined ? content.id : id, data: wrapped ? content.data : content };
+  if (wrapped) return { collection, id: content.id !== undefined ? content.id : id, data: content.data };
+  let data = content;
+  if (isObject(content) && ('_version' in content || Number.isInteger(content.version))) {
+    const { _version, ...rest } = content;
+    if (Number.isInteger(rest.version)) delete rest.version;
+    data = rest;
+  }
+  return { collection, id, data };
+}
+
+// The version an out_dir file carries, or undefined: a wrapper's version, else _version or version beside the fields.
+function versionOf(content) {
+  if (!isObject(content)) return undefined;
+  const v = '_version' in content ? content._version : content.version;
+  return Number.isInteger(v) && v >= 1 ? v : undefined;
+}
+
+// Every <dir>/<collection>/<doc_id>.json of an ArtifactData out_dir tree, as [collection, docId, file], sorted.
+function treeFiles(dir) {
+  const out = [];
+  for (const collection of fs.readdirSync(dir).filter((n) => COLLECTION_RE.test(n)).sort()) {
+    const sub = path.join(dir, collection);
+    if (!fs.statSync(sub).isDirectory()) continue;
+    for (const name of fs.readdirSync(sub).filter((n) => n.endsWith('.json')).sort()) out.push([collection, name.slice(0, -5), path.join(sub, name)]);
+  }
+  return out;
+}
+
+function buildVersions(dir) {
+  const map = {};
+  for (const [collection, docId, file] of treeFiles(dir)) {
+    const version = versionOf(readJsonFile(file, 'versions'));
+    if (version === undefined) throw new Error(`versions: ${collection}/${docId}.json carries no version; the read's file format is not the one expected`);
+    map[`${collection}/${docId}`] = version;
+  }
+  return map;
+}
+
+function pageHash(file) {
+  let bytes;
+  try {
+    bytes = fs.readFileSync(file);
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'EISDIR') throw new UsageError('page-hash: file not found');
+    throw err;
+  }
+  return `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+// This machine's entry of meta/sync in an out_dir tree (null when none) and the document's version (null when absent).
+function syncEntry(dir) {
+  const file = path.join(dir, 'meta', 'sync.json');
+  if (!fs.existsSync(file)) return { entry: null, version: null };
+  const content = readJsonFile(file, 'meta-sync');
+  const { data } = docFromFile('meta', 'sync', content);
+  const entry = isObject(data) && isObject(data[machineId()]) ? data[machineId()] : null;
+  return { entry, version: versionOf(content) ?? null };
+}
+
+function metaSync(dir, cursor, full) {
+  const { entry, version } = syncEntry(dir);
+  const previous = entry && typeof entry.pushCursor === 'string' && ISO_DATE_RE.test(entry.pushCursor) ? entry.pushCursor : null;
+  if (cursor === undefined) return { machineId: machineId(), pushCursor: previous, version };
+  const now = new Date().toISOString();
+  return { [machineId()]: { pushedAt: now, pulledAt: now, pushCursor: full ? cursor : previous, pullCursor: now } };
+}
+
+const isDir = (p) => {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+
+// The verbs that take no project.
+function mainTool(verb, values) {
+  const allowed = { versions: ['in', 'out'], 'page-hash': ['file'], 'meta-sync': ['in', 'cursor', 'full'] }[verb];
+  const extra = Object.keys(values).find((k) => !allowed.includes(k));
+  if (extra) throw new UsageError(`${verb} does not take --${extra}`);
+  if (verb === 'page-hash') {
+    process.stdout.write(`${pageHash(path.resolve(values.file || path.join(__dirname, '..', 'dashboard', 'index.html')))}\n`);
+    return;
+  }
+  if (!values.in) throw new UsageError(`${verb} needs --in`);
+  const dir = path.resolve(values.in);
+  if (!isDir(dir)) throw new UsageError(`${verb}: --in is not a folder`);
+  if (verb === 'versions') {
+    if (!values.out) throw new UsageError('versions needs --out');
+    const map = buildVersions(dir);
+    writeAtomic(path.resolve(values.out), `${JSON.stringify(map, null, 2)}\n`);
+    process.stdout.write(`${Object.keys(map).length} versions\n`);
+    return;
+  }
+  if (values.full && values.cursor === undefined) throw new UsageError('--full needs --cursor');
+  if (values.cursor !== undefined && !(ISO_DATE_RE.test(values.cursor) && Number.isFinite(Date.parse(values.cursor)))) {
+    throw new UsageError('--cursor must be an ISO date-time');
+  }
+  process.stdout.write(`${JSON.stringify(metaSync(dir, values.cursor, values.full === true))}\n`);
 }
 
 function readPullInput(input) {
@@ -396,7 +511,9 @@ function readPullInput(input) {
 
 function main(argv) {
   const { verb, values } = parseArgs(argv);
+  if (['versions', 'page-hash', 'meta-sync'].includes(verb)) return mainTool(verb, values);
   if (verb !== 'push' && verb !== 'pull') throw new UsageError(`unknown verb ${verb}`);
+  for (const flag of ['file', 'cursor', 'full']) if (values[flag] !== undefined) throw new UsageError(`${verb} does not take --${flag}`);
   if (!values.project) throw new UsageError(`${verb} needs --project`);
   if (verb === 'push') {
     if (!values.out) throw new UsageError('push needs --out');
