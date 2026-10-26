@@ -413,3 +413,14 @@ test('Minor 6: a .rampart-publish copy is announced and cleaned with page-copy -
   assert.match(pub, /`\.rampart-publish`[^.]*tell the user/);
   assert.doesNotMatch(dashboard.text, /\brm -/);
 });
+
+test('Minor 2 and 3: db-layout states R25 and per-doc updatedAt; the changelog keeps the DB as the record', () => {
+  const layout = fs.readFileSync(path.join(SKILL_DIR, 'specs', 'db-layout.md'), 'utf8');
+  assert.doesNotMatch(layout, /always beats/);
+  assert.doesNotMatch(layout, /Every document is a JSON object with an `updatedAt`/);
+  assert.match(layout, /beats Rampart's own automated status changes \(`by` is `rampart`\) as the sync script rules/);
+  assert.match(layout, /`accepted_risk` and `false_positive` from the page always stand/);
+  const changelog = fs.readFileSync(path.join(ROOT, 'CHANGELOG.md'), 'utf8');
+  assert.doesNotMatch(changelog, /source for audits/);
+  assert.match(changelog, /--sync`[^\n]*record of truth/);
+});

@@ -4,7 +4,7 @@ The live dashboard is a private claude.ai artifact whose database holds the reco
 
 ## Collections
 
-Every document is a JSON object with an `updatedAt` ISO string; the last writer wins on it.
+Every document is a JSON object. The ones both the page and a sync can change (`projects`, `findings` and `jobs`) carry an `updatedAt` ISO string, and a conflict between them is settled on it as Record of truth below says; run summaries and executor registrations carry one as a record of when they were written; `meta/sync` and `meta/owner` have none.
 
 - `projects/<slug>`: the project's inventory mirror (`project.json`) without its private fields (`ownerAttestation`, `repo.paths`, `host.ssh` beyond its hostname, `live.url` query strings), plus its latest score. Systems live inside this document as `systems[]` (layers, last run per layer, next due dates, score); there is no `projects/<slug>/systems/<id>` collection. The store's `updated` stamp is sent as `updatedAt`. The page may write the settings `cloudAllowed`, `defaultExecutor`, `huntEffort` and `cadenceOverrides: {<systemId>: {<layer>: days}}`; a pull applies them to `project.json` when the doc's `updatedAt` is newer than the project's `updated`.
 - `findings/<id>`: one finding (`finding-schema.json`), keyed by its stable 12-hex id. A person's decision is the field `disposition: {status, reason, by, at} | null` on this document, where `status` is one of `open`, `fixed`, `false_positive`, `accepted_risk`. `dispositions.json` stays the local cache of the same decisions.
@@ -25,7 +25,7 @@ Every document is a JSON object with an `updatedAt` ISO string; the last writer 
 
 ## Record of truth
 
-When `config.json` holds a dashboard URL, the DB is master for `findings`, `runs` (summaries), dispositions, `jobs` and `projects`, and every local store is a cache plus the raw output of its own runs. Per document, the last writer wins on `updatedAt`, except that a disposition made in the page (`by` is a user id) always beats an automated status change (`by` is `rampart`).
+When `config.json` holds a dashboard URL, the DB is master for `findings`, `runs` (summaries), dispositions, `jobs` and `projects`, and every local store is a cache plus the raw output of its own runs. Per document the later `updatedAt` wins, except that a person's decision in the page (`by` is a user id) beats Rampart's own automated status changes (`by` is `rampart`) as the sync script rules: `accepted_risk` and `false_positive` from the page always stand, while a page `fixed` or `open` gives way to an automated change made after it (a later scan is new evidence).
 
 ## Jobs and confirmation
 

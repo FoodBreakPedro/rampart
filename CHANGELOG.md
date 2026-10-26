@@ -9,7 +9,7 @@ The live dashboard (Plan 3). Acceptance was run against a live published artifac
 - **Job buttons show cost and route before they queue anything.** A Run button queues a job with its estimated cost and the route that will run it (a local executor in this release). Only layers with an engine get a button (L1 for now).
 - **Settings live on the page.** The owner sets them in the dashboard and the executors read them from the database.
 - **Findings export as JSONL or SARIF.** SARIF 2.1.0 has one result per open finding, a stable fingerprint, no evidence text, and the plugin version as the tool version. The files are named `.jsonl.txt` and `.sarif.json` to fit the downloads allowlist.
-- **`/rampart dashboard --sync` mirrors the local store into the dashboard database.** It writes versioned documents and leaves the local store as the source for audits.
+- **`/rampart dashboard --sync` mirrors the local store into the dashboard database.** It pulls the page's decisions, settings and jobs first, then writes versioned documents; once published, the database is the record of truth and the local store a cache plus each run's raw output.
 - **`/rampart watch` runs queued jobs.** It claims a job with a version-pinned write, so two executors never run one job. Use `/loop /rampart watch` to keep it running.
 - **`/rampart schedule` sets up a weekly sync and the overdue L1 audits.**
 - **Two hooks.** SessionStart adds a one-line note when a tool a stored project needs is missing, from a doctor report cached per day, and is silent otherwise. After a `git push` from a stored project's repo folder, the post-push hook suggests `/rampart audit L2 --project <slug>` once per session, but only once L2 is available (the hunt engine); on this release alone it stays silent.
