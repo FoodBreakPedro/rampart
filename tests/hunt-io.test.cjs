@@ -60,10 +60,10 @@ const keyOf = (unit, classId) => `${fileKey(unit)}__${classId}`;
 function setup({ units = ['app/api/users', 'app/api/export'], hunters = null, layer = LAYER } = {}) {
   store.writeProject(projectObject());
   const run = store.createRun(SLUG, { job: 'audit', layers: [layer], systems: [SYS], executor: 'local' });
-  const planned = hunters || units.flatMap((u) => ['authz-scoping', 'bulk-export'].map((c) => [u, c]));
+  const planned = hunters || units.map((u) => (typeof u === 'string' ? u : u.id)).flatMap((u) => ['authz-scoping', 'bulk-export'].map((c) => [u, c]));
   const doc = {
     layer, effort: 'high', system: SYS, repoRoot: TARGET,
-    units: units.map((id) => ({ id, kind: 'dir', files: 1, reachable: true })),
+    units: units.map((u) => (typeof u === 'string' ? { id: u, kind: 'dir', files: 1, reachable: true } : { kind: 'dir', files: 1, reachable: true, ...u })),
     classes: CLASSES,
     hunters: planned.map(([unit, classId]) => ({ key: keyOf(unit, classId), system: SYS, unit, classId, pack: 'web-nextjs', packVersion: '1.0.0' })),
   };
@@ -319,6 +319,48 @@ test('closeMissing closes a vanished finding in a covered unit and leaves one in
   assert.equal(byId['b'.repeat(12)], 'open');
 });
 
+// A stored open hunt finding of the given rule at the given path, last seen in an earlier run.
+const OLD_RUN = '2026-10-22T00-00-00Z';
+const storedHunt = (id, ruleId, p, over = {}) => ({
+  project: SLUG, system: SYS, layer: LAYER, source: 'rampart-hunter', class: 'verified', pack: 'web-nextjs@1.0.0', severity: 'MEDIUM', confidence: 'HIGH', cwe: [],
+  title: 't', evidence: 'e', exploitScenario: 's', preconditions: 'p', recommendation: 'r', verification: { verifiers: 1, confirmed: 1, run: OLD_RUN },
+  status: 'open', externalIds: { claudeSecurityPluginFindingId: null, cve: null }, id, ruleId, location: { path: p, symbol: 'x' }, ...over,
+});
+const statusById = () => Object.fromEntries(store.readFindings(SLUG).map((f) => [f.id, f.status]));
+
+test('R46: a low-effort L3 run closes only findings of the classes it hunted in a covered unit', () => {
+  const s = setup({ units: ['app/api/users'], hunters: [['app/api/users', 'authz-scoping']] });
+  store.upsertFindings(SLUG, [
+    storedHunt('a'.repeat(12), 'web-nextjs/authz-scoping', 'app/api/users/gone.ts'),
+    storedHunt('b'.repeat(12), 'web-nextjs/ssrf', 'app/api/users/route.ts'),
+    storedHunt('c'.repeat(12), 'rampart/prompt-injection-attempt', 'app/api/users/route.ts', { class: 'hardening', severity: 'LOW' }),
+  ], OLD_RUN);
+  putCandidates(s, 'app/api/users', 'authz-scoping', 'empty');
+  const res = hio.assemble(SLUG, s.runId);
+  assert.deepEqual(statusById(), { ['a'.repeat(12)]: 'fixed', ['b'.repeat(12)]: 'open', ['c'.repeat(12)]: 'fixed' });
+  assert.equal(res.counts.closed, 2);
+});
+
+test('R46: an L2 run closes only findings in the files it hunted', () => {
+  const s = setup({ layer: 'L2', units: [{ id: 'lib', paths: ['lib/auth.ts'] }], hunters: [['lib', 'authz-scoping']] });
+  store.upsertFindings(SLUG, [
+    storedHunt('a'.repeat(12), 'web-nextjs/authz-scoping', 'lib/auth.ts', { layer: 'L2' }),
+    storedHunt('b'.repeat(12), 'web-nextjs/authz-scoping', 'lib/db.ts', { layer: 'L2' }),
+  ], OLD_RUN);
+  putCandidates(s, 'lib', 'authz-scoping', 'empty');
+  const res = hio.assemble(SLUG, s.runId);
+  assert.deepEqual(statusById(), { ['a'.repeat(12)]: 'fixed', ['b'.repeat(12)]: 'open' });
+  assert.equal(res.counts.closed, 1);
+});
+
+test('R46: an L2 unit with no recorded paths (an older units.json) closes nothing', () => {
+  const s = setup({ layer: 'L2', units: ['lib'], hunters: [['lib', 'authz-scoping']] });
+  store.upsertFindings(SLUG, [storedHunt('a'.repeat(12), 'web-nextjs/authz-scoping', 'lib/auth.ts', { layer: 'L2' })], OLD_RUN);
+  putCandidates(s, 'lib', 'authz-scoping', 'empty');
+  assert.equal(hio.assemble(SLUG, s.runId).counts.closed, 0);
+  assert.equal(statusById()['a'.repeat(12)], 'open');
+});
+
 test('assemble writes findings.json with the ids it upserted and the ids it closed', () => {
   const s = setup({ units: ['app/api/users'], hunters: [['app/api/users', 'authz-scoping']] });
   const base = { project: SLUG, system: SYS, layer: LAYER, source: 'rampart-hunter', class: 'verified', pack: 'web-nextjs@1.0.0', severity: 'MEDIUM', confidence: 'HIGH', cwe: [], title: 't', evidence: 'e', exploitScenario: 's', preconditions: 'p', recommendation: 'r', verification: { verifiers: 1, confirmed: 1, run: '2026-10-22T00-00-00Z' }, status: 'open', externalIds: { claudeSecurityPluginFindingId: null, cve: null } };
@@ -492,6 +534,9 @@ test('init at L2 on an empty diff reports empty and leaves no run directory', ()
     const r2 = cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L2', '--effort', 'medium', '--repo', repo, '--base', 'main');
     assert.equal(r2.status, 0, r2.stderr);
     assert.deepEqual(JSON.parse(r2.stdout).args.units.map((u) => [u.unit, u.paths]), [['app/api/y', ['app/api/y/route.ts']]]);
+    // R46: an L2 run keeps each unit's hunted files in units.json, so assemble closes findings only in those files.
+    const l2doc = JSON.parse(fs.readFileSync(path.join(JSON.parse(r2.stdout).runDir, 'units.json'), 'utf8'));
+    assert.deepEqual(l2doc.units.map((u) => [u.id, u.paths]), [['app/api/y', ['app/api/y/route.ts']]]);
     // R32: a deleted file is not among a unit's paths; the changed files that remain are.
     fs.mkdirSync(path.join(repo, 'app', 'api', 'z'), { recursive: true });
     fs.writeFileSync(path.join(repo, 'app', 'api', 'z', 'a.ts'), 'a\n');

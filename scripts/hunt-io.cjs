@@ -507,7 +507,9 @@ function initRun(slug, { system: systemId, layer, effort = 'medium', repo: repoO
   const hunters = infra
     ? [{ key: infraKey(systemId), system: systemId, unit: null, units: units.map((u) => u.id), classId: null, pack: null, packVersion: null }]
     : units.flatMap((u) => classes.map((c) => ({ key: hunterKey(u.id, c.classId), system: systemId, unit: u.id, classId: c.classId, pack: c.pack, packVersion: c.packVersion })));
-  const unitsDoc = units.map(({ paths, ...u }) => u);
+  // An L2 unit keeps the files its hunters read: assemble closes a finding only in those files (an unchanged file of the same
+  // directory was not looked at). L3 units are whole directories, so their file lists stay out of units.json.
+  const unitsDoc = units.map(({ paths, ...u }) => (layer === 'L2' && Array.isArray(paths) ? { ...u, paths } : u));
   writeAtomic(path.join(dir, 'units.json'), toJson({ layer, effort, system: systemId, repoRoot, units: unitsDoc, classes, hunters }));
   return {
     runId: id,
@@ -598,7 +600,14 @@ function assemble(slug, runId) {
   let closedIds = [];
   if (covered.length) {
     const allCovered = covered.length === units.length && closable.length === units.length;
-    const inCovered = (f) => f.location && typeof f.location.path === 'string' && closable.some((u) => coverage.unitContains(u.id, f.location.path));
+    // A code finding closes only where this run looked for it: a closable unit holding its file (for L2, a file the unit's hunters
+    // read) whose returned hunters include the finding's class. A prompt-injection finding belongs to no class: any returned hunter
+    // of the unit read that code.
+    const returned = (doc.hunters || []).filter((h) => hunterReturned(dir, h.key));
+    const lookedFor = (f, u) => returned.some((h) => h.unit === u.id && (f.ruleId === INJECTION_RULE || f.ruleId === `${h.pack}/${h.classId}`));
+    const inFiles = (f, u) => doc.layer !== 'L2' || (Array.isArray(u.paths) && u.paths.includes(f.location.path));
+    const inCovered = (f) => f.location && typeof f.location.path === 'string'
+      && closable.some((u) => coverage.unitContains(u.id, f.location.path) && inFiles(f, u) && lookedFor(f, u));
     const res = store.closeMissing(slug, {
       system: doc.system,
       source: infra ? 'infra-probe' : 'rampart-hunter',
