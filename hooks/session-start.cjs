@@ -70,7 +70,8 @@ function refreshAndWait() {
   }
   if (!running) {
     fs.writeFileSync(lockFile(), new Date().toISOString());
-    spawn(process.execPath, [__filename, '--refresh'], { detached: true, stdio: 'ignore', env: process.env }).unref();
+    // The listener keeps an async spawn error from ending this hook with exit 1 and a stack trace.
+    spawn(process.execPath, [__filename, '--refresh'], { detached: true, stdio: 'ignore', env: process.env }).on('error', () => {}).unref();
   }
   for (let waited = 0; waited < CACHE_WAIT_MS; waited += POLL_MS) {
     sleep(POLL_MS);
@@ -80,17 +81,21 @@ function refreshAndWait() {
   return null;
 }
 
-// --refresh: run the doctor in this (detached) process and cache its report.
+// --refresh: run the doctor in this (detached) process and cache its report. The lock goes whatever happens, so a refresh
+// that failed does not hold up the next one for REFRESH_LOCK_MS.
 function refresh() {
-  const { diagnose } = require('../scripts/doctor.cjs');
-  const { writeAtomic } = require('../scripts/lib/atomic.cjs');
-  const report = diagnose();
-  fs.mkdirSync(cacheDir(), { recursive: true });
-  writeAtomic(cacheFile(), `${JSON.stringify({ day: today(), at: new Date().toISOString(), report })}\n`);
   try {
-    fs.unlinkSync(lockFile());
-  } catch {
-    // already gone
+    const { diagnose } = require('../scripts/doctor.cjs');
+    const { writeAtomic } = require('../scripts/lib/atomic.cjs');
+    const report = diagnose();
+    fs.mkdirSync(cacheDir(), { recursive: true });
+    writeAtomic(cacheFile(), `${JSON.stringify({ day: today(), at: new Date().toISOString(), report })}\n`);
+  } finally {
+    try {
+      fs.unlinkSync(lockFile());
+    } catch {
+      // already gone
+    }
   }
 }
 

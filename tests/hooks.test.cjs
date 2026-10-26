@@ -17,13 +17,21 @@ const today = () => new Date().toISOString().slice(0, 10);
 let home;
 let repo;
 let emptyBin;
+let recipes;
+let l2Recipe;
+// An audit recipe whose L2 section has steps (as it will once the hunt engine lands), and one where L2 has not arrived.
+const AUDIT_WITH_L2 = '# Job: audit\n\n## L1\n\n1. Run the checks.\n\n## L2\n\n1. Hunt.\n2. Verify.\n\n## L3\n\nArrives with the hunt engine (Plan 2).\n';
+const AUDIT_NO_L2 = '# Job: audit\n\n## L1\n\n1. Run the checks.\n\n## L2\n\nArrives with the hunt engine (Plan 2).\n\n## L3\n\n1. Hunt.\n';
 test.beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'rampart hooks '));
   repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'rampart repo ')));
   emptyBin = fs.mkdtempSync(path.join(os.tmpdir(), 'rampart bin '));
+  recipes = fs.mkdtempSync(path.join(os.tmpdir(), 'rampart recipes '));
+  l2Recipe = path.join(recipes, 'audit-with-l2.md');
+  fs.writeFileSync(l2Recipe, AUDIT_WITH_L2);
 });
 test.afterEach(() => {
-  for (const dir of [home, repo, emptyBin]) fs.rmSync(dir, { recursive: true, force: true });
+  for (const dir of [home, repo, emptyBin, recipes]) fs.rmSync(dir, { recursive: true, force: true });
 });
 
 // A stored project as project.json, written straight to the store (the hooks only read it).
@@ -59,7 +67,9 @@ function writeCache(day, report) {
 function runHook(file, event, env = {}) {
   const input = typeof event === 'string' ? event : JSON.stringify(event);
   const started = Date.now();
-  const r = spawnSync(process.execPath, [file], { input, encoding: 'utf8', env: { ...process.env, RAMPART_HOME: home, ...env }, timeout: 10000 });
+  // The push hook reads the audit recipe to see whether L2 is available; by default it is shown one where it is.
+  const base = { ...process.env, RAMPART_HOME: home, RAMPART_AUDIT_RECIPE: l2Recipe };
+  const r = spawnSync(process.execPath, [file], { input, encoding: 'utf8', env: { ...base, ...env }, timeout: 10000 });
   return { ...r, ms: Date.now() - started };
 }
 
@@ -260,4 +270,44 @@ test('post-push: never fails the session, whatever it is given', () => {
   assert.equal(bad.status, 0);
   assert.equal(bad.stdout, '');
   assert.equal(bad.stderr, '');
+});
+
+test('R45 post-push: silent while L2 has not arrived (this plugin\'s own audit.md), and the once is not used up', () => {
+  storeProject(SLUG, [repoSystem({ [machineId()]: repo })]);
+  const own = fs.readFileSync(path.join(ROOT, 'skills', 'rampart', 'jobs', 'audit.md'), 'utf8');
+  assert.match(own, /## L2\r?\n\r?\nArrives with the hunt engine/, 'premise: on this branch L2 has not arrived');
+  const r = runHook(POST_PUSH, pushEvent(), { RAMPART_AUDIT_RECIPE: '' }); // unset: the plugin's own recipe
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '');
+  assert.ok(!fs.existsSync(path.join(home, 'cache', 'post-push.json')), 'nothing recorded');
+  const noL2 = path.join(recipes, 'audit-no-l2.md');
+  fs.writeFileSync(noL2, AUDIT_NO_L2);
+  assert.equal(runHook(POST_PUSH, pushEvent(), { RAMPART_AUDIT_RECIPE: noL2 }).stdout, '', 'L3 steps do not count for L2');
+  assert.equal(runHook(POST_PUSH, pushEvent(), { RAMPART_AUDIT_RECIPE: path.join(recipes, 'missing.md') }).stdout, '', 'no recipe, no L2');
+  assert.equal(runHook(POST_PUSH, pushEvent()).stdout, pushContext(SLUG), 'once L2 has steps, the same session hears it');
+});
+
+test('R45 post-push: the event cannot choose which recipe is read', () => {
+  storeProject(SLUG, [repoSystem({ [machineId()]: repo })]);
+  const event = pushEvent({ RAMPART_AUDIT_RECIPE: l2Recipe, audit_recipe: l2Recipe, tool_input: { command: 'git push', RAMPART_AUDIT_RECIPE: l2Recipe } });
+  assert.equal(runHook(POST_PUSH, event, { RAMPART_AUDIT_RECIPE: '' }).stdout, '');
+});
+
+test('minor 2 session-start --refresh: a refresh that throws still removes its lock, and exits 0 silently', () => {
+  const cache = path.join(home, 'cache');
+  fs.mkdirSync(path.join(cache, 'doctor.json'), { recursive: true }); // a directory where the report goes: the write throws
+  fs.writeFileSync(path.join(cache, 'doctor.refresh'), new Date().toISOString());
+  const r = spawnSync(process.execPath, [SESSION_START, '--refresh'], {
+    encoding: 'utf8', env: { ...process.env, RAMPART_HOME: home, PATH: emptyBin }, timeout: 10000,
+  });
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, '');
+  assert.ok(!fs.existsSync(path.join(cache, 'doctor.refresh')), 'the lock is gone, so the next session can refresh');
+});
+
+test('minor 1 session-start: the detached refresh has an error listener before it is let go', () => {
+  // An async spawn error with no listener would end the hook with exit 1 and a stack trace.
+  const src = fs.readFileSync(SESSION_START, 'utf8');
+  assert.match(src, /spawn\([^;]*\)\s*\.on\('error', \(\) => \{\}\)\s*\.unref\(\)/);
 });

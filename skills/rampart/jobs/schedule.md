@@ -27,7 +27,7 @@
       0 9 * * 1 claude -p "/rampart schedule --run" --permission-mode auto
       ```
 
-      Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/store.cjs" dashboard-set --schedule-id crontab:rampart-weekly`, so `--off` can remind them to remove it.
+      Run `node "${CLAUDE_PLUGIN_ROOT}/scripts/store.cjs" dashboard-set --schedule-id crontab:rampart-weekly`, so `--off` can remind them to remove it. `crontab:rampart-weekly` is recorded even before the person installs the line, so a later `--weekly` reports it as already scheduled until `--off` clears it.
 
    A scheduler that refuses: relay its reason in one line and try the next. When `dashboard-set` refuses the id, say the job was created with that id and that `--off` cannot find it by itself.
 4. **Say** in one line what was scheduled, by which scheduler, and when it first runs.

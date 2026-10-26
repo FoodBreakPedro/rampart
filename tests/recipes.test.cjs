@@ -362,10 +362,17 @@ test('schedule: the run syncs the dashboard, then audits L1 only on systems whos
 test('schedule: the front desk routes to it, it is no longer "not in this version", and its tools are allowed', () => {
   const skill = fs.readFileSync(path.join(SKILL_DIR, 'SKILL.md'), 'utf8');
   assert.match(skill, /\| schedule[^|]*\| schedule \| \[schedule\]\(\$\{CLAUDE_SKILL_DIR\}\/jobs\/schedule\.md\) \|/);
+  const description = /^description: "([^"\n]*)"/m.exec(skill)[1];
+  assert.match(description, /Available now:(?:(?!L2, L3).)*\bschedule \(a weekly dashboard sync and the overdue L1 audits; --off removes it\)/, 'R44: the description names schedule');
   const notYet = /These are not in this version:[^\n]*/.exec(skill)[0];
   assert.doesNotMatch(notYet, /schedule/);
   const head = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skill)[1];
   for (const tool of ['mcp__scheduled-tasks__create_scheduled_task', 'mcp__scheduled-tasks__delete_scheduled_task', 'CronCreate', 'CronDelete']) {
     assert.match(head, new RegExp(`^\\s*-\\s*${escape(tool)}\\s*$`, 'm'), `allowed-tools has ${tool}`);
   }
+});
+
+test('minor 6: the cron-line id is recorded before the person installs the line, and --weekly then reports it scheduled', () => {
+  const w = section(schedule.text, 'Weekly');
+  assert.match(w, /`crontab:rampart-weekly` is recorded even before[^.]*installs? the line[^.]*already scheduled[^.]*`--off`/);
 });

@@ -4,6 +4,9 @@
 //   push     tool_input.command matches /\bgit\s+push\b/ (the matcher sees only the tool name, so the command is checked here).
 //   project  the event's cwd is, or is inside, a repo.paths entry for this machine (machineId) of a stored project's system,
 //            compared after resolving symlinks. The first such project in slug order is named. Nothing else is looked at.
+//   L2       only while L2 is available on this install: the L2 section of the plugin's own audit recipe
+//            (skills/rampart/jobs/audit.md, found from this file, never from the event; RAMPART_AUDIT_RECIPE replaces it for
+//            tests) has steps, not only "Arrives with the hunt engine". Otherwise silent, and the once is not used up.
 //   once     sessions already told are kept in <rampartHome>/cache/post-push.json as {sessions: {<session_id>: <iso>}},
 //            entries older than KEEP_DAYS dropped. A push the hook stays silent about uses nothing up. An event with no
 //            session_id is never told (once could not be kept), and neither is one whose telling could not be recorded.
@@ -16,8 +19,23 @@ const PUSH_RE = /\bgit\s+push\b/;
 const KEEP_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SESSION_ID_MAX = 200;
+const AUDIT_RECIPE = path.join(__dirname, '..', 'skills', 'rampart', 'jobs', 'audit.md');
+const NOT_YET_RE = /^Arrives with the hunt engine\b/;
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+
+// True when the audit recipe's L2 section has something besides the "Arrives with the hunt engine" note.
+function l2Available() {
+  let text;
+  try {
+    text = fs.readFileSync(process.env.RAMPART_AUDIT_RECIPE || AUDIT_RECIPE, 'utf8');
+  } catch {
+    return false;
+  }
+  const section = /(?:^|\n)## L2[ \t]*\r?\n([\s\S]*?)(?=\r?\n## |$)/.exec(text);
+  if (!section) return false;
+  return section[1].split(/\r?\n/).map((l) => l.trim()).some((l) => l !== '' && !NOT_YET_RE.test(l));
+}
 
 function real(p) {
   try {
@@ -87,6 +105,7 @@ function message(event) {
   const sessionId = event.session_id;
   if (typeof sessionId !== 'string' || sessionId === '' || sessionId.length > SESSION_ID_MAX) return null;
   if (typeof event.cwd !== 'string' || event.cwd === '') return null;
+  if (!l2Available()) return null;
   const slug = projectFor(real(event.cwd));
   if (slug === null || !firstTime(sessionId)) return null;
   return `Rampart: this push went to a repository of the Rampart project ${slug}. Once, briefly, suggest to the user: /rampart audit L2 --project ${slug} reviews the pushed changes.`;
