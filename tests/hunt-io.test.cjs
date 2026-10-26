@@ -860,3 +860,23 @@ test('reverify: a missing or unusable vote leaves the finding unchanged; a findi
   assert.equal(run.status, 'failed');
   assert.match(run.reason, /no verifier/);
 });
+
+test('INFRA init prints the prober dispatch fields: the host name only (never the ssh user), observations and output paths', () => {
+  const p = projectObject();
+  p.systems.push({ id: 'edge box', type: 'docker-host', name: 'Edge', packs: ['docker-host'], host: { ssh: 'ssh://<ssh-user>@host.example.test:2222' }, executor: 'local', layers: { INFRA: { cadenceDays: 30 } } });
+  p.systems.push({ id: 'alias', type: 'docker-host', name: 'Alias', packs: ['docker-host'], host: { ssh: 'homebox' }, executor: 'local', layers: { INFRA: { cadenceDays: 30 } } });
+  store.writeProject(p);
+  const out = JSON.parse(cli('init', '--project', SLUG, '--system', 'db', '--layer', 'INFRA').stdout);
+  assert.deepEqual(out.prober, {
+    system: { id: 'db', type: 'supabase', host: '192.0.2.10' },
+    observationsPath: path.join(out.runDir, 'observations.json'),
+    outputPath: path.join(out.runDir, 'candidates', 'db__infra-prober.json'),
+  });
+  assert.ok(!JSON.stringify(out).includes('<ssh-user>'), 'the ssh user is never printed');
+  const edge = JSON.parse(cli('init', '--project', SLUG, '--system', 'edge box', '--layer', 'INFRA').stdout);
+  assert.equal(edge.prober.system.host, 'host.example.test');
+  assert.equal(edge.prober.outputPath, path.join(edge.runDir, 'candidates', 'edge+box__infra-prober.json'));
+  assert.equal(JSON.parse(cli('init', '--project', SLUG, '--system', 'alias', '--layer', 'INFRA').stdout).prober.system.host, 'homebox');
+  const l3 = JSON.parse(cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L3', '--repo', TARGET).stdout);
+  assert.ok(!('prober' in l3));
+});

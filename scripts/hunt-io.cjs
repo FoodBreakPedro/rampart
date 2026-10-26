@@ -413,6 +413,21 @@ function revisionOf(repo) {
 const baselineOf = (packs) =>
   packs.map((p) => [`${p.name}@${p.version} Baseline:`, p.baseline, '', `${p.name}@${p.version} probes:`, ...(p.probes || []).map((pr) => `- ${pr.id}: ${pr.expect}`)].join('\n')).join('\n\n');
 
+// The host name of a system for the INFRA prober: the ssh target without its user, scheme or port, else the live URL's host,
+// else the system id. The ssh user never reaches an agent.
+function hostNameOf(system) {
+  const ssh = system.host && typeof system.host.ssh === 'string' ? system.host.ssh.trim() : '';
+  if (ssh) {
+    const bare = ssh.replace(/^ssh:\/\//i, '').split('/')[0];
+    const host = bare.slice(bare.lastIndexOf('@') + 1).replace(/^\[([^\]]+)\](:\d+)?$/, '$1').replace(/:\d+$/, '');
+    if (host) return host;
+  }
+  try {
+    if (system.live && system.live.url) return new URL(system.live.url).hostname;
+  } catch { /* not a URL: fall through */ }
+  return system.id;
+}
+
 // The units and classes an effort leaves: low = the LOW classes on reachable units, medium = every class on reachable units,
 // high = every class on every unit.
 function byEffort(units, classes, effort) {
@@ -497,6 +512,13 @@ function initRun(slug, { system: systemId, layer, effort = 'medium', repo: repoO
   return {
     runId: id,
     runDir: dir,
+    ...(infra ? {
+      prober: {
+        system: { id: systemId, type: system.type, host: hostNameOf(system) },
+        observationsPath: path.join(dir, 'observations.json'),
+        outputPath: path.join(dir, 'candidates', `${infraKey(systemId)}.json`),
+      },
+    } : {}),
     args: {
       project: slug,
       runId: id,
