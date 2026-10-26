@@ -125,3 +125,14 @@ Task 8 ⚠️ → Task 11: ArtifactData query shape, out_dir wrapper and get_ses
 Task 8: fix round 1/5 (5 addressed, 0 open — schedule every pass (R10), verify/audit target texts, start-write recovery, strict if_version test; commits 388ad95..87ab011)
 Task 8: minor (deferred): step 4.7/4.10 recovery get does not say which fields to read (terse, implied)
 Task 8: complete (commits d080181..87ab011, review clean)
+Task 9: dispatched (BASE 72dd2d5, Opus implementer); Ruling R39: the publish recipe asks the person (AskUserQuestion) before the FIRST publish; republish of an existing URL does not ask — publishing is outward-facing — cost: one extra question once.
+Task 9: review: 3 Important (publish source outside cwd/scratchpad; republish lacks mcp fallback; view-level check cannot fail — plan-mandated by my dispatch note) + minors 1,2,3,5 folded into fix round 1
+Ruling R40: the viewer check is a view-level `list projects` that must return the same ids as the owner-level list (empty = failed check), replacing my dispatch note's `list jobs` — a refused read at a lowered level reads as empty, so the old check could not fail — cost: none.
+Ruling R41: the recipe publishes a copy of the page written by a script verb into the session's scratchpad (or <cwd>/.rampart-publish/ when no scratchpad); the hash comes from the plugin's own file — the Artifact tool accepts sources only under cwd/scratchpad — cost: one extra script call.
+Ruling R42: when a publish was refused over `mcp`, record it (`dashboard-set` field) and every republish omits mcp — cost: a schema field.
+Task 9: minor (deferred → Task 11): confirm `Skill(artifact-design)` allowed-tools rule works at runtime
+Task 9: fix round 1/5 (7 addressed, 0 open — page-copy publish (R41), mcp flag on republish (R42), real viewer check (R40), project source, byte-capped batches, limit, flag default; commits 5c6fb64..62ead13)
+Task 9: minor (deferred → final review): `.rampart-publish/` fallback in the user's cwd is neither cleaned up nor disclosed (only when no scratchpad)
+Task 9: minor (deferred): R40 "empty is failed" wording edge when the owner list is legitimately empty
+Task 9: minor (deferred): republish with mcp from a null state does not record mcp true (harmless)
+Task 9: complete (commits 72dd2d5..62ead13, review clean)
