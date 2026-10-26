@@ -27,6 +27,9 @@
 //        beside its fields; a file with no integer version fails (exit 1, naming it) rather than leaving a doc unpinned.
 //      node scripts/sync-plan.cjs page-hash [--file <page.html>]
 //        sha256:<hex> of the live page (default the plugin's dashboard/index.html), for config.json dashboard.pageHash.
+//      node scripts/sync-plan.cjs page-copy --to <dir>
+//        copies the plugin's page to <dir>/rampart-dashboard/index.html and prints {hash, file}: the Artifact tool publishes
+//        only files under the session's working directory or scratchpad, and an installed plugin is under neither.
 //      node scripts/sync-plan.cjs meta-sync --in <dir> [--cursor <iso> [--full]]
 //        without --cursor: {machineId, pushCursor, version} from <dir>/meta/sync.json (null when none). With it: the data
 //        for meta/sync, this machine's entry only {pushedAt, pulledAt, pushCursor, pullCursor}; pushCursor moves to --cursor
@@ -43,6 +46,7 @@ const { redact } = require('./lib/redact.cjs');
 const { writeAtomic } = require('./lib/atomic.cjs');
 
 const BATCH_SIZE = 50;
+const BATCH_MAX_BYTES = 900000; // doc file bytes per batch, so the batch body (limit 1 MiB) has headroom
 const DOC_MAX_BYTES = 256 * 1024; // the DB's cap on one document
 const DOC_MARGIN_BYTES = 4096; // headroom for what the DB wraps around it
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(?:T|$)/;
@@ -131,7 +135,11 @@ function runDoc(slug, run) {
   return { collection: 'runs', id: run.runId, data: redactDeep(data) };
 }
 
-// The ArtifactData batch entries for the docs, in batches of BATCH_SIZE.
+// The bytes a doc's file holds (writePlan writes the body pretty-printed, with a final newline).
+const fileBytes = (data) => Buffer.byteLength(`${JSON.stringify(data, null, 2)}\n`);
+
+// The ArtifactData batch entries for the docs, in batches of at most BATCH_SIZE entries and BATCH_MAX_BYTES of doc files
+// (a doc larger than that alone still gets a batch of its own).
 function toBatches(docs, versions) {
   const entries = docs.map((d) => {
     const version = versions[`${d.collection}/${d.id}`];
@@ -140,7 +148,19 @@ function toBatches(docs, versions) {
     return entry;
   });
   const batches = [];
-  for (let i = 0; i < entries.length; i += BATCH_SIZE) batches.push(entries.slice(i, i + BATCH_SIZE));
+  let current = [];
+  let bytes = 0;
+  for (const entry of entries) {
+    const size = fileBytes(entry.data);
+    if (current.length && (current.length === BATCH_SIZE || bytes + size > BATCH_MAX_BYTES)) {
+      batches.push(current);
+      current = [];
+      bytes = 0;
+    }
+    current.push(entry);
+    bytes += size;
+  }
+  if (current.length) batches.push(current);
   return batches;
 }
 
@@ -276,6 +296,7 @@ const USAGE = [
   '       node scripts/sync-plan.cjs pull --project <slug> --in <file.json | dir>',
   '       node scripts/sync-plan.cjs versions --in <dir> --out <file.json>',
   '       node scripts/sync-plan.cjs page-hash [--file <page.html>]',
+  '       node scripts/sync-plan.cjs page-copy --to <dir>',
   '       node scripts/sync-plan.cjs meta-sync --in <dir> [--cursor <iso> [--full]]',
 ].join('\n');
 
@@ -286,7 +307,7 @@ function parseArgs(argv) {
       args: argv,
       options: {
         project: { type: 'string' }, since: { type: 'string' }, versions: { type: 'string' }, out: { type: 'string' }, in: { type: 'string' },
-        file: { type: 'string' }, cursor: { type: 'string' }, full: { type: 'boolean' },
+        file: { type: 'string' }, cursor: { type: 'string' }, full: { type: 'boolean' }, to: { type: 'string' },
       },
       allowPositionals: true,
       strict: true,
@@ -296,7 +317,7 @@ function parseArgs(argv) {
   }
   const { values, positionals } = parsed;
   for (const [name, value] of Object.entries(values)) if (value === '') throw new UsageError(`--${name} needs a value`);
-  if (positionals.length !== 1) throw new UsageError('missing verb (push, pull, versions, page-hash or meta-sync)');
+  if (positionals.length !== 1) throw new UsageError('missing verb (push, pull, versions, page-hash, page-copy or meta-sync)');
   return { verb: positionals[0], values };
 }
 
@@ -459,13 +480,30 @@ const isDir = (p) => {
   }
 };
 
+const PAGE = path.join(__dirname, '..', 'dashboard', 'index.html');
+const TOOL_FLAGS = { versions: ['in', 'out'], 'page-hash': ['file'], 'page-copy': ['to'], 'meta-sync': ['in', 'cursor', 'full'] };
+
+// Copies the plugin's page into <to>/rampart-dashboard/index.html; returns {hash, file}.
+function pageCopy(to) {
+  if (fs.existsSync(to) && !isDir(to)) throw new UsageError('page-copy: --to is not a folder');
+  const bytes = fs.readFileSync(PAGE);
+  const file = path.join(to, 'rampart-dashboard', 'index.html');
+  writeAtomic(file, bytes);
+  return { hash: `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`, file };
+}
+
 // The verbs that take no project.
 function mainTool(verb, values) {
-  const allowed = { versions: ['in', 'out'], 'page-hash': ['file'], 'meta-sync': ['in', 'cursor', 'full'] }[verb];
+  const allowed = TOOL_FLAGS[verb] || [];
   const extra = Object.keys(values).find((k) => !allowed.includes(k));
   if (extra) throw new UsageError(`${verb} does not take --${extra}`);
+  if (verb === 'page-copy') {
+    if (!values.to) throw new UsageError('page-copy needs --to');
+    process.stdout.write(`${JSON.stringify(pageCopy(path.resolve(values.to)))}\n`);
+    return;
+  }
   if (verb === 'page-hash') {
-    process.stdout.write(`${pageHash(path.resolve(values.file || path.join(__dirname, '..', 'dashboard', 'index.html')))}\n`);
+    process.stdout.write(`${pageHash(path.resolve(values.file || PAGE))}\n`);
     return;
   }
   if (!values.in) throw new UsageError(`${verb} needs --in`);
@@ -511,9 +549,9 @@ function readPullInput(input) {
 
 function main(argv) {
   const { verb, values } = parseArgs(argv);
-  if (['versions', 'page-hash', 'meta-sync'].includes(verb)) return mainTool(verb, values);
+  if (Object.hasOwn(TOOL_FLAGS, verb)) return mainTool(verb, values);
   if (verb !== 'push' && verb !== 'pull') throw new UsageError(`unknown verb ${verb}`);
-  for (const flag of ['file', 'cursor', 'full']) if (values[flag] !== undefined) throw new UsageError(`${verb} does not take --${flag}`);
+  for (const flag of ['file', 'cursor', 'full', 'to']) if (values[flag] !== undefined) throw new UsageError(`${verb} does not take --${flag}`);
   if (!values.project) throw new UsageError(`${verb} needs --project`);
   if (verb === 'push') {
     if (!values.out) throw new UsageError('push needs --out');

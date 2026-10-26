@@ -801,3 +801,46 @@ test('T9 meta-sync: reads this machine\'s push cursor from meta/sync and prints 
   assert.equal(cli('meta-sync', '--in', empty, '--full').status, 2, '--full needs --cursor');
   assert.equal(cli('meta-sync').status, 2);
 });
+
+// ---- Task 9 fix round 1 ------------------------------------------------------------------------
+
+test('R41 page-copy: copies the plugin page into --to <dir> and prints {hash, file}, the hash being the plugin page\'s', () => {
+  const to = path.join(home, 'scratch dir');
+  const r = cli('page-copy', '--to', to);
+  assert.equal(r.status, 0, r.stderr);
+  const { hash, file } = JSON.parse(r.stdout);
+  const plugin = path.join(__dirname, '..', 'dashboard', 'index.html');
+  assert.equal(file, path.join(to, 'rampart-dashboard', 'index.html'));
+  assert.ok(fs.readFileSync(file).equals(fs.readFileSync(plugin)), 'an exact copy');
+  assert.equal(hash, cli('page-hash').stdout.trim());
+  fs.writeFileSync(file, 'stale');
+  assert.equal(cli('page-copy', '--to', to).status, 0, 'a second copy replaces the first');
+  assert.ok(fs.readFileSync(file).equals(fs.readFileSync(plugin)));
+  assert.equal(cli('page-copy').status, 2, 'no --to');
+  assert.equal(cli('page-copy', '--to', to, '--project', SLUG).status, 2);
+  fs.writeFileSync(path.join(home, 'a file'), 'x');
+  assert.equal(cli('page-copy', '--to', path.join(home, 'a file')).status, 2, '--to must be a folder or not exist yet');
+});
+
+test('Minor 2: a batch holds at most 50 entries and at most 900 000 bytes of doc files, so its body stays under 1 MiB', () => {
+  seed();
+  for (let i = 0; i < 6; i++) {
+    tick();
+    const run = store.createRun(SLUG, { job: 'audit', layers: ['L1'], systems: ['web'], executor: 'local' });
+    fs.writeFileSync(path.join(runDir(SLUG, run.runId), 'REPORT.md'), `# Report ${i}\n\n${'x'.repeat(200000)}\n`);
+    store.finishRun(SLUG, run.runId, { status: 'done' });
+  }
+  const out = path.join(home, 'big out');
+  const r = cli('push', '--project', SLUG, '--out', out);
+  assert.equal(r.status, 0, r.stderr);
+  const { batches } = JSON.parse(fs.readFileSync(path.join(out, 'batches.json'), 'utf8'));
+  assert.ok(batches.length >= 2, `${batches.length} batches`);
+  assert.equal(batches.flat().length, 4 + 6, 'every doc is still planned once');
+  for (const b of batches) {
+    assert.ok(b.length >= 1 && b.length <= 50);
+    const bytes = b.reduce((n, e) => n + fs.statSync(e.file_path).size, 0);
+    assert.ok(bytes <= 900000, `${bytes} bytes in one batch`);
+  }
+  const many = planPush(SLUG, { now: NOW });
+  assert.ok(many.batches.every((b) => b.length <= 50));
+});

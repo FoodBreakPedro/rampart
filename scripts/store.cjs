@@ -482,7 +482,8 @@ function readJobs(slug) {
 // ---- the live dashboard's settings (config.json "dashboard") ------------------------------
 
 // Each field with the check its value must pass. url is the artifact's claude.ai link; ownerId is the page owner's opaque user
-// id (from the DB's meta/owner); pageHash names the published page version; scheduleId is the scheduled task that runs watch.
+// id (from the DB's meta/owner); pageHash names the published page version; scheduleId is the scheduled task that runs watch;
+// mcp is false when the page had to be published without the Claude Code Remote connector, so a republish leaves it out too.
 const OPAQUE_ID_RE = /^[A-Za-z0-9_.:@|+=-]{1,200}$/;
 const DASHBOARD_FIELDS = {
   url: (v) => typeof v === 'string' && /^https:\/\/claude\.ai\/(?:code\/)?artifact\/[A-Za-z0-9_-]{1,128}$/.test(v),
@@ -491,6 +492,7 @@ const DASHBOARD_FIELDS = {
   pageHash: (v) => typeof v === 'string' && /^[A-Za-z0-9_:+/=-]{8,200}$/.test(v),
   remoteControl: (v) => typeof v === 'boolean',
   scheduleId: (v) => typeof v === 'string' && OPAQUE_ID_RE.test(v),
+  mcp: (v) => typeof v === 'boolean',
 };
 const DASHBOARD_HINTS = {
   url: 'an https://claude.ai/artifact/<id> or https://claude.ai/code/artifact/<id> link',
@@ -499,6 +501,7 @@ const DASHBOARD_HINTS = {
   pageHash: 'a hash of 8 to 200 characters (letters, digits and _ : + / = -)',
   remoteControl: 'true or false',
   scheduleId: 'an opaque id (letters, digits and _ . : @ | + = -, up to 200)',
+  mcp: 'true or false',
 };
 
 // Every dashboard field, null when unset or when the stored value does not pass its check (a hand-edited config never
@@ -539,12 +542,12 @@ const USAGE = [
   '  set-class <slug> <id> <class> --note "<text>"',
   '  dashboard                     (the live dashboard\'s settings; --json prints every field, null when unset)',
   '  dashboard-set [--url <link>] [--owner-id <id>] [--published-at <iso>] [--page-hash <hash>]',
-  '                [--remote-control true|false] [--schedule-id <id>]   (sets only the fields given)',
+  '                [--remote-control true|false] [--schedule-id <id>] [--mcp true|false]   (sets only the fields given)',
 ].join('\n');
 
 const VALUE_FLAGS = ['status', 'reason', 'by', 'note', 'source', 'system', 'class', 'since', 'new-since', 'id'];
 const DASHBOARD_FLAGS = {
-  url: 'url', 'owner-id': 'ownerId', 'published-at': 'publishedAt', 'page-hash': 'pageHash', 'remote-control': 'remoteControl', 'schedule-id': 'scheduleId',
+  url: 'url', 'owner-id': 'ownerId', 'published-at': 'publishedAt', 'page-hash': 'pageHash', 'remote-control': 'remoteControl', 'schedule-id': 'scheduleId', mcp: 'mcp',
 };
 VALUE_FLAGS.push(...Object.keys(DASHBOARD_FLAGS));
 const BOOLEAN_FLAGS = ['json', 'ids'];
@@ -679,9 +682,9 @@ const HANDLERS = {
     const patch = {};
     for (const [flag, key] of Object.entries(DASHBOARD_FLAGS)) {
       if (flags[flag] === undefined) continue;
-      if (key !== 'remoteControl') patch[key] = flags[flag];
+      if (key !== 'remoteControl' && key !== 'mcp') patch[key] = flags[flag];
       else if (flags[flag] === 'true' || flags[flag] === 'false') patch[key] = flags[flag] === 'true';
-      else throw new UsageError('--remote-control must be true or false');
+      else throw new UsageError(`--${flag} must be true or false`);
     }
     if (!Object.keys(patch).length) {
       throw new UsageError(`dashboard-set needs at least one of ${Object.keys(DASHBOARD_FLAGS).map((f) => `--${f}`).join(', ')}`);

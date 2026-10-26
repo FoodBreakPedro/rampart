@@ -1263,7 +1263,7 @@ test('CLI exits 1 for a bad status, class or unknown finding id, and 2 for usage
 // ---- the live dashboard's settings ------------------------------------------------------------
 
 const DASH_URL = 'https://claude.ai/artifact/0f3c9a2b-7d41-4e8a-9c55-1b2a3c4d5e6f';
-const ALL_UNSET = { url: null, ownerId: null, publishedAt: null, pageHash: null, remoteControl: null, scheduleId: null };
+const ALL_UNSET = { url: null, ownerId: null, publishedAt: null, pageHash: null, remoteControl: null, scheduleId: null, mcp: null };
 
 test('readDashboard: every field null until set; setDashboard sets only the fields given and keeps the rest of config.json', () => {
   assert.deepEqual(store.readDashboard(), ALL_UNSET);
@@ -1328,7 +1328,7 @@ test('CLI dashboard prints the fields; dashboard-set sets only the given ones', 
   const s = cli('dashboard-set', '--schedule-id=rampart-watch', '--published-at', '2026-10-23T12:00:00Z', '--page-hash', 'b'.repeat(64), '--json');
   assert.equal(s.status, 0, s.stderr);
   assert.deepEqual(JSON.parse(s.stdout), {
-    url: DASH_URL, ownerId: 'u_owner', publishedAt: '2026-10-23T12:00:00Z', pageHash: 'b'.repeat(64), remoteControl: true, scheduleId: 'rampart-watch',
+    url: DASH_URL, ownerId: 'u_owner', publishedAt: '2026-10-23T12:00:00Z', pageHash: 'b'.repeat(64), remoteControl: true, scheduleId: 'rampart-watch', mcp: null,
   });
   assert.equal(cli('dashboard-set', '--remote-control', 'false').status, 0);
   assert.equal(JSON.parse(cli('dashboard', '--json').stdout).remoteControl, false);
@@ -1357,4 +1357,17 @@ test('CLI dashboard-set exits 2 and writes nothing for a missing, unknown or bad
     assert.ok(r.stderr.length > 0);
   }
   assert.equal(readText(path.join(home, 'config.json')), before);
+});
+
+test('R42: dashboard mcp records whether the published page declares the Remote connector (true|false), via setDashboard and --mcp', () => {
+  assert.equal(store.setDashboard({ mcp: false }).mcp, false, 'false is a value, not unset');
+  assert.equal(store.setDashboard({ mcp: true }).mcp, true);
+  for (const bad of ['false', 0, null]) assert.throws(() => store.setDashboard({ mcp: bad }), RangeError);
+  store.writeConfig({ dashboard: { mcp: 'no' } });
+  assert.equal(store.readDashboard().mcp, null, 'a hand-edited value is not handed on');
+  const r = cli('dashboard-set', '--mcp', 'false');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(cli('dashboard', '--json').stdout).mcp, false);
+  assert.equal(cli('dashboard-set', '--mcp', 'maybe').status, 2);
+  assert.equal(JSON.parse(cli('dashboard', '--json').stdout).mcp, false);
 });

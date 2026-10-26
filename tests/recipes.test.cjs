@@ -231,7 +231,7 @@ test('dashboard: the first publish asks first, declares the capabilities and rec
     assert.ok(pub.includes(s), `Publish names ${s}`);
   }
   assert.match(pub, /store\.cjs" dashboard-set --url <url> --published-at <now> --page-hash <hash>/);
-  assert.match(pub, /sync-plan\.cjs" page-hash/);
+  assert.match(pub, /sync-plan\.cjs" page-copy/);
   assert.match(pub, /`as_level: "view"`/);
   assert.match(pub, /one line/);
   assert.match(pub, /meta\/owner/);
@@ -282,4 +282,38 @@ test('audit and inventory end with the sync when a dashboard URL exists (R12)', 
   const audit = recipes.find((r) => r.name === 'audit.md').text;
   const finish = section(audit, 'L1');
   assert.match(finish.slice(finish.indexOf('### Finish')), /Live dashboard/, 'audit L1 points its Finish at the sync');
+});
+
+test('R41: publish and republish send a copy made by page-copy, never the plugin file itself', () => {
+  const t = dashboard.text;
+  assert.doesNotMatch(t, /`file_path` the page `\$\{CLAUDE_PLUGIN_ROOT\}/);
+  for (const name of ['Publish', 'Republish']) {
+    const s = section(t, name);
+    assert.match(s, /sync-plan\.cjs" page-copy --to "<publish dir>"/, `${name} copies the page`);
+  }
+  assert.match(section(t, 'Publish'), /`file_path` the printed `file`/);
+  assert.match(section(t, 'Publish'), /scratchpad/);
+});
+
+test('R42: a publish refused over mcp is recorded with --mcp false, and republish leaves mcp out when recorded or refused', () => {
+  const pub = section(dashboard.text, 'Publish');
+  const re = section(dashboard.text, 'Republish');
+  assert.match(pub, /store\.cjs" dashboard-set --mcp false/);
+  assert.match(pub, /store\.cjs" dashboard-set --mcp true/);
+  assert.match(re, /`mcp` is `false`[^.]*leave `mcp` out/);
+  assert.match(re, /refused over the `mcp` entry[^.]*without `mcp`/);
+  assert.match(re, /store\.cjs" dashboard-set --mcp false/);
+});
+
+test('R40: the viewer check compares a view-level list of projects with the owner-level one; a mismatch is a failed check', () => {
+  const pub = section(dashboard.text, 'Publish');
+  assert.doesNotMatch(pub, /limit: 5/);
+  assert.match(pub, /`list` of `projects` with `as_level: "view"`/);
+  assert.match(pub, /same ids/);
+  assert.match(pub, /empty or different[^.]*failed/i);
+  assert.doesNotMatch(pub, /`jobs` with `as_level: "view"`/);
+});
+
+test('Minor 1: the sync names where its projects come from', () => {
+  assert.match(section(dashboard.text, 'Sync'), /store\.cjs" projects`/);
 });
