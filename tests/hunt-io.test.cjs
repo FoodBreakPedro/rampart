@@ -673,16 +673,19 @@ test('R48: an observation that answered with an error (ok false, with text) leav
   store.upsertFindings(SLUG, [infraFinding('d'.repeat(12))], OLD_RUN);
   const res = hio.assemble(SLUG, s.runId);
   assert.deepEqual(res.skipped.map((u) => [u.id, u.status]), [[`probe:${s.probes[0]}`, 'failed']]);
-  assert.match(res.skipped[0].reason, /probe answered with an error \(exit 1\)/);
+  assert.match(res.skipped[0].reason, /probe returned an error \(exit 1\)/);
   assert.equal(res.counts.closed, 0);
   assert.equal(statusById()['d'.repeat(12)], 'open');
   assert.equal(store.readCoverage(SLUG).units[`db|INFRA|probe:${s.probes[0]}`].status, 'failed');
 });
 
 test('R48: an observation whose ok is not true (missing) is not covered either; every probe ok closes what the prober did not report', () => {
-  let s = infraRun((p, probes) => (p === probes[1] ? { ok: undefined } : null));
+  let s = infraRun((p, probes) => (p === probes[1] ? { ok: undefined } : p === probes[2] ? { via: 'http', ok: false, exitCode: 0, text: 'HTTP 503\nserver: edge' } : null));
   store.upsertFindings(SLUG, [infraFinding('d'.repeat(12))], OLD_RUN);
-  assert.equal(hio.assemble(SLUG, s.runId).counts.closed, 0);
+  const res = hio.assemble(SLUG, s.runId);
+  assert.equal(res.counts.closed, 0);
+  assert.deepEqual(res.skipped.map((u) => u.id), [`probe:${s.probes[1]}`, `probe:${s.probes[2]}`]);
+  assert.match(res.skipped[1].reason, /\(HTTP 503\)/);
   s = infraRun(() => null);
   assert.equal(hio.assemble(SLUG, s.runId).counts.closed, 1);
   assert.equal(statusById()['d'.repeat(12)], 'fixed');

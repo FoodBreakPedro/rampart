@@ -566,8 +566,9 @@ function judgeUnits(doc, dir) {
       if (seen.ok === false && !isText(seen.text)) return { ...u, status: 'skipped', reason: 'probe failed and produced no output' };
       // Only an answer counts: a permission error, a daemon that is down or a 503 from the edge says nothing about the setting.
       if (seen.ok !== true) {
-        const exit = Number.isInteger(seen.exitCode) ? ` (exit ${seen.exitCode})` : '';
-        return { ...u, status: 'failed', reason: `probe answered with an error${exit}; its output is not an answer` };
+        const status = seen.via === 'http' && isText(seen.text) ? /^HTTP (\d{3})\b/.exec(seen.text) : null;
+        const how = status ? ` (HTTP ${status[1]})` : Number.isInteger(seen.exitCode) ? ` (exit ${seen.exitCode})` : '';
+        return { ...u, status: 'failed', reason: `probe returned an error${how}, which says nothing about the setting` };
       }
       if (!returned) return { ...u, status: 'failed', reason: 'hunter did not return: infra-prober' };
       return { ...u, status: 'covered' };
