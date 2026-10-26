@@ -419,3 +419,22 @@ test('a cloud session (CLAUDE_CODE_REMOTE=true) is refused before any probe runs
   assert.equal(calls().length, 0, 'ssh was never called');
   assert.ok(!fs.existsSync(path.join(runDir(SLUG, mine.runId), 'observations.json')));
 });
+
+test('a grep probe that selects nothing (exit 1, no output) is an ok answer; grep exit 2 and other commands exiting 1 are not', async () => {
+  const pack = {
+    ...PACK,
+    probes: [
+      probe('flags', ['grep', '-r', '-o', '-e', '"Privileged":true', '/var/lib/docker/containers']),
+      probe('denied', ['grep', '-r', '-e', 'x', '/root']),
+      probe('units', ['systemctl', 'is-active', 'ufw']),
+    ],
+  };
+  canned({ flags: '', denied: 'grep: /root: Permission denied\n', units: 'inactive\n' }, {
+    "'grep' '-r' '-o' '-e' '\"Privileged\":true' '/var/lib/docker/containers'": { probe: 'flags', exit: 1 },
+    "'grep' '-r' '-e' 'x' '/root'": { probe: 'denied', exit: 2 },
+    "'systemctl' 'is-active' 'ufw'": { probe: 'units', exit: 3 },
+  });
+  const r = await runProbes({ project: SLUG, system: 'host', pack });
+  assert.deepEqual(r.observations.map((o) => [o.probeId, o.exitCode, o.ok]), [['flags', 1, true], ['denied', 2, false], ['units', 3, false]]);
+});
+

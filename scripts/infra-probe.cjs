@@ -48,6 +48,10 @@ function sitePathOf(system) {
 
 const argvOf = (probe, system) => probe.argv.map((a) => a.split(SITE_PATH_TOKEN).join(sitePathOf(system)));
 
+// grep exits 1 when it selected no line, which for a probe that greps for risky settings is the healthy answer, not a failure
+// (an unreadable file or directory exits 2). Every other command answers ok only with exit 0.
+const answeredOk = (probe, system, code) => code === 0 || (code === 1 && probe.via !== 'http' && argvOf(probe, system)[0] === 'grep');
+
 // Every assignment becomes NAME=[set] (NAME= when the value is empty). Handled: CRLF, `export`, spaces around `=`, a grep `path:` prefix,
 // "NAME=value", JSON string pairs ("name": "value"; booleans, numbers and arrays stay, they are settings, not secrets) and
 // NAME: value. A value that opens a quote it does not close on the same line swallows the following lines up to the closing
@@ -222,7 +226,7 @@ async function runProbes({ project, system, pack, probes, timeoutMs = DEFAULT_TI
       const text = scrubText(probe, out.text);
       const rawPath = store.writeRaw(project, id, `probe-${probe.id}.txt`, text);
       drop(skipped, probe.id);
-      put(observations, { probeId: probe.id, via: probe.via, ok: out.exitCode === 0, exitCode: out.exitCode, durationMs: Date.now() - started, text, rawPath });
+      put(observations, { probeId: probe.id, via: probe.via, ok: answeredOk(probe, ctx.system, out.exitCode), exitCode: out.exitCode, durationMs: Date.now() - started, text, rawPath });
     }
     writeAtomic(file, `${JSON.stringify({ observations, skipped }, null, 2)}\n`);
     let finished = run0;
