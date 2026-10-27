@@ -54,11 +54,11 @@ const crypto = require('node:crypto');
 const path = require('node:path');
 const util = require('node:util');
 const store = require('./store.cjs');
-const { publicProject, publicFinding, publicRun, scrubText, projectScore, redactDeep } = require('./render-static.cjs');
+const { publicProject, publicFinding, publicRun, packDoc, scrubText, projectScore, redactDeep } = require('./render-static.cjs');
 const { runDir, machineId } = require('./lib/paths.cjs');
 const { redact } = require('./lib/redact.cjs');
 const { writeAtomic } = require('./lib/atomic.cjs');
-const { listPacks, readPack, PACKS_DIR } = require('./packs.cjs');
+const { listPacks, PACKS_DIR } = require('./packs.cjs');
 
 const BATCH_SIZE = 50;
 const BATCH_MAX_BYTES = 900000; // doc file bytes per batch, so the batch body (limit 1 MiB) has headroom
@@ -209,25 +209,9 @@ function planPacksPush({ since, versions = {}, dir = PACKS_DIR } = {}) {
   if (!isObject(versions)) throw new TypeError('versions must be an object');
   const docs = [];
   for (const name of listPacks(dir)) {
-    let pack;
-    let mtime;
-    try {
-      pack = readPack(name, dir);
-      mtime = fs.statSync(path.join(dir, `${name}.md`)).mtime.toISOString();
-    } catch {
-      continue;
-    }
-    if (!changedAfter(cut, mtime) && versions[`packs/${name}`] !== undefined) continue;
-    const data = {
-      name: pack.name,
-      version: pack.version,
-      lastReviewed: pack.lastReviewed,
-      appliesTo: pack.appliesTo,
-      kinds: pack.kinds,
-      classes: Array.isArray(pack.classes) ? pack.classes.length : 0,
-      probes: Array.isArray(pack.probes) ? pack.probes.length : 0,
-      updatedAt: mtime,
-    };
+    const data = packDoc(name, dir); // the same document the static page carries (render-static.cjs)
+    if (data === null) continue;
+    if (!changedAfter(cut, data.updatedAt) && versions[`packs/${name}`] !== undefined) continue;
     docs.push({ collection: 'packs', id: name, data });
   }
   return { docs, batches: toBatches(docs, versions), cursor };

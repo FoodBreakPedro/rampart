@@ -9,6 +9,8 @@ const store = require('../scripts/store.cjs');
 const { scoreProject } = require('../scripts/score.cjs');
 const { machineId } = require('../scripts/lib/paths.cjs');
 const { buildData, buildPage, publicProject, renderStatic } = require('../scripts/render-static.cjs');
+const { planPacksPush } = require('../scripts/sync-plan.cjs');
+const { listPacks, PACKS_DIR } = require('../scripts/packs.cjs');
 
 const RENDER = path.join(__dirname, '..', 'scripts', 'render-static.cjs');
 const TEMPLATE = path.join(__dirname, '..', 'dashboard', 'index.html');
@@ -144,7 +146,7 @@ test('an empty store renders the empty state, with an empty project list in the 
 test('buildData returns everything the detail view needs: project, score, findings, runs and dispositions', () => {
   const run = seed();
   const data = buildData(NOW);
-  assert.deepEqual(Object.keys(data).sort(), ['generatedAt', 'machineId', 'projects']);
+  assert.deepEqual(Object.keys(data).sort(), ['generatedAt', 'machineId', 'packs', 'projects']);
   assert.equal(data.generatedAt, NOW.toISOString());
   assert.equal(data.machineId, machineId());
   assert.equal(data.projects.length, 1);
@@ -196,6 +198,24 @@ test('I6: the first snapshot shows no trend, and a score that moved since the sn
   assert.equal(moved.trend, Math.round((moved.score - before) * 10) / 10, 'computed against the snapshot');
   store.appendScore(SLUG, { kind: 'project', score: moved.score, grade: moved.grade }); // an older snapshot shape: no trend
   assert.equal(buildData().projects[0].score.trend, 0, 'without a saved trend the computed one stands');
+});
+
+test('buildPage carries the installed packs as the live dashboard holds them: the public pack facts, one per pack, by name', () => {
+  seed();
+  const { packs } = buildPage(NOW);
+  assert.deepEqual(packs.map((p) => p.name), listPacks(), 'every installed pack, in name order');
+  const pushed = planPacksPush().docs.map((d) => d.data);
+  assert.deepEqual(packs, pushed, 'the same document the sync pushes to packs/<name>');
+  for (const p of packs) {
+    assert.deepEqual(Object.keys(p).sort(), ['appliesTo', 'classes', 'kinds', 'lastReviewed', 'name', 'probes', 'updatedAt', 'version']);
+    assert.equal(typeof p.classes, 'number');
+    assert.equal(typeof p.probes, 'number');
+  }
+  const text = JSON.stringify(packs);
+  assert.ok(!text.includes(PACKS_DIR) && !text.includes(os.homedir()), 'no folder of this machine');
+  assert.ok(!text.includes('.md'), 'no file name');
+  const html = fs.readFileSync(renderStatic(), 'utf8');
+  assert.ok(JSON.parse(slot(html)).packs.length === listPacks().length, 'the rendered page carries them in its slot');
 });
 
 test('buildData lists every project in slug order and defaults now to the current time', () => {
@@ -346,6 +366,30 @@ test('page: a layer is fresh at credit 1, aging at 0.5, stale or never run at 0,
   assert.equal(freshness({ credit: 0, lastRun: '2026-01-01T00:00:00Z' }), 'stale');
   assert.equal(freshness({ credit: 0, lastRun: null }), 'never');
   assert.equal(freshness(undefined), 'absent');
+});
+
+test('page: a layer within its cadence whose last run covered only some of its units is partial, not aging; past its cadence it ages and goes stale as before', () => {
+  const { freshness } = page();
+  const at = '2026-10-22T00:00:00Z';
+  // score.cjs: credit = time credit (1, 0.5, 0) times the covered share, both rounded to two decimals; unitShare only under 1.
+  assert.equal(freshness({ credit: 0.84, lastRun: at, unitShare: 0.84 }), 'partial', '83 of 99 units, within the cadence');
+  assert.equal(freshness({ credit: 0.67, lastRun: at, unitShare: 0.67 }), 'partial');
+  assert.equal(freshness({ credit: 0.05, lastRun: at, unitShare: 0.05 }), 'partial', 'a sliver is still partial, not stale');
+  assert.equal(freshness({ credit: 0.42, lastRun: at, unitShare: 0.84 }), 'aging', 'inside two cadences: aging, whatever the share');
+  assert.equal(freshness({ credit: 0.33, lastRun: at, unitShare: 0.67 }), 'aging', 'the rounding of 0.5 x 0.67 never reads as stale');
+  assert.equal(freshness({ credit: 0, lastRun: at, unitShare: 0.84 }), 'stale');
+  assert.equal(freshness({ credit: 1, lastRun: at, unitShare: 1 }), 'fresh', 'a full share is fresh');
+  assert.equal(freshness({ credit: 0.5, lastRun: at, unitShare: 'all' }), 'aging', 'a share that is not a number is ignored');
+});
+
+test('page: the partial state has its own token in both themes, its own segment style, and a legend entry', () => {
+  const html = fs.readFileSync(TEMPLATE, 'utf8');
+  assert.match(html, /\n:root \{[^}]*--partial:/, 'a --partial colour on :root');
+  assert.match(html, /:root:not\(\[data-theme="light"\]\) \{[^}]*--partial:/, 'and in the system dark block');
+  assert.match(html, /:root\[data-theme="dark"\] \{[^}]*--partial:/, 'and in the explicit dark block');
+  assert.match(html, /\.seg-partial \.seg-bar \{[^}]*var\(--partial\)/, 'the segment paints with it');
+  assert.match(html, /<li><span class="seg seg-partial" aria-hidden="true"><span class="seg-bar"><\/span><\/span>Partial: /, 'a legend entry');
+  assert.match(html, /<li><span class="seg seg-aging"[^]*?Aging: within two cadences/, 'aging keeps its meaning');
 });
 
 test('page: last reviewed is the latest run over every layer of every system', () => {

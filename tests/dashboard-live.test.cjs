@@ -11,7 +11,7 @@ const { createDocument, makeEvent } = require('./fixtures/mini-dom.cjs');
 
 const TEMPLATE = path.join(__dirname, '..', 'dashboard', 'index.html');
 const FIXTURE_DB = path.join(__dirname, 'fixtures', 'db');
-const COLLECTIONS = ['projects', 'findings', 'runs', 'jobs', 'executors', 'meta'];
+const COLLECTIONS = ['projects', 'findings', 'runs', 'jobs', 'executors', 'packs', 'meta'];
 const OWNER_ID = 'u_owner_placeholder';
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -273,6 +273,17 @@ test('live data: an empty DB is page data with no projects; a project doc withou
   assert.equal(bare.projects[0].project.slug, 'p1', 'the doc id stands in for a missing slug');
 });
 
+test('live data: pack docs assemble into data.packs, sorted by name, with only the public pack facts', () => {
+  const { api } = bootPage();
+  const seed = fixtureDocs();
+  const docs = { packs: Object.entries(seed.packs).map(([id, data]) => ({ id, data })) };
+  const data = clone(api.pageDataFromDocs(docs));
+  assert.deepEqual(data.packs.map((p) => p.name), ['supabase', 'web-nextjs']);
+  assert.deepEqual(data.packs[1], { id: 'web-nextjs', ...seed.packs['web-nextjs'] });
+  assert.deepEqual(clone(api.pageDataFromDocs({})).packs, [], 'no packs collection is no packs');
+  assert.deepEqual(clone(api.pageDataFromDocs({ packs: [{ id: 'x', data: 'no' }, { id: 'y', data: { version: '1.0.0' } }] })).packs, [], 'a doc without a name is left out');
+});
+
 test('live data: an executor is online when any heartbeat is under 5 minutes old', () => {
   const { api } = bootPage();
   const now = Date.parse('2026-10-23T19:00:00Z');
@@ -298,6 +309,22 @@ test('live mode: renders a tile per project doc, subscribing once per collection
   assert.match(badge, /^Live · synced .+ · executor online$/);
   assert.match(tile(document, 'example-app').querySelector('.card-foot').textContent, /^Synced .+ from machine-placeholder$/);
   assert.ok(intervals.length >= 1, 'the badge re-checks the executor heartbeat on a timer');
+});
+
+test('freshness: a layer whose last run covered only some of its units shows as partial in the strip and the score sheet, with the share', async () => {
+  const seed = withHeartbeat(fixtureDocs(), new Date().toISOString());
+  const L1 = seed.projects['example-app'].score.systems.mobile.layers.L1;
+  Object.assign(L1, { lastRun: '2026-10-23T18:02:11Z', nextDue: '2099-06-15T12:00:00Z', credit: 0.84, unitShare: 0.84 });
+  const { document, $ } = await bootLive({ seed, hash: '#p-example-app' });
+  const strip = tile(document, 'example-app').querySelector('.strip');
+  assert.match(strip.getAttribute('aria-label'), /L1 partial, L2 never run/);
+  const seg = strip.querySelector('.seg-partial');
+  assert.ok(seg, 'the L1 segment is partial, not aging');
+  assert.equal(strip.querySelectorAll('.seg-aging').length, 0);
+  assert.match(seg.getAttribute('title'), /^L1: partial, last run covered 84% of its units, last run 2026-10-2\d, due 2099-06-15$/);
+  const cell = $('detail-view').querySelector('.layer-cell.seg-partial');
+  assert.ok(cell, 'the score sheet cell carries the state');
+  assert.match(cell.querySelector('.layer-state').textContent, /^Partial · 7 d · 84% of units$/);
 });
 
 test('live mode: an onSnapshot update changes one tile score in place, without replacing the node or resubscribing', async () => {
@@ -434,6 +461,41 @@ test('static mode: inline data renders as a static snapshot without asking for t
   assert.equal(intervals.length, 0);
   const button = document.querySelector('button.action');
   assert.equal(button.getAttribute('data-command'), '/rampart audit L1 --project example-app --system mobile', 'buttons copy the command');
+});
+
+// The rows of the packs table: [name, version, reviewed, applies to, kinds, classes, probes] per row.
+const packRows = (document) => Array.from(document.getElementById('packs').querySelectorAll('tr')).map((tr) => Array.from(tr.querySelectorAll('th, td')).map((c) => c.textContent));
+
+test('packs: live mode lists each pack doc, read-only, and a pack removed from the DB leaves the table', async () => {
+  const { document, store, $ } = await bootLive();
+  assert.ok(visible($('packs-block')), 'the packs block shows with the tiles');
+  assert.equal($('packs-block').querySelectorAll('button, input, select, [data-write]').length, 0, 'nothing to click or write');
+  assert.deepEqual(packRows(document), [
+    ['supabase', '1.0.0', '2026-10-23', 'supabase', 'host', '7', '8'],
+    ['web-nextjs', '1.0.0', '2026-10-23', 'web-nextjs', 'code', '14', '0'],
+  ]);
+  const before = $('packs').querySelector('tr[data-key="supabase"]');
+  store.remove('packs', 'web-nextjs');
+  await settle();
+  assert.deepEqual(packRows(document).map((r) => r[0]), ['supabase']);
+  same($('packs').querySelector('tr[data-key="supabase"]'), before, 'the other row is patched in place');
+  store.remove('packs', 'supabase');
+  await settle();
+  assert.ok(!visible($('packs-block')), 'no packs, no block');
+});
+
+test('packs: static mode lists the packs in the inline data; inline data without packs hides the block', async () => {
+  const packs = [
+    { name: 'docker-host', version: '1.2.0', lastReviewed: '2026-10-20', appliesTo: ['docker-host', 'supabase'], kinds: ['host'], classes: 5, probes: 9, updatedAt: '2026-10-20T10:00:00Z' },
+  ];
+  const { document, $ } = bootPage({ inline: JSON.stringify({ ...STATIC, packs }) });
+  await settle();
+  assert.ok(visible($('packs-block')));
+  assert.deepEqual(packRows(document), [['docker-host', '1.2.0', '2026-10-20', 'docker-host, supabase', 'host', '5', '9']]);
+  const bare = bootPage({ inline: JSON.stringify(STATIC) });
+  await settle();
+  assert.ok(!visible(bare.$('packs-block')), 'older static data carries no packs');
+  assert.equal(bare.$('packs').querySelectorAll('tr').length, 0);
 });
 
 test('no DB: use("db") resolving null renders the empty state without throwing, and asks for nothing else', async () => {

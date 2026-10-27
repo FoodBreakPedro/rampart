@@ -35,6 +35,7 @@
 
   /* Layer freshness. */
   --fresh: #2F8A57;
+  --partial: #2E6DA4;
   --aging: #C68A14;
   --stale: #C23B32;
   --absent: #98A4AF;
@@ -77,6 +78,7 @@
     --sev-low: #AFC6DB; --sev-low-bg: #1E2D3A;
     --hardening: #C6B9F2; --hardening-bg: #2A2446;
     --fresh: #5CC98C;
+    --partial: #7DB1E3;
     --aging: #E9B648;
     --stale: #F0776E;
     --absent: #4D5C69;
@@ -113,6 +115,7 @@
   --sev-low: #AFC6DB; --sev-low-bg: #1E2D3A;
   --hardening: #C6B9F2; --hardening-bg: #2A2446;
   --fresh: #5CC98C;
+  --partial: #7DB1E3;
   --aging: #E9B648;
   --stale: #F0776E;
   --absent: #4D5C69;
@@ -236,12 +239,17 @@ main { padding-block: 28px 56px; }
 .count.has.count-medium dt, .count.has.count-medium dd { color: var(--sev-medium); }
 .count.has.count-low dt, .count.has.count-low dd { color: var(--sev-low); }
 
-/* Freshness strip: one segment per layer. Fresh is solid, aging striped, stale or never run hollow, not declared dashed. */
+/* Freshness strip: one segment per layer. Fresh is solid, partial (within its cadence, but the last run covered only some
+   of the layer's units) half filled, aging striped, stale or never run hollow, not declared dashed. */
 .strip { display: inline-grid; grid-template-columns: repeat(4, 32px); gap: 3px; flex: none; }
 .seg { display: grid; gap: 3px; justify-items: center; }
 .seg-bar { display: block; width: 100%; height: 8px; border-radius: 2px; }
 .seg-label { font-family: var(--font-mono); font-size: 9.5px; line-height: 1; color: var(--muted); }
 .seg-fresh .seg-bar { background: var(--fresh); }
+.seg-partial .seg-bar {
+  background: linear-gradient(90deg, var(--partial) 0 50%, transparent 50%);
+  box-shadow: inset 0 0 0 1px var(--partial);
+}
 .seg-aging .seg-bar {
   background: repeating-linear-gradient(135deg, var(--aging) 0 3px, transparent 3px 5px);
   box-shadow: inset 0 0 0 1px var(--aging);
@@ -607,10 +615,33 @@ tr.is-stale .status-queued { color: var(--warn); background: var(--warn-bg); }
     <ul class="carousel" id="carousel" aria-label="Projects"></ul>
     <ul class="legend" aria-label="Layer freshness">
       <li><span class="seg seg-fresh" aria-hidden="true"><span class="seg-bar"></span></span>Fresh: audited within its cadence</li>
+      <li><span class="seg seg-partial" aria-hidden="true"><span class="seg-bar"></span></span>Partial: within its cadence, but the last run covered only some of its units</li>
       <li><span class="seg seg-aging" aria-hidden="true"><span class="seg-bar"></span></span>Aging: within two cadences</li>
       <li><span class="seg seg-stale" aria-hidden="true"><span class="seg-bar"></span></span>Stale or never run</li>
       <li><span class="seg seg-absent" aria-hidden="true"><span class="seg-bar"></span></span>Not declared for the system</li>
     </ul>
+    <section class="block" id="packs-block" aria-labelledby="packs-heading" hidden>
+      <div class="block-head">
+        <h2 class="block-title" id="packs-heading">Review packs</h2>
+        <p class="block-sub">The versioned packs installed with Rampart: the hunt classes and read-only probes an audit runs, and the system types each one applies to. Packs ship with the plugin; nothing here can be changed from the page.</p>
+      </div>
+      <div class="table-wrap">
+        <table class="packs">
+          <thead>
+            <tr>
+              <th scope="col">Pack</th>
+              <th scope="col">Version</th>
+              <th scope="col">Reviewed</th>
+              <th scope="col">Applies to</th>
+              <th scope="col">Kinds</th>
+              <th scope="col" class="num">Classes</th>
+              <th scope="col" class="num">Probes</th>
+            </tr>
+          </thead>
+          <tbody id="packs"></tbody>
+        </table>
+      </div>
+    </section>
   </section>
 
   <section id="detail-view" hidden></section>
@@ -655,12 +686,12 @@ const RampartDashboard = (function () {
   const JOB_STATUSES = ['queued', 'claimed', 'running', 'done', 'failed'];
   const JOB_STATUS_LABELS = { queued: 'Queued', claimed: 'Claimed', running: 'Running', done: 'Done', failed: 'Failed' };
   // The dashboard DB's collections (skills/rampart/specs/db-layout.md); the page subscribes to each once.
-  const COLLECTIONS = Object.freeze(['projects', 'findings', 'runs', 'jobs', 'executors', 'meta']);
+  const COLLECTIONS = Object.freeze(['projects', 'findings', 'runs', 'jobs', 'executors', 'packs', 'meta']);
   const EXECUTOR_ONLINE_MS = 5 * 60 * 1000;
   const BADGE_REFRESH_MS = 60 * 1000;
   // How long the page waits for every collection's first definitive answer before drawing what it has.
   const ANSWER_TIMEOUT_MS = 10 * 1000;
-  const FRESHNESS_LABELS = { fresh: 'Fresh', aging: 'Aging', stale: 'Stale', never: 'Never run', absent: 'Not declared' };
+  const FRESHNESS_LABELS = { fresh: 'Fresh', partial: 'Partial', aging: 'Aging', stale: 'Stale', never: 'Never run', absent: 'Not declared' };
   const DAY_MS = 24 * 60 * 60 * 1000;
 
   // ---- jobs: ids, cost estimates and routing ----------------------------------------------
@@ -800,6 +831,10 @@ const RampartDashboard = (function () {
   }
 
   const entriesOf = (data) => (isData(data) ? data.projects.filter(isEntry) : []);
+  // The installed packs the data carries (packs/<name> docs in live mode, buildPage's `packs` in static mode; older static
+  // data has none), in name order. A pack is read by its name; everything else on it is optional.
+  const isPack = (p) => isObject(p) && typeof p.name === 'string' && p.name !== '';
+  const packsOf = (data) => (isData(data) ? list(data.packs).filter(isPack) : []).slice().sort((a, b) => a.name.localeCompare(b.name));
   const hasProjects = (data) => entriesOf(data).length > 0;
   const isActive = (f) => isObject(f) && ACTIVE.indexOf(f.status) !== -1;
 
@@ -815,12 +850,22 @@ const RampartDashboard = (function () {
   }
 
   // From a layer's score entry: credit 1 fresh, 0.5 aging, 0 stale (or never run). No entry: the system does not declare it.
+  // A run that covered only some of the layer's units earns that share of the credit, and the entry says so (unitShare, under
+  // 1): the time part is credit / unitShare, read with a little slack because score.cjs rounds both to two decimals. Within
+  // its cadence such a layer is 'partial', not aging: it is not late, it is incomplete. Past its cadence it ages and goes
+  // stale as any other.
   function freshness(layer) {
     if (!isObject(layer)) return 'absent';
-    if (layer.credit >= 1) return 'fresh';
-    if (layer.credit >= 0.5) return 'aging';
+    const partial = typeof layer.unitShare === 'number' && layer.unitShare > 0 && layer.unitShare < 1;
+    const time = partial ? layer.credit / layer.unitShare : layer.credit;
+    const slack = partial ? 0.05 : 0;
+    if (time >= 1 - slack) return partial ? 'partial' : 'fresh';
+    if (time >= 0.5 - slack) return 'aging';
     return layer.lastRun ? 'stale' : 'never';
   }
+
+  // "84%": the share of its units a layer's last run covered.
+  const unitsPct = (info) => `${Math.round(info.unitShare * 100)}%`;
 
   const timeOf = (iso) => {
     const t = typeof iso === 'string' ? Date.parse(iso) : NaN;
@@ -1097,6 +1142,7 @@ const RampartDashboard = (function () {
         ownerId: isObject(meta.get('owner')) && typeof meta.get('owner').ownerId === 'string' ? meta.get('owner').ownerId : null,
       },
       projects,
+      packs: bodies('packs').filter(isPack).sort((a, b) => a.name.localeCompare(b.name)),
     };
   }
 
@@ -1191,7 +1237,7 @@ const RampartDashboard = (function () {
   // ---- view state --------------------------------------------------------------------------
 
   const state = {
-    data: null, entries: [], view: null, slug: null, filters: Object.assign({}, DEFAULT_FILTERS), returnTo: null,
+    data: null, entries: [], packs: [], view: null, slug: null, filters: Object.assign({}, DEFAULT_FILTERS), returnTo: null,
     engines: DEFAULT_ENGINES.slice(),
     version: '', // the plugin version, from <main data-version>; it names the SARIF tool version
     live: null, // the live source, in live mode
@@ -1275,9 +1321,10 @@ const RampartDashboard = (function () {
   function segmentTitle(layer, info) {
     const st = freshness(info);
     if (st === 'absent') return `${layer}: not declared for this system`;
+    const share = st === 'partial' ? `, last run covered ${unitsPct(info)} of its units` : '';
     const last = info.lastRun ? `last run ${day(info.lastRun)}` : 'never run';
     const due = info.nextDue ? `due ${day(info.nextDue)}` : 'due now';
-    return `${layer}: ${FRESHNESS_LABELS[st].toLowerCase()}, ${last}, ${due}`;
+    return `${layer}: ${FRESHNESS_LABELS[st].toLowerCase()}${share}, ${last}, ${due}`;
   }
 
   function strip(systemScore) {
@@ -1420,6 +1467,30 @@ const RampartDashboard = (function () {
 
   function renderTiles() {
     morphChildren($('carousel'), state.entries.map((entry) => h('li', { 'data-key': entry.project.slug }, card(entry))));
+    renderPacks();
+  }
+
+  // ---- packs: the installed review packs, read-only ------------------------------------------
+
+  const joined = (value) => (list(value).length ? list(value).map(String).join(', ') : '—');
+  const countText = (value) => (typeof value === 'number' && Number.isFinite(value) ? String(value) : '—');
+
+  // One row per pack: its public facts (db-layout.md packs/<name>), never the pack's text.
+  function packRow(pack) {
+    return h('tr', { 'data-key': pack.name },
+      h('th', { scope: 'row' }, h('span', { class: 'mono' }, pack.name)),
+      h('td', { class: 'mono nowrap' }, typeof pack.version === 'string' ? pack.version : '—'),
+      h('td', { class: 'nowrap' }, typeof pack.lastReviewed === 'string' ? pack.lastReviewed : '—'),
+      h('td', null, joined(pack.appliesTo)),
+      h('td', null, joined(pack.kinds)),
+      h('td', { class: 'num' }, countText(pack.classes)),
+      h('td', { class: 'num' }, countText(pack.probes)));
+  }
+
+  // The block shows only when the data carries packs (older static data and an empty collection carry none).
+  function renderPacks() {
+    $('packs-block').hidden = state.packs.length === 0;
+    morphChildren($('packs'), state.packs.map(packRow));
   }
 
   const motion = () =>
@@ -1499,7 +1570,8 @@ const RampartDashboard = (function () {
     return h('div', { class: `layer-cell seg-${st}`, title: `${segmentTitle(layer, info)}${cadence ? `, every ${cadence} days` : ''}` },
       h('span', { class: 'layer-top' },
         h('span', { class: 'seg-bar' }),
-        h('span', { class: 'layer-state' }, FRESHNESS_LABELS[st], cadence ? h('span', { class: 'of' }, ` · ${cadence} d`) : null)),
+        h('span', { class: 'layer-state' }, FRESHNESS_LABELS[st], cadence ? h('span', { class: 'of' }, ` · ${cadence} d`) : null,
+          st === 'partial' ? h('span', { class: 'of' }, ` · ${unitsPct(info)} of units`) : null)),
       h('span', { class: 'layer-dates' }, info.lastRun ? `Last ${day(info.lastRun)}` : 'No successful run'),
       h('span', { class: `layer-dates${late ? ' overdue' : ''}` }, dueText),
       runnableLayers(system, state.engines).indexOf(layer) !== -1
@@ -2726,6 +2798,7 @@ const RampartDashboard = (function () {
     const showing = state.view === 'tiles' || state.view === 'detail';
     state.data = isData(data) ? data : null;
     state.entries = entriesOf(data).map(withDecisionsInFlight);
+    state.packs = packsOf(data);
     renderMasthead();
     if (!state.entries.length) {
       renderEmpty(false);
@@ -3003,7 +3076,7 @@ const RampartDashboard = (function () {
 
   return {
     LAYERS, ACTION_LABELS, DEFAULT_FILTERS, DEFAULT_ENGINES, parseEngines, runnableLayers,
-    isData, hasProjects, openCounts, freshness, lastReviewed, auditCommand, formatLocation,
+    isData, hasProjects, packsOf, openCounts, freshness, lastReviewed, auditCommand, formatLocation,
     parseHash, buildHash, filterFindings, sortFindings, loadData, render,
     pageDataFromDocs, executorOnline, liveSource, canWrite, toSarif,
   };
