@@ -368,6 +368,30 @@ test('page: a layer is fresh at credit 1, aging at 0.5, stale or never run at 0,
   assert.equal(freshness(undefined), 'absent');
 });
 
+test('page: a layer within its cadence whose last run covered only some of its units is partial, not aging; past its cadence it ages and goes stale as before', () => {
+  const { freshness } = page();
+  const at = '2026-10-22T00:00:00Z';
+  // score.cjs: credit = time credit (1, 0.5, 0) times the covered share, both rounded to two decimals; unitShare only under 1.
+  assert.equal(freshness({ credit: 0.84, lastRun: at, unitShare: 0.84 }), 'partial', '83 of 99 units, within the cadence');
+  assert.equal(freshness({ credit: 0.67, lastRun: at, unitShare: 0.67 }), 'partial');
+  assert.equal(freshness({ credit: 0.05, lastRun: at, unitShare: 0.05 }), 'partial', 'a sliver is still partial, not stale');
+  assert.equal(freshness({ credit: 0.42, lastRun: at, unitShare: 0.84 }), 'aging', 'inside two cadences: aging, whatever the share');
+  assert.equal(freshness({ credit: 0.33, lastRun: at, unitShare: 0.67 }), 'aging', 'the rounding of 0.5 x 0.67 never reads as stale');
+  assert.equal(freshness({ credit: 0, lastRun: at, unitShare: 0.84 }), 'stale');
+  assert.equal(freshness({ credit: 1, lastRun: at, unitShare: 1 }), 'fresh', 'a full share is fresh');
+  assert.equal(freshness({ credit: 0.5, lastRun: at, unitShare: 'all' }), 'aging', 'a share that is not a number is ignored');
+});
+
+test('page: the partial state has its own token in both themes, its own segment style, and a legend entry', () => {
+  const html = fs.readFileSync(TEMPLATE, 'utf8');
+  assert.match(html, /\n:root \{[^}]*--partial:/, 'a --partial colour on :root');
+  assert.match(html, /:root:not\(\[data-theme="light"\]\) \{[^}]*--partial:/, 'and in the system dark block');
+  assert.match(html, /:root\[data-theme="dark"\] \{[^}]*--partial:/, 'and in the explicit dark block');
+  assert.match(html, /\.seg-partial \.seg-bar \{[^}]*var\(--partial\)/, 'the segment paints with it');
+  assert.match(html, /<li><span class="seg seg-partial" aria-hidden="true"><span class="seg-bar"><\/span><\/span>Partial: /, 'a legend entry');
+  assert.match(html, /<li><span class="seg seg-aging"[^]*?Aging: within two cadences/, 'aging keeps its meaning');
+});
+
 test('page: last reviewed is the latest run over every layer of every system', () => {
   const layers = (lastRuns) => Object.fromEntries(lastRuns.map(([l, at]) => [l, { lastRun: at, nextDue: null, credit: 0 }]));
   const score = {

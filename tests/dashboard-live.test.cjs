@@ -311,6 +311,22 @@ test('live mode: renders a tile per project doc, subscribing once per collection
   assert.ok(intervals.length >= 1, 'the badge re-checks the executor heartbeat on a timer');
 });
 
+test('freshness: a layer whose last run covered only some of its units shows as partial in the strip and the score sheet, with the share', async () => {
+  const seed = withHeartbeat(fixtureDocs(), new Date().toISOString());
+  const L1 = seed.projects['example-app'].score.systems.mobile.layers.L1;
+  Object.assign(L1, { lastRun: '2026-10-23T18:02:11Z', nextDue: '2099-06-15T12:00:00Z', credit: 0.84, unitShare: 0.84 });
+  const { document, $ } = await bootLive({ seed, hash: '#p-example-app' });
+  const strip = tile(document, 'example-app').querySelector('.strip');
+  assert.match(strip.getAttribute('aria-label'), /L1 partial, L2 never run/);
+  const seg = strip.querySelector('.seg-partial');
+  assert.ok(seg, 'the L1 segment is partial, not aging');
+  assert.equal(strip.querySelectorAll('.seg-aging').length, 0);
+  assert.match(seg.getAttribute('title'), /^L1: partial, last run covered 84% of its units, last run 2026-10-2\d, due 2099-06-15$/);
+  const cell = $('detail-view').querySelector('.layer-cell.seg-partial');
+  assert.ok(cell, 'the score sheet cell carries the state');
+  assert.match(cell.querySelector('.layer-state').textContent, /^Partial · 7 d · 84% of units$/);
+});
+
 test('live mode: an onSnapshot update changes one tile score in place, without replacing the node or resubscribing', async () => {
   const { document, store, $ } = await bootLive();
   const before = tile(document, 'example-app');
