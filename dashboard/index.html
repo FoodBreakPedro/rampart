@@ -611,6 +611,28 @@ tr.is-stale .status-queued { color: var(--warn); background: var(--warn-bg); }
       <li><span class="seg seg-stale" aria-hidden="true"><span class="seg-bar"></span></span>Stale or never run</li>
       <li><span class="seg seg-absent" aria-hidden="true"><span class="seg-bar"></span></span>Not declared for the system</li>
     </ul>
+    <section class="block" id="packs-block" aria-labelledby="packs-heading" hidden>
+      <div class="block-head">
+        <h2 class="block-title" id="packs-heading">Review packs</h2>
+        <p class="block-sub">The versioned packs installed with Rampart: the hunt classes and read-only probes an audit runs, and the system types each one applies to. Packs ship with the plugin; nothing here can be changed from the page.</p>
+      </div>
+      <div class="table-wrap">
+        <table class="packs">
+          <thead>
+            <tr>
+              <th scope="col">Pack</th>
+              <th scope="col">Version</th>
+              <th scope="col">Reviewed</th>
+              <th scope="col">Applies to</th>
+              <th scope="col">Kinds</th>
+              <th scope="col" class="num">Classes</th>
+              <th scope="col" class="num">Probes</th>
+            </tr>
+          </thead>
+          <tbody id="packs"></tbody>
+        </table>
+      </div>
+    </section>
   </section>
 
   <section id="detail-view" hidden></section>
@@ -655,7 +677,7 @@ const RampartDashboard = (function () {
   const JOB_STATUSES = ['queued', 'claimed', 'running', 'done', 'failed'];
   const JOB_STATUS_LABELS = { queued: 'Queued', claimed: 'Claimed', running: 'Running', done: 'Done', failed: 'Failed' };
   // The dashboard DB's collections (skills/rampart/specs/db-layout.md); the page subscribes to each once.
-  const COLLECTIONS = Object.freeze(['projects', 'findings', 'runs', 'jobs', 'executors', 'meta']);
+  const COLLECTIONS = Object.freeze(['projects', 'findings', 'runs', 'jobs', 'executors', 'packs', 'meta']);
   const EXECUTOR_ONLINE_MS = 5 * 60 * 1000;
   const BADGE_REFRESH_MS = 60 * 1000;
   // How long the page waits for every collection's first definitive answer before drawing what it has.
@@ -800,6 +822,10 @@ const RampartDashboard = (function () {
   }
 
   const entriesOf = (data) => (isData(data) ? data.projects.filter(isEntry) : []);
+  // The installed packs the data carries (packs/<name> docs in live mode, buildPage's `packs` in static mode; older static
+  // data has none), in name order. A pack is read by its name; everything else on it is optional.
+  const isPack = (p) => isObject(p) && typeof p.name === 'string' && p.name !== '';
+  const packsOf = (data) => (isData(data) ? list(data.packs).filter(isPack) : []).slice().sort((a, b) => a.name.localeCompare(b.name));
   const hasProjects = (data) => entriesOf(data).length > 0;
   const isActive = (f) => isObject(f) && ACTIVE.indexOf(f.status) !== -1;
 
@@ -1097,6 +1123,7 @@ const RampartDashboard = (function () {
         ownerId: isObject(meta.get('owner')) && typeof meta.get('owner').ownerId === 'string' ? meta.get('owner').ownerId : null,
       },
       projects,
+      packs: bodies('packs').filter(isPack).sort((a, b) => a.name.localeCompare(b.name)),
     };
   }
 
@@ -1191,7 +1218,7 @@ const RampartDashboard = (function () {
   // ---- view state --------------------------------------------------------------------------
 
   const state = {
-    data: null, entries: [], view: null, slug: null, filters: Object.assign({}, DEFAULT_FILTERS), returnTo: null,
+    data: null, entries: [], packs: [], view: null, slug: null, filters: Object.assign({}, DEFAULT_FILTERS), returnTo: null,
     engines: DEFAULT_ENGINES.slice(),
     version: '', // the plugin version, from <main data-version>; it names the SARIF tool version
     live: null, // the live source, in live mode
@@ -1420,6 +1447,30 @@ const RampartDashboard = (function () {
 
   function renderTiles() {
     morphChildren($('carousel'), state.entries.map((entry) => h('li', { 'data-key': entry.project.slug }, card(entry))));
+    renderPacks();
+  }
+
+  // ---- packs: the installed review packs, read-only ------------------------------------------
+
+  const joined = (value) => (list(value).length ? list(value).map(String).join(', ') : '—');
+  const countText = (value) => (typeof value === 'number' && Number.isFinite(value) ? String(value) : '—');
+
+  // One row per pack: its public facts (db-layout.md packs/<name>), never the pack's text.
+  function packRow(pack) {
+    return h('tr', { 'data-key': pack.name },
+      h('th', { scope: 'row' }, h('span', { class: 'mono' }, pack.name)),
+      h('td', { class: 'mono nowrap' }, typeof pack.version === 'string' ? pack.version : '—'),
+      h('td', { class: 'nowrap' }, typeof pack.lastReviewed === 'string' ? pack.lastReviewed : '—'),
+      h('td', null, joined(pack.appliesTo)),
+      h('td', null, joined(pack.kinds)),
+      h('td', { class: 'num' }, countText(pack.classes)),
+      h('td', { class: 'num' }, countText(pack.probes)));
+  }
+
+  // The block shows only when the data carries packs (older static data and an empty collection carry none).
+  function renderPacks() {
+    $('packs-block').hidden = state.packs.length === 0;
+    morphChildren($('packs'), state.packs.map(packRow));
   }
 
   const motion = () =>
@@ -2726,6 +2777,7 @@ const RampartDashboard = (function () {
     const showing = state.view === 'tiles' || state.view === 'detail';
     state.data = isData(data) ? data : null;
     state.entries = entriesOf(data).map(withDecisionsInFlight);
+    state.packs = packsOf(data);
     renderMasthead();
     if (!state.entries.length) {
       renderEmpty(false);
@@ -3003,7 +3055,7 @@ const RampartDashboard = (function () {
 
   return {
     LAYERS, ACTION_LABELS, DEFAULT_FILTERS, DEFAULT_ENGINES, parseEngines, runnableLayers,
-    isData, hasProjects, openCounts, freshness, lastReviewed, auditCommand, formatLocation,
+    isData, hasProjects, packsOf, openCounts, freshness, lastReviewed, auditCommand, formatLocation,
     parseHash, buildHash, filterFindings, sortFindings, loadData, render,
     pageDataFromDocs, executorOnline, liveSource, canWrite, toSarif,
   };

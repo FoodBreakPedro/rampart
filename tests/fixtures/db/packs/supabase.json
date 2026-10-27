@@ -1,0 +1,10 @@
+{
+  "name": "supabase",
+  "version": "1.0.0",
+  "lastReviewed": "2026-10-23",
+  "appliesTo": ["supabase"],
+  "kinds": ["host"],
+  "classes": 7,
+  "probes": 8,
+  "updatedAt": "2026-10-23T17:41:00Z"
+}

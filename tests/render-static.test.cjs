@@ -9,6 +9,8 @@ const store = require('../scripts/store.cjs');
 const { scoreProject } = require('../scripts/score.cjs');
 const { machineId } = require('../scripts/lib/paths.cjs');
 const { buildData, buildPage, publicProject, renderStatic } = require('../scripts/render-static.cjs');
+const { planPacksPush } = require('../scripts/sync-plan.cjs');
+const { listPacks, PACKS_DIR } = require('../scripts/packs.cjs');
 
 const RENDER = path.join(__dirname, '..', 'scripts', 'render-static.cjs');
 const TEMPLATE = path.join(__dirname, '..', 'dashboard', 'index.html');
@@ -144,7 +146,7 @@ test('an empty store renders the empty state, with an empty project list in the 
 test('buildData returns everything the detail view needs: project, score, findings, runs and dispositions', () => {
   const run = seed();
   const data = buildData(NOW);
-  assert.deepEqual(Object.keys(data).sort(), ['generatedAt', 'machineId', 'projects']);
+  assert.deepEqual(Object.keys(data).sort(), ['generatedAt', 'machineId', 'packs', 'projects']);
   assert.equal(data.generatedAt, NOW.toISOString());
   assert.equal(data.machineId, machineId());
   assert.equal(data.projects.length, 1);
@@ -196,6 +198,24 @@ test('I6: the first snapshot shows no trend, and a score that moved since the sn
   assert.equal(moved.trend, Math.round((moved.score - before) * 10) / 10, 'computed against the snapshot');
   store.appendScore(SLUG, { kind: 'project', score: moved.score, grade: moved.grade }); // an older snapshot shape: no trend
   assert.equal(buildData().projects[0].score.trend, 0, 'without a saved trend the computed one stands');
+});
+
+test('buildPage carries the installed packs as the live dashboard holds them: the public pack facts, one per pack, by name', () => {
+  seed();
+  const { packs } = buildPage(NOW);
+  assert.deepEqual(packs.map((p) => p.name), listPacks(), 'every installed pack, in name order');
+  const pushed = planPacksPush().docs.map((d) => d.data);
+  assert.deepEqual(packs, pushed, 'the same document the sync pushes to packs/<name>');
+  for (const p of packs) {
+    assert.deepEqual(Object.keys(p).sort(), ['appliesTo', 'classes', 'kinds', 'lastReviewed', 'name', 'probes', 'updatedAt', 'version']);
+    assert.equal(typeof p.classes, 'number');
+    assert.equal(typeof p.probes, 'number');
+  }
+  const text = JSON.stringify(packs);
+  assert.ok(!text.includes(PACKS_DIR) && !text.includes(os.homedir()), 'no folder of this machine');
+  assert.ok(!text.includes('.md'), 'no file name');
+  const html = fs.readFileSync(renderStatic(), 'utf8');
+  assert.ok(JSON.parse(slot(html)).packs.length === listPacks().length, 'the rendered page carries them in its slot');
 });
 
 test('buildData lists every project in slug order and defaults now to the current time', () => {

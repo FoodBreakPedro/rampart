@@ -1,8 +1,9 @@
 'use strict';
 // The static dashboard (spec 5.7, "Without claude.ai"): dashboard/index.html with the store's data inlined, written to
 // ~/.rampart/dashboard.html. The page reads the <script id="rampart-data" type="application/json"> slot on load.
-//   buildPage(now) -> {generatedAt, machineId, projects: [{project, score, findings, runs, dispositions}]}  (buildData is the old name)
+//   buildPage(now) -> {generatedAt, machineId, projects: [{project, score, findings, runs, dispositions}], packs}  (buildData is the old name)
 //   publicProject(project) -> the project without what must not leave the machine (the live dashboard's DB gets the same copy)
+//   packDoc(name, dir?) -> an installed pack's public facts, the packs/<name> document the sync pushes (null when it cannot be read)
 //   renderStatic(outPath?) -> the absolute path written
 // The page data holds no ownerAttestation, no repo.paths, no ssh user or port and no query string on a live URL (publicProject), and a run carries no local folder or URL query in its text (publicRun, R51).
 // Every string in the data goes through redact() first. The store redacts finding text as it arrives, but other fields
@@ -25,6 +26,7 @@ const { machineId, rampartHome } = require('./lib/paths.cjs');
 const { redact } = require('./lib/redact.cjs');
 const { writeAtomic } = require('./lib/atomic.cjs');
 const exec = require('./lib/exec.cjs');
+const { listPacks, readPack, PACKS_DIR } = require('./packs.cjs');
 
 const TEMPLATE = path.join(__dirname, '..', 'dashboard', 'index.html');
 const SLOT_RE = /(<script id="rampart-data" type="application\/json">)[\s\S]*?(<\/script>)/;
@@ -160,8 +162,32 @@ function publicRun({ raw, ...run }, project) {
   return scrub(run);
 }
 
-// Everything the page shows, for every project in the store, in slug order. Runs are the run.json objects (raw tool
-// output is never read); findings are the stored records.
+// An installed pack as the page and the live dashboard's DB (packs/<name>, db-layout.md) hold it: name, version, lastReviewed,
+// appliesTo, kinds, the class and probe counts, and updatedAt (the pack file's mtime). Nothing of the pack's text, no folder,
+// no file name. null when the pack cannot be read.
+function packDoc(name, dir = PACKS_DIR) {
+  let pack;
+  let mtime;
+  try {
+    pack = readPack(name, dir);
+    mtime = fs.statSync(path.join(dir, `${name}.md`)).mtime.toISOString();
+  } catch {
+    return null;
+  }
+  return {
+    name: pack.name,
+    version: pack.version,
+    lastReviewed: pack.lastReviewed,
+    appliesTo: pack.appliesTo,
+    kinds: pack.kinds,
+    classes: Array.isArray(pack.classes) ? pack.classes.length : 0,
+    probes: Array.isArray(pack.probes) ? pack.probes.length : 0,
+    updatedAt: mtime,
+  };
+}
+
+// Everything the page shows, for every project in the store, in slug order, plus the installed packs in name order. Runs are
+// the run.json objects (raw tool output is never read); findings are the stored records.
 function buildPage(now = new Date()) {
   if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new TypeError('now must be a valid Date');
   const projects = store.listProjects().map((slug) => {
@@ -172,7 +198,8 @@ function buildPage(now = new Date()) {
     const score = projectScore(slug, project, findings, runs, now);
     return redactDeep({ project: publicProject(project), score, findings: findings.map(publicFinding), runs: runs.map((r) => publicRun(r, project)), dispositions });
   });
-  return { generatedAt: now.toISOString(), machineId: machineId(), projects };
+  const packs = listPacks().map((name) => packDoc(name)).filter(Boolean).map(redactDeep);
+  return { generatedAt: now.toISOString(), machineId: machineId(), projects, packs };
 }
 
 // JSON that is safe as the text of a script element.
@@ -258,4 +285,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { buildPage, buildData: buildPage, publicProject, publicFinding, publicRun, scrubText, projectScore, redactDeep, renderStatic };
+module.exports = { buildPage, buildData: buildPage, publicProject, publicFinding, publicRun, packDoc, scrubText, projectScore, redactDeep, renderStatic };
