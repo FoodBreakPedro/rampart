@@ -11,6 +11,8 @@ export const meta = {
 // The workflow never reads a file: hunters reply with their candidate refs, verifiers get the candidate file's path and the ref.
 // Every name and path below follows hunt-io.cjs, which ingests, tallies and assembles what the agents write.
 // A hunter that returns nothing is not dispatched again and its unit is reported failed; a candidate gets at most three verifiers.
+// hunt-io splits a large plan into batches, one workflow run each; within a run, no agent is started past args.agentCap (the
+// runner's own limit), so a hunter that could not start leaves its unit failed and a verifier that could not start is a missing vote.
 // log() lines carry only counts, refs, unit ids and class ids, never a title or other agent-written text.
 
 const LOW_CLASSES = ['authz-scoping', 'tenant-isolation', 'bulk-export', 'session-handling', 'search-injection'];
@@ -75,6 +77,21 @@ const system = (input.systems || [])[0] || {};
 const kind = system.kind === 'host' ? 'host' : 'code';
 const classes = input.classes || [];
 
+const agentCap = Number.isInteger(input.agentCap) && input.agentCap > 0 ? input.agentCap : 1000;
+let started = 0;
+let capHit = false;
+
+// agent(), unless the cap is reached: then nothing is started and the caller sees null, as for an agent that died.
+function dispatch(prompt, opts) {
+  if (started >= agentCap) {
+    if (!capHit) log(`agent cap of ${agentCap} reached: no more agents are started in this workflow run`);
+    capHit = true;
+    return Promise.resolve(null);
+  }
+  started += 1;
+  return agent(prompt, opts);
+}
+
 const classText = (c) => `${c.pack}@${c.packVersion} ${c.classId}: ${c.title}\n\n${c.text}`;
 const hunterKeyOf = (unit, classId) => `${fileKey(unit)}__${classId}`;
 
@@ -118,7 +135,7 @@ function verifierPrompt(cand, n) {
 let votes = 0;
 
 const verifier = (cand, n) =>
-  agent(verifierPrompt(cand, n), {
+  dispatch(verifierPrompt(cand, n), {
     agentType: 'rampart:verifier',
     label: `verify:${cand.candidateRef}:${n}`,
     phase: 'Verify',
@@ -162,7 +179,7 @@ if (input.layer === 'INFRA') {
   }
   log(`INFRA: no hunt; verifying ${cands.length} candidate${cands.length === 1 ? '' : 's'}`);
   await parallel(cands.map((c) => () => verify(c)));
-  return { hunters: { dispatched: 0, returned: 0 }, candidates: cands.length, votes, failedUnits: [] };
+  return { hunters: { dispatched: 0, returned: 0 }, candidates: cands.length, votes, failedUnits: [], agents: started, capReached: capHit };
 }
 
 // ---- L2 / L3: hunt, and verify each hunter's candidates as soon as it returns -----------------
@@ -176,7 +193,8 @@ if (input.effort === 'low') {
 
 const items = [];
 for (const unit of input.units || []) for (const cls of planned) items.push({ unit, cls, key: hunterKeyOf(unit.unit, cls.classId) });
-log(`hunting ${items.length} unit-class pair${items.length === 1 ? '' : 's'} over ${(input.units || []).length} unit${(input.units || []).length === 1 ? '' : 's'}`);
+const batchNote = input.batch && Number.isInteger(input.batch.index) && Number.isInteger(input.batch.of) ? ` (batch ${input.batch.index} of ${input.batch.of})` : '';
+log(`hunting ${items.length} unit-class pair${items.length === 1 ? '' : 's'} over ${(input.units || []).length} unit${(input.units || []).length === 1 ? '' : 's'}${batchNote}`);
 
 let candidates = 0;
 
@@ -186,7 +204,7 @@ let candidates = 0;
 const isItem = (v) => v !== null && typeof v === 'object' && typeof v.key === 'string' && v.unit && v.cls;
 const outcomes = await pipeline(items, async (first, second) => {
   const item = isItem(second) ? second : first;
-  const result = await agent(hunterPrompt(item.unit, item.cls, item.key), {
+  const result = await dispatch(hunterPrompt(item.unit, item.cls, item.key), {
     agentType: 'rampart:hunter',
     label: `hunt:${item.unit.unit}:${item.cls.classId}`,
     phase: 'Hunt',
@@ -226,4 +244,4 @@ outcomes.forEach((o, i) => {
 });
 log(`hunters returned ${returned}/${items.length}; ${candidates} candidates; ${votes} votes; ${failedUnits.length} failed unit${failedUnits.length === 1 ? '' : 's'}`);
 
-return { hunters: { dispatched: items.length, returned }, candidates, votes, failedUnits };
+return { hunters: { dispatched: items.length, returned }, candidates, votes, failedUnits, agents: started, capReached: capHit };

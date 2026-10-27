@@ -1,7 +1,8 @@
 'use strict';
 // The score sheet (spec 5.6). Per system, two parts:
 //   coverage, 40 points: for each layer the system declares, 1 when its last successful run is inside the layer's cadence
-//     window, 0.5 inside two windows, 0 beyond or never run; 40 times the mean. No layers means nothing is missing: 40.
+//     window, 0.5 inside two windows, 0 beyond or never run, times the share of its units that run covered (a hunt run that
+//     failed some units; runs without a unit count are whole); 40 times the mean. No layers means nothing is missing: 40.
 //   findings, 60 points: start at 60, subtract WEIGHTS[class][severity] for each open or regressed finding of the system,
 //     floor 0. `hardening` costs nothing and is counted beside the grade instead.
 // score = coverage + findings, one decimal; grade A >= 90, B >= 75, C >= 60, D >= 40, F below (judged on the rounded score,
@@ -73,7 +74,8 @@ function layerCredit(lastRunAt, cadenceDays, now) {
 
 // ---- one system ---------------------------------------------------------------------------
 
-// When the latest successful run of this layer on this system finished (the stored finishedAt, else startedAt), or null.
+// The latest successful run of this layer on this system, as {at, share}: at is when it finished (the stored finishedAt, else
+// startedAt), share the part of its planned units it covered (1 when the run records no unit coverage); null when none.
 // A run counts when it is done and names both the system and the layer; one whose time cannot be read is skipped.
 function lastRunOf(runs, systemId, layer) {
   let best = null;
@@ -84,11 +86,16 @@ function lastRunOf(runs, systemId, layer) {
     const stamp = r.finishedAt || r.startedAt;
     const at = typeof stamp === 'string' ? Date.parse(stamp) : NaN;
     if (!Number.isNaN(at) && at > bestAt) {
-      best = stamp;
+      best = { at: stamp, share: shareOf(r.coverage) };
       bestAt = at;
     }
   }
   return best;
+}
+
+function shareOf(cov) {
+  if (!cov || !Number.isInteger(cov.planned) || !Number.isInteger(cov.covered) || cov.planned <= 0) return 1;
+  return Math.min(1, Math.max(0, cov.covered / cov.planned));
 }
 
 function deduction(f) {
@@ -114,10 +121,11 @@ function scoreSystem(system, findings, runs, now) {
     } catch (err) {
       throw new TypeError(`system ${system.id} layer ${layer}: ${err.message}`);
     }
-    const lastRun = lastRunOf(runs, system.id, layer);
-    const credit = layerCredit(lastRun, cadenceDays, now);
+    const last = lastRunOf(runs, system.id, layer);
+    const lastRun = last === null ? null : last.at;
+    const credit = Math.round(layerCredit(lastRun, cadenceDays, now) * (last === null ? 1 : last.share) * 100) / 100;
     const nextDue = lastRun === null ? null : new Date(Date.parse(lastRun) + cadenceDays * DAY_MS).toISOString();
-    layers[layer] = { lastRun, nextDue, credit };
+    layers[layer] = last !== null && last.share < 1 ? { lastRun, nextDue, credit, unitShare: Math.round(last.share * 100) / 100 } : { lastRun, nextDue, credit };
     credits += credit;
     layerCount++;
   }
@@ -210,7 +218,7 @@ function render(slug, result) {
     if (layers.length === 0) continue;
     lines.push('', `${id} layers`);
     for (const [layer, l] of layers) {
-      lines.push(`  ${layer.padEnd(5)} last ${l.lastRun === null ? 'never' : day(l.lastRun)}  next due ${l.nextDue === null ? 'now' : day(l.nextDue)}  credit ${l.credit}`);
+      lines.push(`  ${layer.padEnd(5)} last ${l.lastRun === null ? 'never' : day(l.lastRun)}  next due ${l.nextDue === null ? 'now' : day(l.nextDue)}  credit ${l.credit}${l.unitShare !== undefined ? ` (last run covered ${Math.round(l.unitShare * 100)}% of its units)` : ''}`);
     }
   }
   return lines.join('\n');

@@ -3,6 +3,8 @@
 ## Unreleased
 
 - **Packs reach the live dashboard.** The sync now pushes each installed pack's public facts (name, version, last reviewed, what it applies to, class and probe counts) to the DB's `packs` collection, once per cycle through `sync-plan.cjs push --packs`, and reads that collection in its snapshot so later pushes are pinned. A dashboard synced before this version gets every pack on its next sync. The page does not show them yet.
+- **Large hunts run in batches.** The workflow runner starts at most 1,000 agents per workflow run, and a medium L3 audit of a 99-unit repository planned 1,188 hunters in one, so 189 never started. `hunt-io.cjs init` now prints L2 and L3 plans as `batches` of at most 400 hunters each, which leaves room for their verifiers; the audit recipe runs them one after another into the same run, and the dry run shows how many workflow runs each effort takes. The workflow itself stops starting agents at the cap (`args.agentCap`), so anything past it fails its unit instead of disappearing, and returns `agents` and `capReached`.
+- **Partial runs earn partial credit.** A hunt run records the units it planned and covered (`coverage` in `run.json`), and a done run that left units failed earns only the covered share of the layer's coverage credit (83 of 99 units: 0.84), instead of full credit. The score sheet shows the share, and the audit summary names the failed units.
 
 ## 0.4.0-alpha.1 — 2026-10-26
 

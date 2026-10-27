@@ -34,6 +34,15 @@
         "invalid": { "type": "integer", "minimum": 0, "description": "Agent candidate or vote entries hunt-io could not use and dropped." }
       }
     },
+    "coverage": {
+      "type": "object",
+      "description": "Hunt runs (L2, L3, INFRA): the units the run planned (skipped INFRA probes left out) and how many it covered. The score credits a done run for the covered share.",
+      "required": ["planned", "covered"],
+      "properties": {
+        "planned": { "type": "integer", "minimum": 0 },
+        "covered": { "type": "integer", "minimum": 0 }
+      }
+    },
     "revision": {
       "type": "object",
       "properties": {

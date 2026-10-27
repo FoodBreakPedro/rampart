@@ -18,7 +18,8 @@
 //   ingest(slug, runId)                  normalize all of them: {candidates, votes, invalid: [{file, reason}]}
 //   readCandidates / readVotes           stored forms (ingest first)
 //   tally(candidates, votes)             {verified, rejected, undecided}, each [{candidate, votes}]: the verification bar
-//   initRun(slug, opts)                  plan a run; assemble(slug, runId): tally, upsert, close, cover, finish
+//   initRun(slug, opts)                  plan a run (L2/L3: batches of workflow args); assemble(slug, runId): tally, upsert, close, cover, finish
+//   batchUnits(units, classCount)        the units split into workflow batches of at most HUNTERS_PER_WORKFLOW hunters
 //   initVerify / reverify               a verify run: one verifier per stored finding, then apply the votes (see below)
 // CLI: node scripts/hunt-io.cjs init|assemble|list|init-verify|reverify ... (see USAGE); init --dry-run prints the cost per effort
 // and creates nothing. Exit 0 ok, 2 usage error or a gate that did not pass, 1 other.
@@ -58,6 +59,12 @@ const MAX_TEXT = 2000;
 const GIT_TIMEOUT_MS = 60000;
 // A rough average for one hunter or verifier run, for the cost shown before an audit (an estimate, not a budget).
 const TOKENS_PER_AGENT = 50000;
+// The workflow runner starts at most this many agents in one workflow run; past it, agents are never started. An L2 or L3 plan
+// is split into batches, one workflow run each, of at most HUNTERS_PER_WORKFLOW hunters, which leaves the rest of the cap to
+// their verifiers; the workflow itself stops dispatching at the cap, so a batch that finds a lot fails units instead of losing
+// them silently.
+const WORKFLOW_AGENT_CAP = 1000;
+const HUNTERS_PER_WORKFLOW = 400;
 
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isText = (v) => typeof v === 'string' && v !== '';
@@ -438,6 +445,15 @@ function byEffort(units, classes, effort) {
   };
 }
 
+// Consecutive units grouped so that no group needs more than HUNTERS_PER_WORKFLOW hunters (units x classes). A unit is never split:
+// a unit with more classes than that is a batch of its own.
+function batchUnits(units, classCount) {
+  const per = Math.max(1, Math.floor(HUNTERS_PER_WORKFLOW / Math.max(1, classCount)));
+  const batches = [];
+  for (let i = 0; i < units.length; i += per) batches.push(units.slice(i, i + per));
+  return batches;
+}
+
 // What a run for one system and layer would hunt, before any effort filter. Gates (project, owner attestation, system, an
 // INFRA audit in a cloud session) throw RangeError. An L2 audit with an empty diff returns {empty: true, ...}.
 function planRun(slug, { system: systemId, layer, repo: repoOverride, base } = {}) {
@@ -465,9 +481,9 @@ function planRun(slug, { system: systemId, layer, repo: repoOverride, base } = {
   return { system, packs, classes, repoRoot, units: scope.units.map((u) => ({ ...u, paths: kept.filter((p) => coverage.unitOf(p) === u.id) })) };
 }
 
-// The cost of a run without creating it: per effort, units, classes, hunters (units x classes) and agent runs (a hunter and,
-// on average, about one verifier each: 2 per hunter), with a rough token figure. INFRA has no effort: one prober and up to
-// three verifiers for each of at most 10 candidates.
+// The cost of a run without creating it: per effort, units, classes, hunters (units x classes), the workflow runs they take
+// (batchUnits) and agent runs (a hunter and, on average, about one verifier each: 2 per hunter), with a rough token figure.
+// INFRA has no effort: one prober and up to three verifiers for each of at most 10 candidates.
 function dryRun(slug, opts = {}) {
   const plan = planRun(slug, opts);
   if (plan.empty) return plan;
@@ -480,13 +496,16 @@ function dryRun(slug, opts = {}) {
   for (const effort of ['low', 'medium', 'high']) {
     const { units, classes } = byEffort(plan.units, plan.classes, effort);
     const hunters = units.length * classes.length;
-    efforts[effort] = { units: units.length, classes: classes.length, hunters, agents: 2 * hunters, tokens: 2 * hunters * TOKENS_PER_AGENT };
+    const workflows = units.length && classes.length ? batchUnits(units, classes.length).length : 0;
+    efforts[effort] = { units: units.length, classes: classes.length, hunters, workflows, agents: 2 * hunters, tokens: 2 * hunters * TOKENS_PER_AGENT };
   }
   return { ...head, efforts };
 }
 
 // Plan a run for one system and layer. Gates (project, owner attestation, system) throw RangeError before anything is created.
-// An L2 audit with an empty diff returns {empty: true, ...} and creates nothing. Otherwise returns {runId, runDir, args}.
+// An L2 audit with an empty diff returns {empty: true, ...} and creates nothing. Otherwise returns {runId, runDir, ...}: for L2
+// and L3 `batches`, the workflow args of each batch (one workflow run each, in order, all in this one run directory); for INFRA
+// `args` and `prober`.
 function initRun(slug, { system: systemId, layer, effort = 'medium', repo: repoOverride, base, runId } = {}) {
   if (!['L2', 'L3', 'INFRA'].includes(layer)) throw new RangeError('layer must be L2, L3 or INFRA');
   if (!['low', 'medium', 'high'].includes(effort)) throw new RangeError('effort must be low, medium or high');
@@ -515,28 +534,33 @@ function initRun(slug, { system: systemId, layer, effort = 'medium', repo: repoO
   const hunted = new Set(classes.map((c) => `${c.pack}/${c.classId}`));
   const classesLeftOut = infra ? [] : plan.classes.filter((c) => !hunted.has(`${c.pack}/${c.classId}`)).map(({ pack, packVersion, classId, title }) => ({ pack, packVersion, classId, title }));
   writeAtomic(path.join(dir, 'units.json'), toJson({ layer, effort, system: systemId, repoRoot, units: unitsDoc, classes, classesLeftOut, hunters }));
+  const argsFor = (batchUnitsList, batch) => ({
+    project: slug,
+    runId: id,
+    repoRoot,
+    systems: [{ id: systemId, type: system.type, kind: infra ? 'host' : 'code' }],
+    layer,
+    units: batchUnitsList.map((u) => ({ system: systemId, unit: u.id, files: Number.isInteger(u.files) ? u.files : null, ...(Array.isArray(u.paths) ? { paths: u.paths } : {}) })),
+    classes: classes.map(({ pack, packVersion, classId, title, text }) => ({ pack, packVersion, classId, title, text })),
+    runDir: dir,
+    effort,
+    agentCap: WORKFLOW_AGENT_CAP,
+    ...(batch ? { batch } : {}),
+    ...(infra ? { baseline: baselineOf(packs) } : {}),
+  });
+  if (!infra) {
+    const groups = batchUnits(units, classes.length);
+    return { runId: id, runDir: dir, batches: groups.map((g, i) => argsFor(g, { index: i + 1, of: groups.length })) };
+  }
   return {
     runId: id,
     runDir: dir,
-    ...(infra ? {
-      prober: {
-        system: { id: systemId, type: system.type, host: hostNameOf(system) },
-        observationsPath: path.join(dir, 'observations.json'),
-        outputPath: path.join(dir, 'candidates', `${infraKey(systemId)}.json`),
-      },
-    } : {}),
-    args: {
-      project: slug,
-      runId: id,
-      repoRoot,
-      systems: [{ id: systemId, type: system.type, kind: infra ? 'host' : 'code' }],
-      layer,
-      units: units.map((u) => ({ system: systemId, unit: u.id, files: Number.isInteger(u.files) ? u.files : null, ...(Array.isArray(u.paths) ? { paths: u.paths } : {}) })),
-      classes: classes.map(({ pack, packVersion, classId, title, text }) => ({ pack, packVersion, classId, title, text })),
-      runDir: dir,
-      effort,
-      ...(infra ? { baseline: baselineOf(packs) } : {}),
+    prober: {
+      system: { id: systemId, type: system.type, host: hostNameOf(system) },
+      observationsPath: path.join(dir, 'observations.json'),
+      outputPath: path.join(dir, 'candidates', `${infraKey(systemId)}.json`),
     },
+    args: argsFor(units),
   };
 }
 
@@ -666,10 +690,12 @@ function assemble(slug, runId) {
     verified: t.verified.length, rejected: t.rejected.length, undecided: t.undecided.length,
     invalid: invalid.length,
   };
-  // A run that covered fewer than half its planned units is not a finished audit of the layer (the score credits a done run in
-  // full): it finishes failed, though the units it did cover keep their place in the ledger and their closes.
+  // A run that covered fewer than half its planned units is not a finished audit of the layer: it finishes failed, though the units it did cover keep their place in the ledger and their closes.
   const reason = covered.length === 0 ? 'no unit was covered' : covered.length < units.length / 2 ? `only ${covered.length} of ${units.length} units were covered` : null;
-  store.finishRun(slug, runId, reason ? { status: 'failed', reason, counts } : { status: 'done', counts });
+  // A done run with failed units is credited only for the share it covered (score.cjs); a skipped INFRA probe does not apply to
+  // the host, so it counts on neither side.
+  const unitCoverage = { planned: units.filter((u) => u.status !== 'skipped').length, covered: covered.length };
+  store.finishRun(slug, runId, reason ? { status: 'failed', reason, counts, coverage: unitCoverage } : { status: 'done', counts, coverage: unitCoverage });
   return { counts, invalid, findings: findings.map((f) => f.id), skipped: units.filter((u) => u.status === 'failed' || u.status === 'skipped') };
 }
 
@@ -937,6 +963,6 @@ function main(argv, { stdout = process.stdout, stderr = process.stderr } = {}) {
 if (require.main === module) process.exitCode = main(process.argv.slice(2));
 
 module.exports = {
-  LOW_CLASSES, TOKENS_PER_AGENT, fileKey, hunterKey, infraKey, ingest, writeCandidate, writeVote, readCandidates, readVotes, tally, initRun, dryRun, assemble,
+  LOW_CLASSES, TOKENS_PER_AGENT, WORKFLOW_AGENT_CAP, HUNTERS_PER_WORKFLOW, batchUnits, fileKey, hunterKey, infraKey, ingest, writeCandidate, writeVote, readCandidates, readVotes, tally, initRun, dryRun, assemble,
   listCandidates, initVerify, reverify, main,
 };
