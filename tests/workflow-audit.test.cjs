@@ -134,7 +134,7 @@ test('one hunter per unit and class, labelled, with its output path, dispatch fi
   assert.match(lib, /^files:\n- lib\/auth\.ts\n- lib\/db\.ts$/m);
   assert.match(lib, new RegExp(`^outputPath: ${RUN_DIR}/candidates/lib__csrf\\.json$`, 'm'));
   for (const c of calls) for (const rule of ROLE_RULES) assert.ok(c.prompt.includes(rule), `${c.label} carries: ${rule}`);
-  assert.deepEqual(result, { hunters: { dispatched: 4, returned: 4 }, candidates: 0, votes: 0, failedUnits: [] });
+  assert.deepEqual(result, { hunters: { dispatched: 4, returned: 4 }, candidates: 0, votes: 0, failedUnits: [], agents: 4, capReached: false });
 });
 
 test('a hunter that dies leaves its unit failed and is never dispatched again', async () => {
@@ -144,6 +144,25 @@ test('a hunter that dies leaves its unit failed and is never dispatched again', 
   assert.deepEqual(result.failedUnits, ['lib']);
   assert.deepEqual(result.hunters, { dispatched: 4, returned: 3 });
   assert.ok(logs.some((l) => l.includes('lib') && l.includes('csrf')));
+});
+
+test('no agent starts past args.agentCap: the hunters left over fail their units, and the log says so once', async () => {
+  const { result, calls, logs } = await run(codeArgs({ agentCap: 3, batch: { index: 2, of: 5 } }), nothingFound);
+  assert.equal(calls.length, 3, 'three agents started, the fourth never');
+  assert.deepEqual(result.hunters, { dispatched: 4, returned: 3 });
+  assert.equal(result.failedUnits.length, 1);
+  assert.equal(result.agents, 3);
+  assert.equal(result.capReached, true);
+  assert.equal(logs.filter((l) => l.includes('agent cap of 3 reached')).length, 1);
+  assert.ok(logs.some((l) => l.includes('(batch 2 of 5)')));
+});
+
+test('a missing or bad agentCap falls back to the runner limit of 1000', async () => {
+  for (const agentCap of [undefined, 0, -1, 2.5, '3']) {
+    const { result } = await run(codeArgs({ agentCap }), nothingFound);
+    assert.equal(result.capReached, false);
+    assert.equal(result.agents, 4);
+  }
 });
 
 test('two verifiers per candidate; a third only on a HIGH or CRITICAL split with both verdicts in', async () => {
@@ -182,7 +201,7 @@ test('two verifiers per candidate; a third only on a HIGH or CRITICAL split with
     assert.ok(c.prompt.includes(`outputPath: ${RUN_DIR}/votes/${key}__${ref}__${n}.json`));
     assert.ok(!c.prompt.includes(TITLE), 'a hunter title never reaches a verifier prompt');
   }
-  assert.deepEqual(result, { hunters: { dispatched: 1, returned: 1 }, candidates: 4, votes: 8, failedUnits: [] });
+  assert.deepEqual(result, { hunters: { dispatched: 1, returned: 1 }, candidates: 4, votes: 8, failedUnits: [], agents: 10, capReached: false });
 });
 
 test('low effort drops the classes outside the LOW list and says so', async () => {
@@ -228,7 +247,7 @@ test('INFRA skips the hunt and verifies the given candidates against the observa
   assert.match(unknown, /^classText:\n\n\noutputPath:/m, 'an unknown class gives an empty classText');
   assert.ok(logs.some((l) => l.includes('not-a-class')));
   for (const c of verifiers) for (const rule of ROLE_RULES) assert.ok(c.prompt.includes(rule));
-  assert.deepEqual(result, { hunters: { dispatched: 0, returned: 0 }, candidates: 2, votes: 4, failedUnits: [] });
+  assert.deepEqual(result, { hunters: { dispatched: 0, returned: 0 }, candidates: 2, votes: 4, failedUnits: [], agents: 4, capReached: false });
 });
 
 test('no candidate title appears in a log line or the return value', async () => {

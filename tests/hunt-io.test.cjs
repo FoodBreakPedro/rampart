@@ -280,6 +280,10 @@ test('assemble upserts verified findings only and marks a unit whose hunter neve
   const doc = JSON.parse(fs.readFileSync(path.join(s.dir, 'units.json'), 'utf8'));
   assert.equal(doc.units.find((u) => u.id === 'app/api/export').status, 'failed');
   assert.equal(doc.units.find((u) => u.id === 'app/api/users').status, 'covered');
+  // The run records its unit coverage, so the score credits only the share it covered.
+  const run = JSON.parse(fs.readFileSync(path.join(s.dir, 'run.json'), 'utf8'));
+  assert.equal(run.status, 'done');
+  assert.deepEqual(run.coverage, { planned: 2, covered: 1 });
 });
 
 test('rejected and undecided candidates stay out of findings.jsonl', () => {
@@ -467,8 +471,12 @@ test('init prints the workflow args and plans every class on every unit at high 
   const out = JSON.parse(r.stdout);
   assert.match(out.runId, /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$/);
   assert.equal(out.runDir, runDir(SLUG, out.runId));
-  const a = out.args;
-  assert.deepEqual(Object.keys(a).sort(), ['classes', 'effort', 'layer', 'project', 'repoRoot', 'runDir', 'runId', 'systems', 'units'].sort());
+  assert.equal(out.batches.length, 1, '70 hunters fit in one workflow run');
+  assert.equal(out.args, undefined, 'L2 and L3 print batches, not args');
+  const a = out.batches[0];
+  assert.deepEqual(Object.keys(a).sort(), ['agentCap', 'batch', 'classes', 'effort', 'layer', 'project', 'repoRoot', 'runDir', 'runId', 'systems', 'units'].sort());
+  assert.equal(a.agentCap, hio.WORKFLOW_AGENT_CAP);
+  assert.deepEqual(a.batch, { index: 1, of: 1 });
   assert.equal(a.project, SLUG);
   assert.equal(a.layer, 'L3');
   assert.equal(a.effort, 'high');
@@ -515,21 +523,21 @@ test('init at low effort plans only the LOW classes, and only on reachable units
     fs.writeFileSync(path.join(repo, 'docs', 'a.md'), 'x');
     fs.writeFileSync(path.join(repo, 'app', 'api', 'x', 'route.ts'), 'x');
     const low = JSON.parse(cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L3', '--effort', 'low', '--repo', repo).stdout);
-    assert.deepEqual(low.args.classes.map((c) => c.classId).sort(), [...hio.LOW_CLASSES].sort());
-    assert.deepEqual(low.args.units.map((u) => u.unit), ['app/api/x']);
+    assert.deepEqual(low.batches[0].classes.map((c) => c.classId).sort(), [...hio.LOW_CLASSES].sort());
+    assert.deepEqual(low.batches[0].units.map((u) => u.unit), ['app/api/x']);
     const doc = JSON.parse(fs.readFileSync(path.join(low.runDir, 'units.json'), 'utf8'));
     assert.deepEqual(doc.hunters.map((h) => h.unit), Array(hio.LOW_CLASSES.length).fill('app/api/x'));
     // R47: the classes the effort left out are kept in units.json for the report
     assert.equal(doc.classesLeftOut.length, 14 - hio.LOW_CLASSES.length);
     assert.ok(doc.classesLeftOut.every((c) => !hio.LOW_CLASSES.includes(c.classId) && c.pack === 'web-nextjs' && typeof c.title === 'string' && !('text' in c)));
     const onTarget = JSON.parse(cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L3', '--effort', 'low', '--repo', TARGET).stdout);
-    assert.deepEqual(onTarget.args.classes.map((c) => c.classId).sort(), [...hio.LOW_CLASSES].sort());
-    assert.equal(onTarget.args.units.length, 5);
+    assert.deepEqual(onTarget.batches[0].classes.map((c) => c.classId).sort(), [...hio.LOW_CLASSES].sort());
+    assert.equal(onTarget.batches[0].units.length, 5);
     const high = JSON.parse(cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L3', '--effort', 'high', '--repo', repo).stdout);
-    assert.deepEqual(high.args.units.map((u) => u.unit).sort(), ['app/api/x', 'docs']);
+    assert.deepEqual(high.batches[0].units.map((u) => u.unit).sort(), ['app/api/x', 'docs']);
     const medium = JSON.parse(cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L3', '--effort', 'medium', '--repo', repo).stdout);
-    assert.deepEqual(medium.args.units.map((u) => u.unit), ['app/api/x']);
-    assert.equal(medium.args.classes.length, 14);
+    assert.deepEqual(medium.batches[0].units.map((u) => u.unit), ['app/api/x']);
+    assert.equal(medium.batches[0].classes.length, 14);
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(medium.runDir, 'units.json'), 'utf8')).classesLeftOut, []);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
@@ -576,7 +584,7 @@ test('init at L2 on an empty diff reports empty and leaves no run directory', ()
     git('commit', '-q', '-m', 'feature');
     const r2 = cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L2', '--effort', 'medium', '--repo', repo, '--base', 'main');
     assert.equal(r2.status, 0, r2.stderr);
-    assert.deepEqual(JSON.parse(r2.stdout).args.units.map((u) => [u.unit, u.paths]), [['app/api/y', ['app/api/y/route.ts']]]);
+    assert.deepEqual(JSON.parse(r2.stdout).batches[0].units.map((u) => [u.unit, u.paths]), [['app/api/y', ['app/api/y/route.ts']]]);
     // R46: an L2 run keeps each unit's hunted files in units.json, so assemble closes findings only in those files.
     const l2doc = JSON.parse(fs.readFileSync(path.join(JSON.parse(r2.stdout).runDir, 'units.json'), 'utf8'));
     assert.deepEqual(l2doc.units.map((u) => [u.id, u.paths]), [['app/api/y', ['app/api/y/route.ts']]]);
@@ -595,7 +603,7 @@ test('init at L2 on an empty diff reports empty and leaves no run directory', ()
     git('commit', '-q', '-m', 'delete a, change b');
     const r3 = cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L2', '--effort', 'medium', '--repo', repo, '--base', 'main');
     assert.equal(r3.status, 0, r3.stderr);
-    assert.deepEqual(JSON.parse(r3.stdout).args.units.map((u) => [u.unit, u.files, u.paths]), [['app/api/z', 1, ['app/api/z/b.ts']]]);
+    assert.deepEqual(JSON.parse(r3.stdout).batches[0].units.map((u) => [u.unit, u.files, u.paths]), [['app/api/z', 1, ['app/api/z/b.ts']]]);
     const run = JSON.parse(fs.readFileSync(path.join(JSON.parse(r2.stdout).runDir, 'run.json'), 'utf8'));
     assert.match(run.revision.commit, /^[0-9a-f]{40}$/);
     assert.equal(run.revision.dirty, false);
@@ -813,11 +821,51 @@ test('init --dry-run prints the plan for each effort and creates nothing', () =>
   assert.equal(out.layer, 'L3');
   assert.equal(out.system, SYS);
   assert.deepEqual(Object.keys(out.efforts), ['low', 'medium', 'high']);
-  assert.deepEqual(out.efforts.low, { units: 5, classes: 5, hunters: 25, agents: 50, tokens: 50 * hio.TOKENS_PER_AGENT });
-  assert.deepEqual(out.efforts.medium, { units: 5, classes: 14, hunters: 70, agents: 140, tokens: 140 * hio.TOKENS_PER_AGENT });
-  assert.deepEqual(out.efforts.high, { units: 5, classes: 14, hunters: 70, agents: 140, tokens: 140 * hio.TOKENS_PER_AGENT });
+  assert.deepEqual(out.efforts.low, { units: 5, classes: 5, hunters: 25, workflows: 1, agents: 50, tokens: 50 * hio.TOKENS_PER_AGENT });
+  assert.deepEqual(out.efforts.medium, { units: 5, classes: 14, hunters: 70, workflows: 1, agents: 140, tokens: 140 * hio.TOKENS_PER_AGENT });
+  assert.deepEqual(out.efforts.high, { units: 5, classes: 14, hunters: 70, workflows: 1, agents: 140, tokens: 140 * hio.TOKENS_PER_AGENT });
   assert.ok(!('runId' in out) && !('args' in out));
   assert.ok(!fs.existsSync(runsDir()), 'a dry run creates no run');
+});
+
+test('batchUnits keeps every batch at or under HUNTERS_PER_WORKFLOW hunters, in order, never splitting a unit', () => {
+  const units = Array.from({ length: 99 }, (_, i) => ({ id: `u${i}` }));
+  // The L3 audit that hit the runner's cap: 99 units x 12 classes = 1,188 hunters in one workflow.
+  const batches = hio.batchUnits(units, 12);
+  assert.ok(batches.every((b) => b.length * 12 <= hio.HUNTERS_PER_WORKFLOW));
+  assert.deepEqual(batches.flat().map((u) => u.id), units.map((u) => u.id));
+  assert.equal(batches.length, Math.ceil(99 / Math.floor(hio.HUNTERS_PER_WORKFLOW / 12)));
+  assert.ok(hio.HUNTERS_PER_WORKFLOW < hio.WORKFLOW_AGENT_CAP, 'room is left under the cap for verifiers');
+  assert.deepEqual(hio.batchUnits(units.slice(0, 3), hio.HUNTERS_PER_WORKFLOW + 1).map((b) => b.length), [1, 1, 1], 'a unit with too many classes is a batch of its own');
+  assert.deepEqual(hio.batchUnits([], 12), []);
+});
+
+test('init splits a large plan into batches: every unit in exactly one, each batch numbered, all in one run', () => {
+  store.writeProject(projectObject());
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'rampart batches '));
+  try {
+    // 40 reachable units x 14 classes = 560 hunters: more than one workflow run's worth.
+    for (let i = 0; i < 40; i++) {
+      fs.mkdirSync(path.join(repo, 'app', 'api', `r${i}`), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'app', 'api', `r${i}`, 'route.ts'), 'x');
+    }
+    const dry = JSON.parse(cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L3', '--repo', repo, '--dry-run').stdout);
+    const r = cli('init', '--project', SLUG, '--system', SYS, '--layer', 'L3', '--effort', 'medium', '--repo', repo);
+    assert.equal(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.batches.length, dry.efforts.medium.workflows);
+    assert.ok(out.batches.length > 1);
+    assert.deepEqual(out.batches.map((b) => b.batch), out.batches.map((_, i) => ({ index: i + 1, of: out.batches.length })));
+    assert.ok(out.batches.every((b) => b.runId === out.runId && b.runDir === out.runDir && b.agentCap === hio.WORKFLOW_AGENT_CAP));
+    assert.ok(out.batches.every((b) => b.units.length * b.classes.length <= hio.HUNTERS_PER_WORKFLOW));
+    const all = out.batches.flatMap((b) => b.units.map((u) => u.unit));
+    assert.equal(new Set(all).size, all.length, 'no unit in two batches');
+    const doc = JSON.parse(fs.readFileSync(path.join(out.runDir, 'units.json'), 'utf8'));
+    assert.deepEqual(all.sort(), doc.units.map((u) => u.id).sort(), 'every planned unit is in a batch');
+    assert.equal(doc.hunters.length, all.length * 14);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 test('init --dry-run for INFRA counts probes and the most agents a prober run can take; it creates nothing', () => {

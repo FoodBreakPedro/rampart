@@ -218,6 +218,27 @@ test('scoreSystem: coverage is 40 times the mean credit of the system\'s own lay
   assert.equal(s.grade, 'B');
 });
 
+test('scoreSystem: a done run that covered only some of its units earns that share of the layer credit', () => {
+  const sys = system({ layers: { L1: { cadenceDays: 7 }, L3: { cadenceDays: 90 } } });
+  const runs = [
+    run({ layers: ['L1'], finishedAt: ago(3) }), // no unit coverage recorded: whole
+    run({ layers: ['L3'], finishedAt: ago(1), coverage: { planned: 99, covered: 83 } }),
+  ];
+  const s = scoreSystem(sys, [], runs, NOW);
+  assert.deepEqual(s.layers.L1, { lastRun: ago(3), nextDue: ago(3 - 7), credit: 1 });
+  assert.deepEqual(s.layers.L3, { lastRun: ago(1), nextDue: ago(1 - 90), credit: 0.84, unitShare: 0.84 });
+  assert.equal(s.coverage, 36.8); // 40 x (1 + 0.84) / 2
+  // Aging and partial together multiply: 0.5 x 0.84 = 0.42.
+  const aging = scoreSystem(sys, [], [run({ layers: ['L3'], finishedAt: ago(100), coverage: { planned: 99, covered: 83 } })], NOW);
+  assert.equal(aging.layers.L3.credit, 0.42);
+  // A later full run restores full credit; an unreadable coverage record counts as whole.
+  const later = scoreSystem(sys, [], [...runs, run({ layers: ['L3'], finishedAt: ago(0), coverage: { planned: 99, covered: 99 } })], NOW);
+  assert.deepEqual(later.layers.L3, { lastRun: ago(0), nextDue: ago(-90), credit: 1 });
+  for (const coverage of [{ planned: 0, covered: 0 }, { planned: 'x', covered: 1 }, {}]) {
+    assert.equal(scoreSystem(sys, [], [run({ layers: ['L3'], finishedAt: ago(1), coverage })], NOW).layers.L3.credit, 1);
+  }
+});
+
 test('scoreSystem: coverage, findings and score are rounded to one decimal', () => {
   const sys = system({ layers: { L1: { cadenceDays: 7 }, L2: { cadenceDays: 30 }, L3: { cadenceDays: 90 } } });
   const runs = [run({ layers: ['L1', 'L2'], finishedAt: ago(1) }), run({ layers: ['L3'], finishedAt: ago(120) })];

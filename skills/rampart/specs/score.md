@@ -8,6 +8,7 @@ A system's score is its coverage points plus its findings points, out of 100.
 
 - **Coverage, 40 points.** For each layer the system declares (`L1`, `L2`, `L3`, `INFRA`, each with a `cadenceDays`), the credit is 1 when the layer's last run finished within one cadence window, 0.5 within two windows, and 0 beyond that or when it never ran. A run exactly on a window's edge gets the better credit. Coverage is 40 times the mean credit of the system's layers; a system that declares no layers has nothing missing and gets the full 40.
 - **What counts as a run.** A run with status `done` whose `systems` include the system and whose `layers` include the layer. Skipped and failed runs earn nothing. A run's time is `finishedAt`, else `startedAt`; the next due date is that time plus the cadence.
+- **A partly covered run.** A hunt run (L2, L3, INFRA) records `coverage: {planned, covered}`, its planned units and how many it covered. Its credit is the time credit above times `covered / planned`, rounded to two decimals: an L3 run a day old that covered 83 of 99 units earns 0.84, one at 100 of 90 days 0.5 x 0.84 = 0.42. A run without that record (L1, and runs written before it existed) counts as whole. The score sheet shows the share beside the credit. A run that covered fewer than half its units finishes `failed` and earns nothing, as before.
 - **Findings, 60 points.** Start at 60 and subtract for every finding of the system with status `open` or `regressed`, by class and severity:
 
   | Class | CRITICAL | HIGH | MEDIUM | LOW |
