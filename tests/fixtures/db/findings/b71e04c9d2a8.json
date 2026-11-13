@@ -1,0 +1,20 @@
+{
+  "id": "b71e04c9d2a8",
+  "project": "example-app",
+  "system": "mobile",
+  "layer": "L1",
+  "source": "npm-audit",
+  "ruleId": "GHSA-0000-0000-0000",
+  "title": "Prototype pollution in a transitive dependency",
+  "severity": "MEDIUM",
+  "confidence": "HIGH",
+  "class": "tool",
+  "location": { "package": "example-dep", "ecosystem": "npm", "path": "package-lock.json" },
+  "evidence": "example-dep 1.0.0 is in the lock file",
+  "recommendation": "Upgrade example-dep to 1.0.1 or later.",
+  "status": "open",
+  "firstSeen": "2026-10-23T18:02:11Z",
+  "lastSeen": "2026-10-23T18:02:11Z",
+  "disposition": null,
+  "updatedAt": "2026-10-23T18:02:11Z"
+}

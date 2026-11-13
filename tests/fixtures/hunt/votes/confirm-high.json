@@ -1,0 +1,6 @@
+{
+  "verdict": "confirmed",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "reason": "any signed-in user"
+}

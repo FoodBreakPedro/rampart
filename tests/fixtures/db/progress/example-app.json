@@ -1,0 +1,21 @@
+{
+  "project": "example-app",
+  "job": "audit",
+  "layer": "L1",
+  "system": "mobile",
+  "runId": "2026-10-23T18-02-11Z",
+  "jobId": null,
+  "title": "Basic checks: Expo app",
+  "state": "done",
+  "startedAt": "2026-10-23T18:02:00.000Z",
+  "updatedAt": "2026-10-23T18:05:00.000Z",
+  "finishedAt": "2026-10-23T18:05:00.000Z",
+  "staleAfterSec": 900,
+  "overall": { "done": 4, "total": 4, "percent": 100 },
+  "steps": [
+    { "id": "secrets:mobile", "label": "Looking for leaked keys and passwords", "status": "done", "done": null, "total": null, "unit": null, "note": null, "startedAt": "2026-10-23T18:02:00.000Z", "finishedAt": "2026-10-23T18:03:00.000Z" },
+    { "id": "deps:mobile", "label": "Checking libraries for known security holes", "status": "done", "done": null, "total": null, "unit": null, "note": null, "startedAt": "2026-10-23T18:03:00.000Z", "finishedAt": "2026-10-23T18:04:30.000Z" },
+    { "id": "triage", "label": "Sorting real keys from test values", "status": "skipped", "done": null, "total": null, "unit": null, "note": "No new secrets hits to sort", "finishedAt": "2026-10-23T18:04:40.000Z" },
+    { "id": "score", "label": "Scoring", "status": "done", "done": null, "total": null, "unit": null, "note": null, "startedAt": "2026-10-23T18:04:40.000Z", "finishedAt": "2026-10-23T18:05:00.000Z" }
+  ]
+}

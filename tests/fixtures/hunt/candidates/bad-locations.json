@@ -1,0 +1,6 @@
+[
+  { "ref": "c1", "classId": "authz-scoping", "title": "parent path", "severity": "LOW", "confidence": "HIGH", "cwe": ["CWE-639"], "location": { "path": "../x" }, "evidence": "e", "exploitScenario": "s", "preconditions": "p", "recommendation": "r" },
+  { "ref": "c2", "classId": "authz-scoping", "title": "absolute path", "severity": "LOW", "confidence": "HIGH", "cwe": ["CWE-639"], "location": { "path": "/etc/x" }, "evidence": "e", "exploitScenario": "s", "preconditions": "p", "recommendation": "r" },
+  { "ref": "c3", "classId": "authz-scoping", "title": "drive path", "severity": "LOW", "confidence": "HIGH", "cwe": ["CWE-639"], "location": { "path": "C:\\x" }, "evidence": "e", "exploitScenario": "s", "preconditions": "p", "recommendation": "r" },
+  { "ref": "c4", "classId": "authz-scoping", "title": "inner dotdot", "severity": "LOW", "confidence": "HIGH", "cwe": ["CWE-639"], "location": { "path": "app/../../x" }, "evidence": "e", "exploitScenario": "s", "preconditions": "p", "recommendation": "r" }
+]

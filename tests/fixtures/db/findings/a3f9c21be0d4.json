@@ -1,0 +1,20 @@
+{
+  "id": "a3f9c21be0d4",
+  "project": "example-app",
+  "system": "db",
+  "layer": "INFRA",
+  "source": "infra-probe",
+  "ruleId": "supabase/auth/anon-signups-open",
+  "title": "Anonymous sign-ups enabled on a production Auth instance",
+  "severity": "HIGH",
+  "confidence": "HIGH",
+  "class": "verified",
+  "location": { "host": "192.0.2.10", "service": "supabase-auth", "setting": "GOTRUE_DISABLE_SIGNUP" },
+  "evidence": "GOTRUE_DISABLE_SIGNUP=false in the running container env (value redacted class: config)",
+  "recommendation": "Set GOTRUE_DISABLE_SIGNUP=true and invite users explicitly.",
+  "status": "open",
+  "firstSeen": "2026-10-23T18:02:11Z",
+  "lastSeen": "2026-10-23T18:02:11Z",
+  "disposition": null,
+  "updatedAt": "2026-10-23T18:02:11Z"
+}

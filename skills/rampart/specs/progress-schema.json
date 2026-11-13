@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rampart job progress",
+  "description": "What one job is doing for one project, step by step (progress.json in the project's store folder; progress/<slug> in the dashboard DB). Written by scripts/progress.cjs; see progress.md.",
+  "type": "object",
+  "required": ["project", "job", "layer", "system", "runId", "jobId", "title", "state", "startedAt", "updatedAt", "finishedAt", "staleAfterSec", "overall", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "project": { "type": "string", "pattern": "^[a-z0-9-]{2,40}$" },
+    "job": { "enum": ["audit", "inventory", "verify"] },
+    "layer": { "enum": ["L1", "L2", "L3", "INFRA", null] },
+    "system": { "type": ["string", "null"] },
+    "runId": { "type": ["string", "null"], "description": "The run directory the job writes, once known." },
+    "jobId": { "type": ["string", "null"], "description": "The dashboard job this work answers, when a watch session runs it." },
+    "title": { "type": "string", "description": "One plain line naming the job, such as 'Deep review: Example Expo app'." },
+    "state": { "enum": ["running", "done", "failed"] },
+    "startedAt": { "type": "string" },
+    "updatedAt": { "type": "string", "description": "Every write stamps it; the page calls a running job stopped once it is older than staleAfterSec." },
+    "finishedAt": { "type": ["string", "null"] },
+    "staleAfterSec": { "type": "integer", "minimum": 60 },
+    "note": { "type": ["string", "null"], "description": "The recipe's closing line, when it gave one." },
+    "overall": {
+      "type": "object",
+      "required": ["done", "total", "percent"],
+      "additionalProperties": false,
+      "properties": {
+        "done": { "type": "integer", "minimum": 0, "description": "Steps finished (done, skipped or failed)." },
+        "total": { "type": "integer", "minimum": 0 },
+        "percent": { "type": "integer", "minimum": 0, "description": "0 to 100; a running step with counts adds its own share." }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "status", "done", "total", "unit", "note"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "label": { "type": "string", "minLength": 1, "description": "Plain words, fixed by progress.cjs." },
+          "status": { "enum": ["pending", "running", "done", "skipped", "failed"] },
+          "done": { "type": ["integer", "null"], "minimum": 0 },
+          "total": { "type": ["integer", "null"], "minimum": 0 },
+          "unit": { "type": ["string", "null"], "description": "What the counts count, plural, in the dashboard's words: 'AI reviewers', 'possible problems'." },
+          "note": { "type": ["string", "null"] },
+          "startedAt": { "type": "string" },
+          "finishedAt": { "type": "string" }
+        }
+      }
+    }
+  }
+}

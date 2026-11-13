@@ -1,0 +1,5 @@
+{
+  "name": "fixture-nextjs",
+  "private": true,
+  "dependencies": { "next": "*" }
+}

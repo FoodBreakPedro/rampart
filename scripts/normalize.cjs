@@ -1,0 +1,395 @@
+'use strict';
+const { findingId } = require('./lib/id.cjs');
+const { runChecks } = require('./lib/headers-rubric.cjs');
+
+// Turn the raw JSON of the L1 tools into findings that match finding-schema.json. Each function takes the parsed report (for
+// the headers check, the result of fetching the URL) and ctx = {project, system, runId, now?} and returns an array; the
+// caller hands the array to the store.
+//
+// Every finding is layer 'L1', status 'open', stamped with ctx.now (or the current time) for both firstSeen and lastSeen.
+// The store keeps the real firstSeen when the finding already exists. The class is 'tool' unless the caller says otherwise:
+// the headers check files its gaps as 'hardening'.
+//
+// Nothing here reads a field it does not need. For gitleaks that matters: Secret, Match, Line, Author and Email stay in
+// the report and never reach a finding.
+
+const RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
+const TRIVY_SEVERITY = { CRITICAL: 'CRITICAL', HIGH: 'HIGH', MEDIUM: 'MEDIUM', LOW: 'LOW', UNKNOWN: 'LOW' };
+const NPM_SEVERITY = { critical: 'CRITICAL', high: 'HIGH', moderate: 'MEDIUM', low: 'LOW', info: 'LOW' };
+const MAX_LISTED = 5; // advisories named in one finding's evidence; externalIds.cve always carries all of them
+
+const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const list = (v) => (Array.isArray(v) ? v : []);
+const isText = (v) => typeof v === 'string' && v !== '';
+const uniqueSorted = (items) => [...new Set(items)].sort();
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const severityOf = (table, raw, fold) => {
+  const key = fold(typeof raw === 'string' ? raw : '');
+  return own(table, key) ? table[key] : 'LOW';
+};
+const maxSeverity = (severities) => severities.reduce((a, b) => (RANK[b] > RANK[a] ? b : a), 'LOW');
+
+// "a (..), b (..), c (..), d (..), e (..), and 7 more"
+function listed(items) {
+  const shown = items.slice(0, MAX_LISTED).join(', ');
+  const more = items.length - MAX_LISTED;
+  return more > 0 ? `${shown}, and ${more} more` : shown;
+}
+
+function context(ctx, fn) {
+  if (!isObject(ctx)) throw new TypeError(`${fn}: ctx is required`);
+  for (const key of ['project', 'system', 'runId']) {
+    if (!isText(ctx[key])) throw new TypeError(`${fn}: ctx.${key} must be a non-empty string`);
+  }
+  return { project: ctx.project, system: ctx.system, runId: ctx.runId, now: ctx.now || new Date().toISOString() };
+}
+
+// The fields every L1 finding shares. Key order follows the finding fixture.
+function toolFinding(c, f) {
+  return {
+    id: findingId({ project: c.project, system: c.system, ruleId: f.ruleId, location: f.location }),
+    project: c.project,
+    system: c.system,
+    layer: 'L1',
+    source: f.source,
+    pack: null,
+    ruleId: f.ruleId,
+    title: f.title,
+    severity: f.severity,
+    confidence: f.confidence,
+    cwe: f.cwe,
+    class: f.class || 'tool',
+    location: f.location,
+    evidence: f.evidence,
+    exploitScenario: f.exploitScenario,
+    preconditions: f.preconditions,
+    recommendation: f.recommendation,
+    verification: { verifiers: 0, confirmed: 0, run: c.runId },
+    status: 'open',
+    firstSeen: c.now,
+    lastSeen: c.now,
+    fixedIn: null,
+    externalIds: { claudeSecurityPluginFindingId: null, cve: f.cve },
+  };
+}
+
+// ---- gitleaks -----------------------------------------------------------------------------
+
+// report: the JSON array gitleaks writes with --report-format json (older versions write null when nothing matched).
+// One finding per entry. The line is not recorded, so the id of a leak survives line drift. The shortened commit is
+// recorded and, when there is one, named in the ruleId (gitleaks/<RuleID>@<commit12>): the same rule in the same file at
+// two commits is two findings. A working-tree entry (no commit) gets the plain gitleaks/<RuleID>. Two leaks of one rule
+// in one file in one commit still share an id.
+function fromGitleaks(report, ctx) {
+  const c = context(ctx, 'fromGitleaks');
+  if (report === null || report === undefined) return [];
+  if (!Array.isArray(report)) throw new TypeError('fromGitleaks: report must be an array');
+  return report.map((entry, i) => {
+    // Only these four fields are read.
+    const { RuleID, Description, File, Commit } = isObject(entry) ? entry : {};
+    if (!isText(RuleID) || !isText(File)) throw new TypeError(`fromGitleaks: entry ${i} needs a RuleID and a File`);
+    const short = typeof Commit === 'string' ? Commit.slice(0, 12) : '';
+    const location = short ? { path: File, symbol: null, commit: short } : { path: File, symbol: null };
+    return toolFinding(c, {
+      source: 'gitleaks',
+      ruleId: `gitleaks/${RuleID}${short ? `@${short}` : ''}`,
+      title: `Possible ${isText(Description) ? Description : RuleID} in ${File}`,
+      severity: 'HIGH',
+      confidence: 'MEDIUM',
+      cwe: ['CWE-798'],
+      location,
+      evidence: `gitleaks rule ${RuleID} matched ${short ? `at commit ${short}` : 'in the working tree'}; value not recorded`,
+      exploitScenario: 'Anyone who can read the repository or its history can use the exposed credential.',
+      preconditions: 'The matched value is a live credential and the repository, or a copy of it, is readable by someone untrusted.',
+      recommendation: 'Rotate the credential, remove it from the repository, load it from a secret store or environment variable, and purge it from history if the repository is shared.',
+      cve: null,
+    });
+  });
+}
+
+// ---- trivy --------------------------------------------------------------------------------
+
+// A version split into its numeric parts and, for a semver prerelease (a "-" followed by a letter: 1.2.3-beta.1), the
+// prerelease identifiers. A distro revision such as 1:2.3.4-5ubuntu1 is not a prerelease; its digits just count.
+function parseVersion(v) {
+  const at = v.search(/-[A-Za-z]/);
+  return {
+    numbers: ((at < 0 ? v : v.slice(0, at)).match(/\d+/g) || []).map(Number),
+    pre: at < 0 ? null : v.slice(at + 1).split('.'),
+  };
+}
+
+// Negative, zero or positive like a sort comparator. A release outranks its own prereleases.
+function compareVersions(a, b) {
+  const x = parseVersion(a);
+  const y = parseVersion(b);
+  for (let i = 0; i < Math.max(x.numbers.length, y.numbers.length); i++) {
+    const d = (x.numbers[i] ?? 0) - (y.numbers[i] ?? 0);
+    if (d) return d;
+  }
+  if (!x.pre || !y.pre) return x.pre ? -1 : y.pre ? 1 : 0;
+  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i];
+    const q = y.pre[i];
+    if (p === undefined) return -1;
+    if (q === undefined) return 1;
+    const pNumeric = /^\d+$/.test(p);
+    const qNumeric = /^\d+$/.test(q);
+    if (pNumeric && qNumeric) {
+      const d = Number(p) - Number(q);
+      if (d) return d;
+    } else if (pNumeric !== qNumeric) {
+      return pNumeric ? -1 : 1;
+    } else if (p !== q) {
+      return p < q ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+// The highest version in a list of FixedVersion strings. A string may name several fixes ("4.17.21, 3.10.1").
+function highestVersion(fixes) {
+  const tokens = fixes.flatMap((fix) => fix.split(',')).map((t) => t.trim()).filter((t) => /\d/.test(t));
+  return tokens.reduce((best, t) => (best === undefined || compareVersions(t, best) > 0 ? t : best), undefined);
+}
+
+// report: the JSON of `trivy fs --format json`. One finding per (Target, PkgName): a package with three advisories is one
+// thing to upgrade, not three. Results and Vulnerabilities may be absent.
+function fromTrivy(report, ctx) {
+  const c = context(ctx, 'fromTrivy');
+  if (!isObject(report)) throw new TypeError('fromTrivy: report must be an object');
+  const groups = new Map();
+  list(report.Results).forEach((result, r) => {
+    if (!isObject(result)) return;
+    const target = isText(result.Target) ? result.Target : '';
+    const type = isText(result.Type) ? result.Type : '';
+    list(result.Vulnerabilities).forEach((v, i) => {
+      if (!isObject(v) || !isText(v.PkgName)) throw new TypeError(`fromTrivy: vulnerability ${i} in result ${r} has no PkgName`);
+      const key = `${target}\0${v.PkgName}`;
+      if (!groups.has(key)) groups.set(key, { target, type, pkg: v.PkgName, advisories: new Map() });
+      const advisory = {
+        id: isText(v.VulnerabilityID) ? v.VulnerabilityID : '',
+        installed: isText(v.InstalledVersion) ? v.InstalledVersion : '',
+        fixed: isText(v.FixedVersion) ? v.FixedVersion : '',
+        severity: severityOf(TRIVY_SEVERITY, v.Severity, (s) => s.toUpperCase()),
+        cwe: list(v.CweIDs).filter(isText),
+      };
+      groups.get(key).advisories.set(`${advisory.id}|${advisory.installed}|${advisory.fixed}`, advisory);
+    });
+  });
+
+  return [...groups.values()].map((g) => {
+    const advisories = [...g.advisories.values()].sort(
+      (a, b) => RANK[b.severity] - RANK[a.severity] || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+    );
+    const versions = uniqueSorted(advisories.map((a) => a.installed).filter(Boolean));
+    const ids = uniqueSorted(advisories.map((a) => a.id).filter(Boolean));
+    const count = plural(advisories.length, 'advisory', 'advisories');
+    const location = { package: g.pkg };
+    if (g.type) location.ecosystem = g.type;
+    if (g.target) location.path = g.target;
+    return toolFinding(c, {
+      source: 'trivy',
+      // The id of a package location hashes the package, not the lockfile it was found in, so the ruleId always names the
+      // target: the same package in two lockfiles stays two findings, and an id does not change when a repo gains a lockfile.
+      ruleId: `trivy/pkg/${g.pkg}${g.target ? `@${g.target}` : ''}`,
+      title: `Vulnerable dependency ${g.pkg}${versions.length ? ` ${versions.join(', ')}` : ''} (${count})`,
+      severity: maxSeverity(advisories.map((a) => a.severity)),
+      confidence: 'HIGH',
+      cwe: uniqueSorted(advisories.flatMap((a) => a.cwe)),
+      location,
+      evidence: `${count}: ${listed(advisories.map((a) => `${a.id || 'unidentified advisory'} (installed ${a.installed || 'unknown'}, fixed ${a.fixed || 'none'})`))}`,
+      exploitScenario: `An attacker exploits a published vulnerability in the installed version of ${g.pkg}.`,
+      preconditions: `The vulnerable code in ${g.pkg} is reachable from application input or the build.`,
+      recommendation: `Upgrade ${g.pkg} to ${highestVersion(advisories.map((a) => a.fixed)) || 'the latest version'}`,
+      cve: ids.length ? ids : null,
+    });
+  });
+}
+
+// ---- npm audit ----------------------------------------------------------------------------
+
+const GHSA_AT_END = /\/(GHSA(?:-[0-9a-z]{4}){3})\/?$/i;
+
+// The advisory ids npm gives for one `via` object: the GHSA id at the end of its url and, if present, a cve field.
+function advisoryIds(via) {
+  const ghsa = typeof via.url === 'string' ? via.url.match(GHSA_AT_END) : null;
+  return [ghsa && ghsa[1], isText(via.cve) ? via.cve : null].filter(Boolean);
+}
+
+function npmFix(name, fix) {
+  if (isObject(fix) && isText(fix.version)) {
+    return `Upgrade ${isText(fix.name) ? fix.name : name} to ${fix.version}${fix.isSemVerMajor ? ' (semver-major change)' : ''}`;
+  }
+  if (fix === true) return `Upgrade ${name} to a patched version (npm audit fix)`;
+  return `Upgrade ${name} to the latest version; npm reports no automatic fix`;
+}
+
+// report: the JSON of `npm audit --json` (auditReportVersion 2). One finding per vulnerable package.
+// A package whose `via` holds only package names is vulnerable because of a dependency. When that dependency, followed
+// through the report, reaches an advisory, the advisory's own entry carries the finding and this one is skipped.
+// When nothing it points at carries an advisory, the entry is kept so the signal is not lost, and says how it was reached.
+function fromNpmAudit(report, ctx) {
+  const c = context(ctx, 'fromNpmAudit');
+  if (!isObject(report)) throw new TypeError('fromNpmAudit: report must be an object');
+  if (report.error !== undefined && report.error !== null) {
+    throw new TypeError('fromNpmAudit: report is an npm audit error report, not an audit result');
+  }
+  if (report.auditReportVersion !== undefined && report.auditReportVersion !== 2) {
+    throw new TypeError('fromNpmAudit: unsupported npm audit report version (expected auditReportVersion 2)');
+  }
+  if (report.vulnerabilities === undefined && report.advisories !== undefined) {
+    throw new TypeError('fromNpmAudit: unsupported npm audit report version (expected auditReportVersion 2)');
+  }
+  // Only `vulnerabilities: {}` is a clean audit. A missing key or any other type is a malformed report, not an empty one.
+  if (!isObject(report.vulnerabilities)) {
+    throw new TypeError('fromNpmAudit: report.vulnerabilities must be an object (a missing or non-object value is a malformed report)');
+  }
+  const vulnerabilities = report.vulnerabilities;
+
+  const reachesAdvisory = (name, seen) => {
+    if (seen.has(name)) return false;
+    seen.add(name);
+    if (!own(vulnerabilities, name) || !isObject(vulnerabilities[name])) return false;
+    const via = list(vulnerabilities[name].via);
+    return via.some(isObject) || via.some((v) => typeof v === 'string' && reachesAdvisory(v, seen));
+  };
+
+  const findings = [];
+  for (const [name, entry] of Object.entries(vulnerabilities)) {
+    if (!isObject(entry)) continue;
+    const via = list(entry.via);
+    const names = via.filter(isText);
+    const advisories = via
+      .filter(isObject)
+      .map((a) => ({ raw: a, severity: severityOf(NPM_SEVERITY, a.severity, (s) => s.toLowerCase()) }))
+      .sort((a, b) => RANK[b.severity] - RANK[a.severity]);
+
+    if (advisories.length === 0) {
+      const seen = new Set([name]);
+      if (names.some((n) => reachesAdvisory(n, seen))) continue;
+    }
+
+    const ids = advisories.flatMap(({ raw }) => advisoryIds(raw));
+    const described = advisories.map(({ raw }) => {
+      const label = advisoryIds(raw)[0] || (raw.source !== undefined ? `advisory ${raw.source}` : 'unidentified advisory');
+      const detail = [isText(raw.title) ? raw.title : '', isText(raw.range) ? `affected ${raw.range}` : ''].filter(Boolean).join('; ');
+      return detail ? `${label} (${detail})` : label;
+    });
+
+    let title;
+    let evidence;
+    if (advisories.length > 0) {
+      const first = advisories[0].raw;
+      const more = advisories.length - 1;
+      title = `Vulnerable dependency ${name}: ${isText(first.title) ? first.title : described[0]}${more ? ` (and ${more} more)` : ''}`;
+      evidence = `${plural(advisories.length, 'advisory', 'advisories')}: ${listed(described)}${names.length ? `; also reached via ${names.join(', ')}` : ''}`;
+    } else {
+      title = `Vulnerable dependency ${name}${names.length ? ` (via ${names.join(', ')})` : ''}`;
+      evidence = names.length
+        ? `no advisory is listed on ${name} itself; reached via ${names.join(', ')}`
+        : `no advisory detail is listed for ${name}`;
+    }
+
+    findings.push(toolFinding(c, {
+      source: 'npm-audit',
+      ruleId: `npm-audit/pkg/${name}`,
+      title,
+      severity: maxSeverity([severityOf(NPM_SEVERITY, entry.severity, (s) => s.toLowerCase()), ...advisories.map((a) => a.severity)]),
+      confidence: 'HIGH',
+      cwe: uniqueSorted(advisories.flatMap(({ raw }) => list(raw.cwe).filter(isText))),
+      location: { package: name, ecosystem: 'npm' },
+      evidence,
+      exploitScenario: `An attacker exploits a published advisory in the installed version of ${name}.`,
+      preconditions: `The vulnerable code in ${name} is reachable from application input or the build.`,
+      recommendation: npmFix(name, entry.fixAvailable),
+      cve: ids.length ? uniqueSorted(ids) : null,
+    }));
+  }
+  return findings;
+}
+
+// ---- security headers ---------------------------------------------------------------------
+
+const HEADER_EXPLOIT = 'A browser-side attack (script injection, clickjacking, a downgrade to plain HTTP, or a leak through a header) succeeds where the missing or weak header would have stopped it.';
+const HEADER_PRECONDITIONS = 'The attacker can get a victim to load the page or sits on the network path to the victim, and no other control covers the same weakness.';
+
+// result: {url, status, headers}, the final response of the live URL after redirects. headers is a plain object whose keys may
+// be in any case; set-cookie may be an array of lines or one string. One 'hardening' finding per failed check of the rubric
+// in lib/headers-rubric.cjs. A header gap is a defense-in-depth note, so these never count against the findings score.
+// Evidence names the headers only: no cookie name or value, no server banner.
+function fromHeaders(result, ctx) {
+  const c = context(ctx, 'fromHeaders');
+  if (!isObject(result)) throw new TypeError('fromHeaders: result must be an object');
+  if (!isText(result.url)) throw new TypeError('fromHeaders: result.url must be a non-empty string');
+  if (!isObject(result.headers)) throw new TypeError('fromHeaders: result.headers must be an object');
+  const { headers, failed } = runChecks(result.headers);
+  return failed.map((check) => toolFinding(c, {
+    class: 'hardening',
+    source: 'headers',
+    ruleId: `headers/${check.id}`,
+    title: check.title,
+    severity: check.severity,
+    confidence: 'HIGH',
+    cwe: [...check.cwe],
+    location: { url: result.url, header: check.id },
+    evidence: check.evidence(headers),
+    exploitScenario: HEADER_EXPLOIT,
+    preconditions: HEADER_PRECONDITIONS,
+    recommendation: check.recommendation,
+    cve: null,
+  }));
+}
+
+// ---- hunter candidates --------------------------------------------------------------------
+
+const CONFIDENCE_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2 };
+const INJECTION_RULE = 'rampart/prompt-injection-attempt';
+
+// candidate: a stored hunt candidate (hunt-io.cjs, candidate-schema.json) that met the verification bar. confirmingVotes: the
+// votes that confirmed it. ctx = {project, runId, now?, totalVotes?}; totalVotes is how many verifiers voted (default: the
+// confirming ones). The finding is class 'verified', from 'rampart-hunter' ('infra-probe' on layer INFRA).
+// severity is the lowest the confirming verifiers gave when two or more gave one, else the hunter's; confidence is the lowest of
+// the hunter's and every confirming verifier's. A candidate flagged as a prompt-injection attempt (the hunter's flag or hunt-io's
+// heuristic) is a LOW 'hardening' finding of rule rampart/prompt-injection-attempt: text in the repository that addresses the
+// scan is a note about the repository, not a vulnerability in it.
+function fromHunt(candidate, confirmingVotes, ctx) {
+  if (!isObject(candidate)) throw new TypeError('fromHunt: candidate must be an object');
+  if (!Array.isArray(confirmingVotes)) throw new TypeError('fromHunt: confirmingVotes must be an array');
+  if (!isObject(ctx)) throw new TypeError('fromHunt: ctx is required');
+  for (const key of ['project', 'runId']) if (!isText(ctx[key])) throw new TypeError(`fromHunt: ctx.${key} must be a non-empty string`);
+  const now = ctx.now || new Date().toISOString();
+  const rated = confirmingVotes.filter((v) => own(RANK, v.severity));
+  const severity = rated.length >= 2 ? rated.map((v) => v.severity).reduce((a, b) => (RANK[b] < RANK[a] ? b : a)) : candidate.severity;
+  const confidence = [candidate.confidence, ...confirmingVotes.map((v) => v.confidence).filter((c) => own(CONFIDENCE_RANK, c))]
+    .reduce((a, b) => (CONFIDENCE_RANK[b] < CONFIDENCE_RANK[a] ? b : a));
+  const injection = Boolean(candidate.flags && candidate.flags.prompt_injection);
+  return {
+    id: candidate.candidateId,
+    project: ctx.project,
+    system: candidate.system,
+    layer: candidate.layer,
+    source: candidate.layer === 'INFRA' ? 'infra-probe' : 'rampart-hunter',
+    pack: `${candidate.pack}@${candidate.packVersion}`,
+    ruleId: injection ? INJECTION_RULE : `${candidate.pack}/${candidate.classId}`,
+    title: candidate.title,
+    severity: injection ? 'LOW' : severity,
+    confidence,
+    cwe: [...candidate.cwe],
+    class: injection ? 'hardening' : 'verified',
+    location: { ...candidate.location },
+    evidence: candidate.evidence,
+    exploitScenario: candidate.exploitScenario,
+    preconditions: candidate.preconditions,
+    recommendation: candidate.recommendation,
+    verification: { verifiers: Number.isInteger(ctx.totalVotes) ? ctx.totalVotes : confirmingVotes.length, confirmed: confirmingVotes.length, run: ctx.runId },
+    status: 'open',
+    firstSeen: now,
+    lastSeen: now,
+    fixedIn: null,
+    externalIds: { claudeSecurityPluginFindingId: null, cve: null },
+  };
+}
+
+module.exports = { fromGitleaks, fromTrivy, fromNpmAudit, fromHeaders, fromHunt, INJECTION_RULE };

@@ -1,0 +1,20 @@
+[
+  {
+    "ref": "c1",
+    "classId": "bulk-export",
+    "title": "Export route returns every tenant's rows",
+    "severity": "HIGH",
+    "confidence": "HIGH",
+    "cwe": [
+      "CWE-639"
+    ],
+    "preconditions": "Signed in as any user.",
+    "recommendation": "Scope the query to the session user.",
+    "location": {
+      "path": "app/api/export/route.ts",
+      "symbol": "GET"
+    },
+    "evidence": "GET calls db.invoice.findMany() with no where clause.",
+    "exploitScenario": "Any signed-in user downloads all invoices."
+  }
+]

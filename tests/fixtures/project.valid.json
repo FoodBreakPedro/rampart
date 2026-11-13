@@ -1,0 +1,51 @@
+{
+  "slug": "example-app",
+  "name": "Example App",
+  "criticality": "high",
+  "ownerAttestation": {
+    "statement": "I own or am authorized to test every system listed here",
+    "by": "<owner>",
+    "at": "2026-10-23T00:00:00Z"
+  },
+  "defaultExecutor": "local",
+  "cloudAllowed": false,
+  "systems": [
+    {
+      "id": "mobile",
+      "type": "mobile-expo",
+      "name": "Expo app",
+      "packs": ["mobile-expo"],
+      "repo": {
+        "remote": "github.com/<owner>/example-app",
+        "defaultBranch": "main",
+        "paths": { "<machine-id>": "<local path>" }
+      },
+      "executor": "either",
+      "layers": {
+        "L1": { "cadenceDays": 7 },
+        "L2": { "cadenceDays": 30 },
+        "L3": { "cadenceDays": 90 }
+      }
+    },
+    {
+      "id": "db",
+      "type": "supabase",
+      "name": "Self-hosted Supabase",
+      "packs": ["supabase", "docker-host"],
+      "criticality": "data",
+      "live": { "url": "https://db.example.invalid" },
+      "host": {
+        "ssh": "<ssh-user>@192.0.2.10",
+        "composeProject": "<compose-project>",
+        "configPath": "<local path>"
+      },
+      "executor": "local",
+      "layers": {
+        "INFRA": { "cadenceDays": 30 },
+        "L3": { "cadenceDays": 90, "scope": "RLS policies, auth config, edge functions" }
+      }
+    }
+  ],
+  "created": "2026-10-23T00:00:00Z",
+  "updated": "2026-10-23T00:00:00Z"
+}

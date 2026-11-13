@@ -1,0 +1,21 @@
+{
+  "description": "Rampart: a note at session start when a tool a stored project needs is missing, and an L2 suggestion after a git push from a stored project's repository.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.cjs\"", "timeout": 5 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/post-push.cjs\"", "timeout": 5 }
+        ]
+      }
+    ]
+  }
+}

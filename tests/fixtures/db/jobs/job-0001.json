@@ -1,0 +1,15 @@
+{
+  "id": "job-0001",
+  "type": "audit",
+  "project": "example-app",
+  "system": "mobile",
+  "layer": "L1",
+  "params": {},
+  "executorKind": "local",
+  "status": "queued",
+  "createdBy": "<owner-user-id>",
+  "confirmedAt": "2026-10-23T19:00:00Z",
+  "costShown": "1 agent",
+  "costEstimate": { "agents": 1, "note": "1 agent" },
+  "updatedAt": "2026-10-23T19:00:00Z"
+}
